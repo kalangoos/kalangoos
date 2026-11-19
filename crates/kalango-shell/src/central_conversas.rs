@@ -519,6 +519,9 @@ impl Conversas {
         painel.append(&pch);
         let painel_stack = gtk::Stack::new();
         painel_stack.set_vexpand(true);
+        // (only the tab on screen sets the context's width: the Browser's wide rows would hold a half-screen window
+        // wider than its column — suite run 53, §80)
+        painel_stack.set_hhomogeneous(false);
         let ctx = caixa(Orientation::Vertical, 0, "");
         let secao = |t: &str, glifo: &str| {
             let l = caixa(Orientation::Horizontal, 8, "");
@@ -1711,6 +1714,20 @@ impl Conversas {
             let min = |w: &gtk::Widget| if w.is_visible() { w.measure(Orientation::Horizontal, -1).0 } else { 0 };
             eprintln!("debug central: mínimos · lateral {} · conversa {} · painel {} · faixa {} · tudo {}", min(self.lateral.upcast_ref()), min(self.vista.upcast_ref()),
                 min(self.painel.upcast_ref()), min(self.faixa_abas.upcast_ref()), min(self.raiz.upcast_ref()));
+            // (the context's parts: what holds it wider)
+            let mut partes: Vec<String> = Vec::new();
+            let mut c = self.painel.first_child();
+            while let Some(w) = c {
+                partes.push(format!("{} {}", w.type_().name(), min(&w)));
+                c = w.next_sibling();
+            }
+            let mut p = self.painel_stack.first_child();
+            while let Some(w) = p {
+                let nome = self.painel_stack.page(&w).name().map(|n| n.to_string()).unwrap_or_default();
+                partes.push(format!("{nome} {}", w.measure(Orientation::Horizontal, -1).0));
+                p = w.next_sibling();
+            }
+            eprintln!("debug central: painel · {}", partes.join(" · "));
         }
     }
 

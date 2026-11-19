@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""KalangoOS · conversa com uma VM da ISO pelo console serial (imagem/testar-iso.sh): entra, roda comandos e confere.
+
+    testar-iso.py <serial.sock> ao-vivo           a sessão ao vivo: niri, shell e o instalador de pé, nada falhando
+    testar-iso.py <serial.sock> instalar <plano>  roda o motor do instalador de verdade no disco da VM e desliga
+    testar-iso.py <serial.sock> instalado <usuário> <senha>   o sistema instalado: a sessão da conta criada de pé
+
+Sai com 0 quando tudo confere; senão diz o que não conferiu (e o que o sistema registrou) e sai com 1.
+"""
+import base64
+import re
+import socket
+import sys
+import time
+
+ESC = re.compile(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b\[[0-9;?]*[a-zA-Z]|\x1bP[^\x1b]*\x1b\\")
+
+
+class Console:
+    def __init__(self, path):
+        self.s = socket.socket(socket.AF_UNIX)
+        self.s.connect(path)
+        self.s.settimeout(1)
+        self.n = 0
+
+    def read(self, seconds):
+        end, out = time.time() + seconds, b""
+        while time.time() < end:
+            try:
+                out += self.s.recv(1 << 16)
+            except socket.timeout:
+                pass
+        return ESC.sub("", out.decode(errors="replace"))
+
+    def until(self, pattern, seconds):
+        end, out = time.time() + seconds, ""
+        while time.time() < end:
+            out += self.read(2)
+            if re.search(pattern, out):
+                return out
+        raise TimeoutError(f"não apareceu /{pattern}/ em {seconds} s; o fim do console:\n{out[-1500:]}")
+
+    def send(self, text):
+        self.s.send(text.encode() + b"\n")
+
+    def login(self, user, password, seconds):
+        self.send("")
+        # (o console pode já estar com a conta aberta, de um passo anterior na mesma VM)
+        if not re.search(r"login: *$", self.until(r"(login: *$|\$ *$)", seconds)):
+            return
+        self.send(user)
+        out = self.until(r"(Password: *$|\$ *$)", 30)
+        if "Password" in out:
+            self.send(password)
+            self.until(r"\$ *$", 30)
+        # (sem eco, um prompt que não atrapalha a leitura das respostas)
+        self.send("stty -echo; export PS1='$ ' PROMPT_COMMAND=")
+        self.read(2)
+
+    def run(self, cmd, seconds=60, stdin=None):
+        """A saída de `cmd` e o código de saída dele."""
+        self.n += 1
+        tag = f"__KALANGO_{self.n}__"
+        self.send(f"{cmd}; echo {tag} $?")
+        if stdin is not None:
+            time.sleep(1)
+            self.send(stdin)
+        out = self.until(rf"{tag} \d+", seconds)
+        body, code = out.rsplit(tag, 1)
+        return body.strip(), int(code.split()[0])
+
+
+def check(ok, what, details=""):
+    print(("ok    " if ok else "FALHOU ") + what)
+    if not ok and details:
+        print("      " + details.replace("\n", "\n      "))
+    return ok
+
+
+def session_up(c, user, seconds=240):
+    """Espera o niri, o shell (e, ao vivo, o instalador) da conta de pé."""
+    wanted = ["niri.bin --session", "kalango-shell.bin"]
+    end = time.time() + seconds
+    while time.time() < end:
+        out, _ = c.run(f"ps -u {user} -o args=")
+        if all(w in out for w in wanted):
+            return out
+        time.sleep(5)
+    return out
+
+
+def main():
+    sock, mode = sys.argv[1], sys.argv[2]
+    c = Console(sock)
+    good = True
+    if mode == "ao-vivo":
+        c.login("kalango", "", 900)
+        procs = session_up(c, "kalango")
+        good &= check("niri.bin --session" in procs and "kalango-shell.bin" in procs, "a sessão ao vivo sobe (niri e shell)", procs)
+        good &= check("kalango-instalador" in procs, "o instalador abre sozinho", procs)
+        host, _ = c.run("hostname")
+        good &= check(host.strip() == "kalangoos", "o computador ao vivo se chama kalangoos", host)
+        time.sleep(60)
+        procs, _ = c.run("ps -u kalango -o args=")
+        good &= check("niri.bin --session" in procs and "kalango-shell.bin" in procs, "a sessão continua de pé 1 min depois", procs)
+        failed, _ = c.run("systemctl --failed --no-legend --plain")
+        good &= check(failed.strip() == "", "nenhum serviço falhou", failed)
+    elif mode == "instalar":
+        plan = sys.argv[3]
+        password = sys.argv[4]
+        c.login("kalango", "", 900)
+        # (numa linha só: o comando ganha o "; echo" do fim, que um heredoc não aceitaria)
+        b64 = base64.b64encode(open(plan, "rb").read()).decode()
+        c.run(f"echo {b64} | base64 -d > /tmp/plano.json")
+        out, code = c.run("sudo env KALANGO_INSTALADOR_REAL=1 /usr/libexec/kalango/kalango-instalador --instalar /tmp/plano.json", 1800, stdin=password)
+        steps = [l for l in out.splitlines() if l.startswith("{")]
+        print("      " + "\n      ".join(l[:160] for l in steps if '"estado":"feito"' in l.replace(" ", "") or "erro" in l or "fim" in l or "modo" in l))
+        good &= check(code == 0 and '"fim":true' in out.replace(" ", ""), "o motor instalou no disco da VM", out[-1500:])
+        c.send("sudo poweroff")
+        c.read(5)
+    elif mode == "instalado":
+        user, password = sys.argv[3], sys.argv[4]
+        c.login(user, password, 900)
+        procs = session_up(c, user)
+        good &= check("niri.bin --session" in procs and "kalango-shell.bin" in procs, f"o sistema instalado abre a sessão de {user}", procs)
+        good &= check("kalango-instalador" not in procs, "o instalador não abre no sistema instalado", procs)
+        # (pelo estado do dpkg, que não depende do idioma do sistema)
+        casper, _ = c.run("dpkg-query -W -f='${Status}' casper 2>/dev/null")
+        good &= check("installed" not in casper.split(), "o casper (o boot ao vivo) saiu do sistema instalado", casper)
+        root, _ = c.run("findmnt -no FSTYPE,SOURCE /")
+        good &= check(root.startswith("ext4"), "a raiz é o disco instalado (ext4)", root)
+        efi, _ = c.run("findmnt -no FSTYPE /boot/efi")
+        good &= check(efi.strip() == "vfat", "a partição EFI está montada", efi)
+        failed, _ = c.run("systemctl --failed --no-legend --plain")
+        good &= check(failed.strip() == "", "nenhum serviço falhou", failed)
+    if not good and mode != "instalar":
+        log, _ = c.run("sudo -S -p '' journalctl -b --no-pager -p warning | tail -60", 30, stdin=sys.argv[4] if mode == "instalado" else "")
+        print("---- o registro do sistema (avisos e erros)\n" + log)
+    if mode == "instalado":
+        c.send("sudo -S poweroff")
+        time.sleep(1)
+        c.send(sys.argv[4])
+        c.read(3)
+    sys.exit(0 if good else 1)
+
+
+if __name__ == "__main__":
+    main()

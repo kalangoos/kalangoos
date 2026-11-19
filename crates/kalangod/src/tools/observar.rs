@@ -125,13 +125,21 @@ fn service_status(_: &Ctx, a: &Value) -> Result<Out, String> {
     Ok(Out::read(Value::Object(map), trf("state of {name}", &[("name", name.to_string())])))
 }
 
+/// A mount that is a disk the person can fill: not a kernel or memory file system, not an installation medium (a
+/// DVD, the live image's ISO) and not mounted read-only — a read-only one is "100% full" by nature (the live session's
+/// /cdrom said so in its summary).
+fn fills_up(fstype: &str, options: &str) -> bool {
+    const SKIP: &[&str] = &["proc", "sysfs", "tmpfs", "devtmpfs", "cgroup2", "securityfs", "pstore", "bpf", "debugfs", "tracefs", "configfs", "fusectl", "mqueue",
+        "hugetlbfs", "autofs", "binfmt_misc", "squashfs", "nsfs", "efivarfs", "devpts", "ramfs", "overlay", "fuse.portal", "fuse.gvfsd-fuse", "iso9660", "udf"];
+    !SKIP.contains(&fstype) && !options.split(',').any(|o| o == "ro")
+}
+
 fn disks(_: &Ctx, _: &Value) -> Result<Out, String> {
-    let skip = ["proc", "sysfs", "tmpfs", "devtmpfs", "cgroup2", "securityfs", "pstore", "bpf", "debugfs", "tracefs", "configfs", "fusectl", "mqueue", "hugetlbfs", "autofs", "binfmt_misc", "squashfs", "nsfs", "efivarfs", "devpts", "ramfs", "overlay", "fuse.portal", "fuse.gvfsd-fuse"];
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for l in read("/proc/mounts").lines() {
         let f: Vec<&str> = l.split_whitespace().collect();
-        if f.len() < 3 || skip.contains(&f[2]) || !seen.insert(f[0].to_string()) {
+        if f.len() < 4 || !fills_up(f[2], f[3]) || !seen.insert(f[0].to_string()) {
             continue;
         }
         if let Ok(st) = nix::sys::statvfs::statvfs(f[1]) {
@@ -233,4 +241,24 @@ fn timeline_list(c: &Ctx, a: &Value) -> Result<Out, String> {
     let n = all.len();
     // structuredContent do MCP é sempre um objeto
     Ok(Out::read(json!({"registros": all}), trf("{n} records", &[("n", n.to_string())])))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_disks_that_fill_up_count() {
+        // the system's disk and a data disk count
+        assert!(fills_up("ext4", "rw,relatime"));
+        assert!(fills_up("vfat", "rw,relatime,fmask=0077"));
+        // the live session's ISO, its image and its memory layer never do
+        assert!(!fills_up("iso9660", "ro,noatime,nojoliet"));
+        assert!(!fills_up("squashfs", "ro,noatime"));
+        assert!(!fills_up("overlay", "rw,noatime,lowerdir=/x"));
+        // a disk mounted read-only is full by nature
+        assert!(!fills_up("ext4", "ro,relatime"));
+        // ("errors=remount-ro" is not read-only)
+        assert!(fills_up("ext4", "rw,errors=remount-ro"));
+    }
 }

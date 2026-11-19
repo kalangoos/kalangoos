@@ -3262,7 +3262,7 @@ RESP=$(echo '"resultado do jogo de ontem do Kalango FC"' | env LANGUAGE=pt_BR XD
     KALANGOD_SOCKET="$T/mcp.sock" KALANGO_MODELO="$MODELO" KALANGO_MODELOS="$MODELOS" KALANGO_MEMORIA_CHAVEIRO=nao timeout 240 "$ROOT/target/release/kalango-agente" --json 2>/dev/null)
 echo "  (buscas: $(echo "$RESP" | grep -a '"tipo":"ferramenta"' | grep -c web.buscar); resposta: $(echo "$RESP" | grep -a '"tipo":"resposta"' | cut -c1-200))"
 ok "Web: o resultado de ontem — o agente abre a página do time (o resumo não tem o placar) e responde com ele" \
-  'grep -q "^/time-kalango" "$OUT/clima.log" && echo "$RESP" | grep -a "\"tipo\":\"resposta\"" | grep -Eq "3 ?(a|x|×|-|–|—) ?1"'
+  'grep -q "^/time-kalango" "$OUT/clima.log" && echo "$RESP" | grep -a "\"tipo\":\"resposta\"" | sed "s/\xe2\x80\xaf/ /g; s/\xc2\xa0/ /g" | grep -Eq "3 ?(a|x|×|-|–|—) ?1"'
 # 79c. The agent's browser (design "Chat · navegador do agente"): the same question in a conversation — its side bar
 #      shows the Browser tab with the page the agent read (Moli, held by kalangod), the part read outlined; "Assumir o
 #      controle" passes the page to the person: a click follows the page's link, "Voltar" returns, control goes back
@@ -3291,7 +3291,11 @@ read -r PX PY < <(lugar "navegador pagina")
 for _ in $(seq 40); do tail -n +"$NV0" "$T/shell.log" | grep -aq "debug navegador: clicar →" && break; sleep 0.5; done
 ok "Navegador do agente: no controle, um clique na página segue o link dela (sem recarregar a sessão)" \
   'tail -n +"$NV0" "$T/shell.log" | grep -a "debug navegador: clicar →" | tail -1 | grep -q "/tabela-kalango" && grep -q "^/tabela-kalango" "$OUT/clima.log"'
+# (the button turns on when the page it left is known: waited for, then its place read again)
+for _ in $(seq 30); do tail -n +"$NV0" "$T/shell.log" | grep -a "debug navegador: voltar ativo" | tail -1 | grep -q true && break; sleep 0.3; done
+sleep 0.6
 read -r VX VY < <(lugar "navegador voltar")
+echo "  (voltar em $VX $VY; $(tail -n +"$NV0" "$T/shell.log" | grep -a "debug navegador: voltar ativo" | tail -1))"
 [ -n "$VX" ] && apontar $((JX + VX)) $((JY + VY)) && sleep 0.3 && xdotool click 1
 for _ in $(seq 40); do tail -n +"$NV0" "$T/shell.log" | grep -aq "debug navegador: voltar →" && break; sleep 0.5; done
 read -r AX AY < <(lugar "navegador assumir")

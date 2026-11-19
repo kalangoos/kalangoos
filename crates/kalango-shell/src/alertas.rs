@@ -73,6 +73,10 @@ fn disco() {
     }
     // (the session test: a file named by KALANGO_DISCO_TESTE, when it exists, holds the "free bytes")
     let teste = std::env::var_os("KALANGO_DISCO_TESTE").and_then(|f| std::fs::read_to_string(f).ok()).and_then(|v| v.trim().parse::<u64>().ok());
+    // (the live session: "/" is a layer in memory over the read-only image — its free space is RAM, not a disk)
+    if teste.is_none() && root_in_memory(&std::fs::read_to_string("/proc/mounts").unwrap_or_default()) {
+        return;
+    }
     let Some((total, livre)) = crate::configuracoes_sistema::statvfs(Path::new("/")).map(|(t, l)| (t, teste.unwrap_or(l))) else { return };
     // almost full: under 5 GB, or under 3% of the disk
     if total == 0 || (livre >= 5 << 30 && livre * 100 / total >= 3) {
@@ -116,4 +120,22 @@ fn disco() {
             }
         });
     });
+}
+
+/// Whether the system's root ("/") is a layer in memory (the live session's overlay), from /proc/mounts.
+fn root_in_memory(mounts: &str) -> bool {
+    mounts.lines().map(|l| l.split_whitespace().collect::<Vec<_>>()).filter(|f| f.len() >= 3 && f[1] == "/").last().is_some_and(|f| matches!(f[2], "overlay" | "tmpfs"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_live_root_is_not_a_disk() {
+        assert!(root_in_memory("/cow / overlay rw,relatime,lowerdir=/installer.squashfs 0 0\n/dev/sr0 /cdrom iso9660 ro 0 0\n"));
+        assert!(!root_in_memory("/dev/nvme0n1p2 / ext4 rw,relatime 0 0\n/dev/nvme0n1p1 /boot/efi vfat rw 0 0\n"));
+        // (the last mount on "/" is the one in use)
+        assert!(!root_in_memory("rootfs / rootfs rw 0 0\n/dev/vda / ext4 rw 0 0\n"));
+    }
 }

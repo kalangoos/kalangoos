@@ -15,6 +15,7 @@ __pycache__/
 !/kernel/.gitignore
 !/kernel/build.sh
 !/kernel/kalango.config
+!/kernel/config-*
 !/kernel/build-console.log
 
 # The website (branch/repo "site"): dependencies and builds

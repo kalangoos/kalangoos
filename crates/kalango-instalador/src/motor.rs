@@ -168,10 +168,13 @@ fn copy_system(c: &Ctx) -> Result<(), String> {
     let mut child = cmd.env("LC_ALL", "C").stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
     // both print a percentage now and then: the window's bar follows it
     let out = child.stdout.take().ok_or("sem saída")?;
-    for line in std::io::BufReader::new(out).split(b'\r').flatten() {
-        let l = String::from_utf8_lossy(&line);
-        if let Some(pct) = l.split_whitespace().find(|w| w.ends_with('%')).and_then(|w| w.trim_end_matches('%').parse::<f64>().ok()) {
-            step("copiar", "fazendo", pct / 100.0, &format!("{pct:.0}%"));
+    let mut last = -1.0;
+    for line in std::io::BufReader::new(out).split(b'\n').flatten() {
+        for part in line.split(|b| *b == b'\r') {
+            if let Some(pct) = percentage(&String::from_utf8_lossy(part)).filter(|p| *p > last) {
+                last = pct;
+                step("copiar", "fazendo", pct / 100.0, &format!("{pct:.0}%"));
+            }
         }
     }
     let st = child.wait().map_err(|e| e.to_string())?;
@@ -179,6 +182,25 @@ fn copy_system(c: &Ctx) -> Result<(), String> {
         return Err(tr("copying the system failed").to_string());
     }
     Ok(())
+}
+
+/// The installed system's boot settings (/etc/default/grub.d), from the live session's kernel command line.
+fn grub_defaults(cmdline: &str) -> String {
+    let consoles: Vec<&str> = cmdline.split_whitespace().filter(|a| a.starts_with("console=")).collect();
+    let mut t = String::from("# KalangoOS (instalador)\nGRUB_DISTRIBUTOR=\"KalangoOS\"\nGRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash\"\n");
+    if !consoles.is_empty() {
+        t += &format!("GRUB_CMDLINE_LINUX=\"$GRUB_CMDLINE_LINUX {}\"\n", consoles.join(" "));
+    }
+    t
+}
+
+/// The percentage in a line of the copy: rsync's "… 42% …", or unsquashfs -percentage's bare "42".
+fn percentage(line: &str) -> Option<f64> {
+    let t = line.trim();
+    if let Ok(n) = t.parse::<f64>() {
+        return (0.0..=100.0).contains(&n).then_some(n);
+    }
+    t.split_whitespace().find(|w| w.ends_with('%')).and_then(|w| w.trim_end_matches('%').parse::<f64>().ok())
 }
 
 fn finish(c: &Ctx, p: &Plan, esp: &str, boot: Option<&str>, root: &str) -> Result<(), String> {
@@ -205,8 +227,14 @@ fn finish(c: &Ctx, p: &Plan, esp: &str, boot: Option<&str>, root: &str) -> Resul
     let (layout, variant) = p.keyboard.split_once(':').unwrap_or((&p.keyboard, ""));
     write_file(c, "/etc/default/keyboard", &format!("XKBMODEL=\"pc105\"\nXKBLAYOUT=\"{layout}\"\nXKBVARIANT=\"{variant}\"\nXKBOPTIONS=\"\"\nBACKSPACE=\"guess\"\n"))?;
     step("final", "fazendo", 0.4, tr("the account"));
-    for b in ["dev", "proc", "sys", "run"] {
-        c.run("mount", &["--rbind", &format!("/{b}"), &format!("{TARGET}/{b}")], None)?;
+    // the running system's /dev and /sys (grub-install reads the EFI variables there) with what is under them, but
+    // without sending mounts back; /proc and /run alone: /run's user folders hold the live session's own mounts (its
+    // document portal), which a recursive copy would keep busy at the end (the first ISO's installer stopped there)
+    for (how, b) in [("--rbind", "dev"), ("--rbind", "sys"), ("--bind", "proc"), ("--bind", "run")] {
+        c.run("mount", &[how, &format!("/{b}"), &format!("{TARGET}/{b}")], None)?;
+        if how == "--rbind" {
+            c.run("mount", &["--make-rslave", &format!("{TARGET}/{b}")], None)?;
+        }
     }
     c.chroot(&["useradd", "-m", "-s", "/bin/bash", "-G", "sudo", "-c", &p.name, &p.user], None)?;
     c.chroot(&["chpasswd"], Some(&format!("{}:{}\n", p.user, p.password)))?;
@@ -222,12 +250,22 @@ fn finish(c: &Ctx, p: &Plan, esp: &str, boot: Option<&str>, root: &str) -> Resul
         write_file(c, "/etc/greetd/config.toml", &greetd)?;
     }
     step("final", "fazendo", 0.7, tr("the boot menu"));
-    c.chroot(&["grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi", "--bootloader-id=KalangoOS", "--recheck"], None)?;
-    if p.encrypt {
-        c.chroot(&["update-initramfs", "-u"], None)?;
+    // the live boot (casper) came with the copy: the installed system does not need it, and its initramfs is made again
+    // without it (and with the encryption, when there is one)
+    if !c.real || std::path::Path::new(&format!("{TARGET}/var/lib/dpkg/info/casper.list")).exists() {
+        c.chroot(&["dpkg", "--purge", "casper"], None)?;
     }
+    // the boot menu says KalangoOS, and the installed system keeps the consoles it was installed through (a serial
+    // console stays one)
+    write_file(c, "/etc/default/grub.d/90-kalangoos.cfg", &grub_defaults(&std::fs::read_to_string("/proc/cmdline").unwrap_or_default()))?;
+    c.chroot(&["grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi", "--bootloader-id=KalangoOS", "--recheck"], None)?;
+    c.chroot(&["update-initramfs", "-u", "-k", "all"], None)?;
     c.chroot(&["update-grub"], None)?;
-    c.run("umount", &["-R", TARGET], None)?;
+    // (anything still holding a mount under /target lets go when it ends: the disk is already written and synced)
+    c.run("sync", &[], None)?;
+    if c.run("umount", &["-R", TARGET], None).is_err() {
+        c.run("umount", &["-R", "--lazy", TARGET], None)?;
+    }
     if p.encrypt {
         c.run("cryptsetup", &["close", "kalango-raiz"], None)?;
     }
@@ -295,7 +333,11 @@ pub fn run(plan_path: &str) -> i32 {
         step("modelo", "fazendo", 0.0, "");
         let home = live_home();
         let models = std::path::Path::new(&home).join(".local/share/kalango/modelos");
-        if models.is_dir() {
+        // (the system's own model, in the copy: the agent works from the first session)
+        let in_system = std::fs::read_dir(format!("{TARGET}/usr/share/kalango/modelos")).map(|d| d.flatten().any(|e| e.path().extension().is_some_and(|x| x == "gguf"))).unwrap_or(false);
+        if in_system {
+            step("modelo", "feito", 1.0, tr("in the system"));
+        } else if models.is_dir() {
             c.run("mkdir", &["-p", &format!("{TARGET}/home/{}/.local/share/kalango", p.user)], None)?;
             c.run("cp", &["-r", &models.display().to_string(), &format!("{TARGET}/home/{}/.local/share/kalango/", p.user)], None)?;
             step("modelo", "feito", 1.0, tr("copied"));
@@ -322,6 +364,25 @@ pub fn run(plan_path: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_installed_system_keeps_the_install_consoles() {
+        let g = grub_defaults("BOOT_IMAGE=/casper/vmlinuz boot=casper quiet splash console=ttyS0,115200 console=tty0 ---");
+        assert!(g.contains("GRUB_DISTRIBUTOR=\"KalangoOS\""));
+        assert!(g.contains("GRUB_CMDLINE_LINUX=\"$GRUB_CMDLINE_LINUX console=ttyS0,115200 console=tty0\""));
+        assert!(!g.contains("boot=casper"));
+        // (no console given: nothing added)
+        assert!(!grub_defaults("boot=casper quiet splash ---").contains("GRUB_CMDLINE_LINUX="));
+    }
+
+    #[test]
+    fn the_copy_progress_is_read_from_both_tools() {
+        assert_eq!(percentage("42"), Some(42.0));
+        assert_eq!(percentage("  1,234,567  42%   10.5MB/s    0:01:02"), Some(42.0));
+        assert_eq!(percentage("Parallel unsquashfs: Using 4 processors"), None);
+        assert_eq!(percentage("123456 inodes"), None);
+        assert_eq!(percentage("4096"), None);
+    }
 
     #[test]
     fn partitions_are_named_as_the_kernel_does() {
