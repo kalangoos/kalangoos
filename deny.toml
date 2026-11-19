@@ -1,0 +1,50 @@
+# cargo-deny: licences, sources and advisories of the Rust dependencies (CI › Dependências).
+# The licence list mirrors AGENTS.md › "Licenças aceitas sem perguntar"; adding one is a maintainer decision.
+
+[graph]
+targets = ["x86_64-unknown-linux-gnu"]
+all-features = true
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+# the list is a policy, not an inventory: an allowed licence nobody uses yet is fine
+unused-allowed-license = "allow"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unlicense",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+
+[[licenses.clarify]]
+# ring: Apache-2.0 AND ISC (its OpenSSL-derived parts), as its own Cargo.toml says
+crate = "ring"
+expression = "Apache-2.0 AND ISC"
+license-files = []
+
+[licenses.private]
+# our own crates have no published licence yet (docs/LICENCAS.md): they are not checked
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+# the workspace crates depend on each other by path (they are not published to crates.io)
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[advisories]
+version = 2
+yanked = "warn"

@@ -1,0 +1,39 @@
+/* KalangoOS · tela de entrada (design "Tela de entrada (login e troca de usuário)") */
+window.entrada { background: @k_base; color: @k_text; font-family: "Inter", "Cantarell", sans-serif; font-size: 13px; }
+.entrada-escurecer { background: linear-gradient(to right, alpha(#0B0C10, 0.90) 0%, alpha(#0B0C10, 0.40) 55%, alpha(#0B0C10, 0) 100%); }
+.entrada-hora { font-family: "URW Gothic", sans-serif; font-weight: 600; font-size: 72px; color: @k_text; }
+.entrada-data { font-size: 14px; color: @k_muted; }
+.entrada-pessoa { background: none; border: none; box-shadow: none; padding: 0; }
+.entrada-pessoa:hover .entrada-avatar, .entrada-pessoa:hover .entrada-avatar-convidado { border-color: alpha(@k_accent, 0.6); }
+.entrada-avatar { background: #22232B; border-radius: 40px; border: 1px solid alpha(@k_realce, 0.12); }
+.entrada-avatar-convidado { background: alpha(@k_realce, 0.06); border-radius: 40px; border: 1px solid transparent; }
+.entrada-avatar-escolhido { background: #22232B; border-radius: 56px; border: 2px solid @k_accent; }
+.entrada-inicial { font-size: 30px; font-weight: 600; color: @k_accent; }
+.entrada-nome { font-size: 14px; font-weight: 600; color: @k_muted; }
+.entrada-detalhe { font-size: 12px; color: #7A7B88; }
+.entrada-detalhe.aberta { color: @k_teal; }
+.entrada-nome-escolhido { font-size: 18px; font-weight: 600; color: @k_text; }
+.entrada-detalhe-escolhido { font-size: 12px; color: @k_teal; }
+.entrada-campo { background: #1A1B21; border: 1px solid @k_accent; border-radius: 6px; padding: 0 6px 0 12px; }
+.entrada-senha { background: none; border: none; box-shadow: none; outline: none; min-height: 38px; padding: 0; color: @k_text; caret-color: @k_accent; letter-spacing: 2px; }
+.entrada-senha > text > placeholder { color: @k_muted; letter-spacing: 0; }
+.entrada-convidado { font-size: 13px; color: @k_text; }
+.entrada-ir { background: none; border: none; box-shadow: none; padding: 4px; min-width: 0; min-height: 0; border-radius: 4px; }
+.entrada-ir:hover { background: alpha(@k_realce, 0.08); }
+.entrada-erro { font-size: 12px; color: @k_muted; min-height: 16px; }
+.entrada-erro.falhou { color: @k_coral; }
+.entrada-chip, menubutton.entrada-chip > button { background: none; border: 1px solid alpha(@k_realce, 0.12); border-radius: 4px; padding: 4px 10px; min-height: 0; box-shadow: none; }
+menubutton.entrada-chip { background: none; border: none; padding: 0; }
+menubutton.entrada-chip > button:hover { background: alpha(@k_realce, 0.06); }
+.entrada-chip-texto { font-size: 12px; color: @k_text; }
+.entrada-icone, menubutton.entrada-icone > button { background: alpha(@k_realce, 0.08); border: none; box-shadow: none; border-radius: 18px; min-width: 36px; min-height: 36px; padding: 0; }
+menubutton.entrada-icone { background: none; padding: 0; min-width: 0; min-height: 0; }
+.entrada-icone:hover, .entrada-icone:checked, menubutton.entrada-icone > button:hover { background: alpha(@k_realce, 0.14); }
+.entrada-menu > contents { background: #1C1D23; border: 1px solid #2E2F3A; border-radius: 8px; padding: 4px; }
+.entrada-menu-item { background: none; border: none; box-shadow: none; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: @k_text; }
+.entrada-menu-item:hover { background: alpha(@k_realce, 0.08); }
+/* large text (accessibility) */
+window.entrada.texto-grande { font-size: 17px; }
+.texto-grande .entrada-nome, .texto-grande .entrada-nome-escolhido { font-size: 22px; }
+.texto-grande .entrada-detalhe, .texto-grande .entrada-detalhe-escolhido, .texto-grande .entrada-chip-texto, .texto-grande .entrada-erro { font-size: 16px; }
+.texto-grande .entrada-data { font-size: 18px; }

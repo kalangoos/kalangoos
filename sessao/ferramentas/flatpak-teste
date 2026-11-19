@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""KalangoOS · flatpak de teste (a sessão de teste não mexe nos apps de quem testa): um app isolado, "Fotos"
+(org.exemplo.Fotos), com rede, a pasta de imagens e o som; as mudanças (override, permission-set/remove) ficam em
+KALANGO_FLATPAK_ESTADO (JSON) e cada chamada é anotada em KALANGO_FLATPAK_LOG. Responde como o flatpak para o que o
+shell usa: list, info --show-permissions, permission-list, permission-set, permission-remove, override --user — e,
+para a Central de Apps, remotes, install (com o progresso em porcentagens, como o flatpak), remote-ls --updates,
+update e run: o que se instala fica em "instaladas", as versões novas em "atualizacoes"."""
+import json
+import os
+import sys
+import time
+
+ESTADO = os.environ.get("KALANGO_FLATPAK_ESTADO", "/tmp/flatpak-teste.json")
+LOG = os.environ.get("KALANGO_FLATPAK_LOG", "/tmp/flatpak-teste.log")
+APP = "org.exemplo.Fotos"
+
+args = sys.argv[1:]
+with open(LOG, "a") as f:
+    f.write("flatpak " + " ".join(args) + "\n")
+try:
+    e = json.load(open(ESTADO))
+except Exception:
+    e = {"shared": ["network", "ipc"], "sockets": ["wayland", "pulseaudio"], "devices": ["dri"], "filesystems": ["xdg-pictures"], "store": {}}
+e.setdefault("instaladas", [])
+e.setdefault("atualizacoes", [APP])
+
+
+def salvar():
+    json.dump(e, open(ESTADO, "w"))
+
+
+# (--user/--system before the command, as the Central de Apps passes them)
+inst = [a for a in args if a in ("--user", "--system")]
+args = [a for a in args if a not in ("--user", "--system")]
+
+
+def progresso(verbo, app):
+    for p in range(0, 101, 20):
+        print(f"{verbo} {app}… {p}%", flush=True)
+        time.sleep(0.25)
+
+
+if args[:2] == ["list", "--app"]:
+    print(f"{APP}\tFotos")
+    for a in e["instaladas"]:
+        print(f"{a}\t{a.split('.')[-1]}")
+elif args[:1] == ["remotes"]:
+    print("flathub")
+elif args[:1] == ["install"] and len(args) >= 2:
+    app = args[-1]
+    if app.endswith(".Falha"):
+        print(f"error: {app} não existe no flathub", file=sys.stderr)
+        sys.exit(1)
+    progresso("Instalando", app)
+    if app not in e["instaladas"]:
+        e["instaladas"].append(app)
+    salvar()
+elif args[:2] == ["remote-ls", "--updates"]:
+    for a in e["atualizacoes"]:
+        print(a)
+elif args[:1] == ["update"] and "--appstream" in args:
+    pass
+elif args[:1] == ["update"] and len(args) >= 2:
+    app = args[-1]
+    progresso("Atualizando", app)
+    e["atualizacoes"] = [a for a in e["atualizacoes"] if a != app]
+    salvar()
+elif args[:1] == ["run"] and len(args) >= 2:
+    pass
+elif args[:2] == ["info", "--show-permissions"]:
+    print("[Context]")
+    for k in ("shared", "sockets", "devices", "filesystems"):
+        print(f"{k}=" + "".join(x + ";" for x in e[k]))
+elif args[:1] == ["permission-list"]:
+    print("Table\tObject\tApp\tPermissions\tData")
+    for chave, v in e["store"].items():
+        tabela, obj = chave.split("/")
+        print(f"{tabela}\t{obj}\t{APP}\t{v}\t0x00")
+elif args[:1] == ["permission-set"] and len(args) >= 5:
+    e["store"][f"{args[1]}/{args[2]}"] = args[4]
+    salvar()
+elif args[:1] == ["permission-remove"] and len(args) >= 4:
+    e["store"].pop(f"{args[1]}/{args[2]}", None)
+    salvar()
+elif args[:2] == ["override", "--user"]:
+    for a in args[2:-1]:
+        nome, _, valor = a.lstrip("-").partition("=")
+        tira = nome.startswith("no") or nome.startswith("un")
+        campo = {"share": "shared", "unshare": "shared", "socket": "sockets", "nosocket": "sockets", "device": "devices", "nodevice": "devices",
+                 "filesystem": "filesystems", "nofilesystem": "filesystems"}.get(nome)
+        if not campo:
+            continue
+        if tira:
+            e[campo] = [x for x in e[campo] if x != valor]
+        elif valor not in e[campo]:
+            e[campo].append(valor)
+    salvar()
+else:
+    print(f"flatpak-teste: {' '.join(args)} não é simulado", file=sys.stderr)
+    sys.exit(1)

@@ -1,0 +1,146 @@
+name: Release
+
+# Builds the KalangoOS binaries (the shell, kalangod, the agent engine, the approval, login and installer screens) as
+# one tarball with checksums and a build provenance attestation, and opens a DRAFT release for a `v*` tag: a
+# maintainer reads it and publishes it by hand. A weekly dry run on main finds release-only breakage early.
+#
+# The disk image / ISO job is ready but switched off until the image builder exists (ROADMAP.md, step 1).
+on:
+  push:
+    tags: ["v*"]
+  schedule:
+    - cron: "40 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      versao:
+        description: "Versão para um teste, por exemplo 0.1.0-dev.1 (vazio: a do Cargo.toml)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  binarios:
+    name: Binários (linux x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      versao: ${{ steps.versao.outputs.versao }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Versão
+        id: versao
+        env:
+          INPUT: ${{ inputs.versao }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = tag ]; then v="${REF_NAME#v}"
+          elif [ -n "$INPUT" ]; then v="$INPUT"
+          else v="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/kalango-shell/Cargo.toml | head -1)-dev.$(git rev-parse --short HEAD)"
+          fi
+          [[ "$v" =~ ^[0-9A-Za-z.+-]+$ ]] || { echo "::error::versão inválida: $v"; exit 1; }
+          echo "versao=$v" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/preparar
+        with:
+          cache-key: release
+      - name: Compilar
+        run: >-
+          cargo build --release --locked
+          -p kalango-shell -p kalangod -p kalango-agente -p kalango-aprovacao -p kalango-entrada -p kalango-instalador
+      - name: Empacotar
+        env:
+          VERSAO: ${{ steps.versao.outputs.versao }}
+        run: |
+          set -euo pipefail
+          name="kalangoos-${VERSAO}-linux-x86_64"
+          out="$RUNNER_TEMP/$name"
+          mkdir -p "$out/bin" "$out/lib" "$out/share"
+          for b in kalango-shell kalangod kalango-agente kalango-aprovacao kalango-entrada kalango-instalador; do
+            install -m 0755 "target/release/$b" "$out/bin/"
+          done
+          # gtk4-layer-shell has no Ubuntu 24.04 package: the library goes along (MIT)
+          cp -a "$KALANGO_DEPS_PREFIX"/lib/libgtk4-layer-shell.so* "$out/lib/"
+          cp -a sessao/dist "$out/share/sessao"
+          cp -a crates/kalangod/dist "$out/share/kalangod"
+          cp -a crates/kalango-aprovacao/dist "$out/share/kalango-aprovacao"
+          cp README.md ROADMAP.md NOTICE ATTRIBUTION.md "$out/"
+          for f in LICENSE LICENSE-*; do [ -f "$f" ] && cp "$f" "$out/"; done
+          mkdir -p dist
+          tar -C "$RUNNER_TEMP" -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum ./*.tar.gz > SHA256SUMS.txt && cat SHA256SUMS.txt)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-binarios
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  imagem:
+    name: Imagem de disco e ISO
+    # Switched off until the image builder exists (ROADMAP.md step 1: a qcow2 built by script, then the ISO): it runs
+    # only when the repository variable KALANGO_IMAGEM is "true". When the builder lands: build on a larger runner,
+    # upload the image, and add it to `publicar` below.
+    if: vars.KALANGO_IMAGEM == 'true'
+    needs: binarios
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Montar a imagem
+        run: echo "o construtor da imagem ainda não existe (ROADMAP.md, passo 1)" && exit 1
+
+  publicar:
+    name: Rascunho da versão
+    needs: binarios
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-binarios
+          path: dist
+      - name: Atestado de origem do build
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.tar.gz
+      - name: Rascunho no GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSAO: ${{ needs.binarios.outputs.versao }}
+        run: |
+          set -euo pipefail
+          prerelease=""
+          case "$VERSAO" in 0.*|*-*) prerelease="--prerelease" ;; esac
+          gh release create "$TAG" dist/* --draft $prerelease --verify-tag \
+            --title "KalangoOS $VERSAO" \
+            --notes "Binários do KalangoOS $VERSAO para Linux x86_64 (Ubuntu 24.04). Ainda não é uma imagem instalável: veja o README."

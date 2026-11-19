@@ -1,0 +1,44 @@
+# Caminhos do repositório de desenvolvimento que NÃO vão para o repositório público (exportar.sh), um por linha,
+# com o motivo. Padrões do bash (* atravessa pastas).
+
+# O arquivo-fonte do Design System: guarda o histórico de versões do arquivo e dados de rascunho; o público recebe
+# os tokens (design/tokens/) e as imagens exportadas.
+design/*.figcraft
+
+# Diário interno do projeto (publicado à parte); algumas capturas mostram dados de rede reais.
+docs/pagina/*
+
+# Camada legada "Lunar" (tema e shell para GNOME) e arte de origem ainda não confirmada (ATTRIBUTION.md › Legado).
+shell/*
+theme/*
+icons/*
+install.sh
+uninstall.sh
+config/apps.list
+scripts/build-icons.py
+scripts/desktop-overrides.py
+scripts/keybindings.py
+assets/thumbs/*
+assets/icons/agents.png
+assets/icons/avatar_*.png
+assets/icons/call_face.png
+assets/icons/cc*.png
+assets/icons/home*.png
+assets/icons/house.png
+assets/icons/moonrise.png
+assets/icons/ship.png
+assets/icons/star_button.png
+wallpapers/lunar-*.png
+
+# Registro local de um build do kernel.
+kernel/build-console.log
+
+# Atalhos das habilidades do OpenSpec: apontam para .agents/, que não é versionado.
+.claude/*
+
+# Decisão de publicação (2026-11-19): a árvore do kernel fica fora; os links do OpenSpec também.
+kernel/*
+.agents/*
+site/node_modules/*
+site/dist/*
+site/dist-ssr/*

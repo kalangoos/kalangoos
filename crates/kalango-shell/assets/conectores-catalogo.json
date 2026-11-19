@@ -1,0 +1,16 @@
+[
+ {"id": "relogio", "titulo": "Relógio mundial", "descricao": "Hora atual em outras cidades. Exemplo do KalangoOS: só leitura, sem rede.", "glifo": "relogio",
+  "comando": "/usr/bin/python3", "argumentos": ["-I", "@KALANGO_CONECTORES@/relogio-mcp.py"], "pasta": "@KALANGO_CONECTORES@", "rede": false},
+ {"id": "arquivos-mcp", "titulo": "Arquivos (servidor de referência)", "descricao": "Lê e escreve numa pasta escolhida. Servidor de referência do MCP (Node.js).", "glifo": "pasta",
+  "comando": "npx", "argumentos": ["-y", "@modelcontextprotocol/server-filesystem", "@PASTA@"], "rede": true, "pasta_pedida": true},
+ {"id": "git", "titulo": "Git", "descricao": "Histórico, diferenças e commits de um repositório. Servidor de referência do MCP (uv).", "glifo": "terminal",
+  "comando": "uvx", "argumentos": ["mcp-server-git", "--repository", "@PASTA@"], "rede": true, "pasta_pedida": true},
+ {"id": "postgres", "titulo": "Banco de dados (Postgres)", "descricao": "Consulta tabelas de um banco Postgres. A senha fica no cofre.", "glifo": "cpu",
+  "comando": "npx", "argumentos": ["-y", "@modelcontextprotocol/server-postgres"], "ambiente": ["DATABASE_URL"], "rede": true},
+ {"id": "sqlite", "titulo": "SQLite", "descricao": "Consulta e altera um arquivo SQLite. Servidor de referência do MCP (uv).", "glifo": "doc",
+  "comando": "uvx", "argumentos": ["mcp-server-sqlite", "--db-path", "@ARQUIVO@"], "rede": true},
+ {"id": "fetch", "titulo": "Buscar páginas (fetch)", "descricao": "Lê páginas da web e devolve o texto. Precisa de rede.", "glifo": "globo",
+  "comando": "uvx", "argumentos": ["mcp-server-fetch"], "rede": true},
+ {"id": "github", "titulo": "GitHub", "descricao": "Repositórios, issues e pull requests. Remoto, entra com a sua conta (OAuth).", "glifo": "globo",
+  "url": "https://api.githubcopilot.com/mcp/"}
+]

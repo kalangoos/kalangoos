@@ -1,0 +1,32 @@
+version: 2
+updates:
+  # Rust crates: one grouped pull request a week (CI and cargo-deny check it)
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Sao_Paulo"
+    groups:
+      crates:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps"
+    open-pull-requests-limit: 5
+
+  # GitHub Actions: keeps the commit pins (and their version comments) current, in the workflows and the local action
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/preparar"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Sao_Paulo"
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci(deps)"

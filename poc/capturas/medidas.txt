@@ -1,0 +1,7 @@
+início até responder: 12 ms
+CPU fechada e parada, 5 s: 110 ms
+CPU aberta e parada, 5 s: 300 ms
+CPU em 10 animações (5 s): 750 ms
+memória: RSS 521,9 MB · PSS (parte só dela) 259,6 MB
+threads: 6
+binário: 622 KB

@@ -1,0 +1,15 @@
+#!/bin/bash
+# KalangoOS · pactl de teste (a sessão de teste não mexe no som de quem testa): anota cada chamada em
+# $KALANGO_PACTL_LOG e responde como o pipewire-pulse para o que o shell usa (a saída padrão, carregar e descarregar
+# um módulo, trocar a saída padrão).
+LOG=${KALANGO_PACTL_LOG:-/tmp/pactl-teste.log}
+ESTADO=${KALANGO_PACTL_ESTADO:-/tmp/pactl-teste.estado}
+echo "pactl $*" >> "$LOG"
+padrao() { cat "$ESTADO" 2>/dev/null || echo "alsa_output.alto-falantes"; }
+case "$1" in
+  get-default-sink) padrao ;;
+  set-default-sink) echo "$2" > "$ESTADO" ;;
+  load-module) echo 536870913 ;;
+  unload-module) ;;
+  *) echo "pactl-teste: $1 não é simulado" >&2; exit 1 ;;
+esac

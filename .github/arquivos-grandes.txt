@@ -1,0 +1,2 @@
+# Arquivos versionados maiores que o limite de "Regras da casa" (5 MB), um caminho por linha. Cada um precisa de um
+# motivo no pull request que o adiciona.

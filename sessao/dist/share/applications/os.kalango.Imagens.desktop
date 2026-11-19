@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Imagens
+Name[en]=Images
+Comment=Ver, girar, recortar e ajustar imagens, com o agente ao lado
+Comment[en]=View, rotate, crop and adjust pictures, with the agent beside them
+Exec=kalango-shell imagens %f
+Icon=image-viewer
+Categories=Graphics;Viewer;
+MimeType=image/png;image/jpeg;image/webp;image/gif;image/bmp;image/tiff;image/svg+xml;image/x-icon;image/avif;image/heic;image/jxl;
+StartupWMClass=os.kalango.Imagens
+Keywords=imagem;imagens;foto;fotos;picture;photo;image;viewer;

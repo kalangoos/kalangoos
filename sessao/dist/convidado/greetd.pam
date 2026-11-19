@@ -1,0 +1,8 @@
+# PAM for greetd (/etc/pam.d/greetd): the person's password as on any login; the guest ("convidado") enters without
+# one, only here (su, ssh and the lock screen keep asking), and its home is wiped when its session closes.
+auth      sufficient  pam_succeed_if.so user = convidado quiet
+@include common-auth
+@include common-account
+@include common-session
+session   optional    pam_exec.so quiet /usr/libexec/kalango/limpar-convidado
+@include common-password

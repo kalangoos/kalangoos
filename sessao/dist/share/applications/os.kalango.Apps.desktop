@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Central de Apps
+Name[en]=App Center
+Comment=Apps, agentes e modelos locais para instalar, com as permissões à vista
+Comment[en]=Apps, agents and local models to install, with their permissions in sight
+Exec=kalango-shell loja
+Icon=system-software-install
+Categories=System;PackageManager;
+StartupWMClass=os.kalango.Apps
+Keywords=loja;store;apps;aplicativos;instalar;install;flatpak;flathub;agentes;agents;modelos;models;gguf;atualizações;updates;

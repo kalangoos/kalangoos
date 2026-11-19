@@ -1,0 +1,98 @@
+name: CI
+
+# The quality gate of every pull request and of every push to main: clippy and the tests that run on a GitHub
+# runner. The "CI" job at the end is the one check branch protection (and AutoCraft's merge queue) waits for.
+#
+# Not here, on purpose (see CONTRIBUTING.md):
+# - kalango-agente's integration tests (crates/kalango-agente/tests/): they run the real local model (LFM3 through
+#   llama.cpp, ~1 GB) and the project never tests the agent with a fake model. They run on a developer machine, or
+#   later on a self-hosted runner with the model.
+# - sessao/testar.sh: needs a nested compositor with a GPU-capable display; it is the local acceptance suite.
+# - the eBPF LSM guard: needs a kernel booted with `lsm=…,bpf` (crates/kalangod/vm/run.sh, as root).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels its older run; every push to main runs to the end.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  # the tests check Portuguese strings and decimal commas
+  LANG: C.UTF-8
+
+jobs:
+  lint:
+    name: Lint (clippy, formatação)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/preparar
+        with:
+          cache-key: lint
+      - name: Clippy
+        # Errors (the deny-by-default lints) fail the job; warnings show as annotations until the backlog is cleared.
+        run: cargo clippy --workspace --all-targets --locked
+      - name: Formatação (informativa)
+        # The code predates rustfmt.toml: until the one-time reformat, this only warns, so a pull request never has
+        # to reformat whole files (CONTRIBUTING.md › Formatação). AutoCraft's CI fix leaves warnings alone.
+        run: |
+          if cargo fmt --all --check > "$RUNNER_TEMP/fmt.diff" 2>&1; then
+            echo "cargo fmt: tudo formatado"
+          else
+            files=$(grep -c '^Diff in' "$RUNNER_TEMP/fmt.diff" || true)
+            echo "::warning title=cargo fmt::$files trechos fora do rustfmt.toml (informativo até a reformatação única)"
+          fi
+
+  testes:
+    name: Testes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/preparar
+        with:
+          cache-key: testes
+      - name: Testes do workspace (sem o motor de agentes)
+        # kalangod's tests start the daemon in dry-run mode (no root) and its Landlock/seccomp sandboxes; the
+        # limits test skips itself where the user systemd is missing.
+        run: cargo test --workspace --locked --no-fail-fast --exclude kalango-agente
+      - name: Testes de unidade do motor de agentes
+        run: cargo test -p kalango-agente --bins --locked --no-fail-fast
+
+  ci:
+    name: CI
+    if: always()
+    needs: [lint, testes]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Todos os jobs passaram
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "resultados: $RESULTS"
+          for r in $RESULTS; do [ "$r" = success ] || exit 1; done

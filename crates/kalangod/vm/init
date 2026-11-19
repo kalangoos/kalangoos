@@ -1,0 +1,29 @@
+#!/bin/busybox sh
+# init da VM de teste: monta a raiz do host (só leitura) com uma camada em memória por cima e roda o teste.
+/bin/busybox --install -s /bin
+export PATH=/bin
+mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev
+for m in netfs 9pnet 9pnet_virtio 9p overlay; do [ -f /mods/$m.ko ] && insmod /mods/$m.ko; done
+mount -t 9p -o trans=virtio,version=9p2000.L,ro,msize=1048576,cache=loose hostroot /host || { echo "falha 9p"; poweroff -f; }
+mount -t tmpfs -o size=3G tmpfs /mnt
+mkdir -p /mnt/up /mnt/work /mnt/root
+mount -t overlay overlay -o lowerdir=/host,upperdir=/mnt/up,workdir=/mnt/work /mnt/root || { echo "falha overlay"; poweroff -f; }
+R=/mnt/root
+# módulos do kernel em teste (podem não estar na raiz do host)
+mkdir -p $R/lib/modules/$(uname -r) && mount -t 9p -o trans=virtio,version=9p2000.L,ro modulos $R/lib/modules/$(uname -r)
+mount -t proc proc $R/proc; mount -t sysfs sys $R/sys; mount -t devtmpfs dev $R/dev
+mkdir -p $R/dev/pts && mount -t devpts devpts $R/dev/pts
+mount -t tmpfs tmpfs $R/run; mount -t tmpfs tmpfs $R/tmp
+mount -t cgroup2 cgroup2 $R/sys/fs/cgroup
+mount -t securityfs securityfs $R/sys/kernel/security
+mount -t bpf bpf $R/sys/fs/bpf
+ip link set lo up; ip link set eth0 up; ip addr add 10.0.2.15/24 dev eth0; ip route add default via 10.0.2.2
+rm -f $R/etc/resolv.conf; echo "nameserver 10.0.2.3" > $R/etc/resolv.conf
+# o kernel carrega módulos sob demanda (nf_tables do ufw, por exemplo) pelo modprobe da raiz do init: aponta para o do chroot
+printf '#!/bin/sh\nexec chroot /mnt/root /sbin/modprobe "$@"\n' > /bin/modprobe-chroot; chmod +x /bin/modprobe-chroot
+echo /bin/modprobe-chroot > /proc/sys/kernel/modprobe
+T=$(sed -n 's/.*kalango_teste=\([^ ]*\).*/\1/p' /proc/cmdline)
+echo "KALANGO-VM: kernel $(uname -r), lsm=$(cat /sys/kernel/security/lsm 2>/dev/null || cat $R/sys/kernel/security/lsm)"
+chroot $R /bin/bash "$T"
+echo "KALANGO-VM: teste terminou com código $?"
+poweroff -f

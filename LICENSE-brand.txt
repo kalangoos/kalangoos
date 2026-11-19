@@ -1,0 +1,23 @@
+Marca KalangoOS · KalangoOS brand
+
+O nome "KalangoOS", o mascote (o calango), os logos, o ícone e as versões deles em assets/brand/,
+crates/*/assets/logo*.png, crates/kalango-shell/assets/simbolo.png e .github/assets/ são a marca do projeto
+KalangoOS. Eles NÃO são cobertos pela GNU General Public License deste repositório (LICENSE) nem por outra
+licença aberta.
+
+É permitido, sem pedir: usar a marca sem modificá-la para se referir ao KalangoOS (notícias, artigos, apresentações,
+links para o projeto) e distribuir cópias não modificadas deste repositório e de versões oficiais.
+
+É preciso pedir autorização para: usar a marca num produto, numa distribuição modificada ou em material que dê a
+entender que é oficial ou endossado pelo projeto; modificar o mascote ou os logos.
+
+Quem distribui uma versão modificada do KalangoOS deve trocar o nome e a marca. As regras de uso visual (área de
+respiro, tamanho mínimo, cores, nada de sombra, brilho ou degradê) estão na página "Marca" do Design System.
+
+---
+
+The name "KalangoOS", the mascot, the logos, the icon and their variants listed above are the KalangoOS project's
+brand. They are NOT covered by this repository's GNU General Public License (LICENSE) or by any open licence.
+Unmodified use to refer to KalangoOS, and unmodified copies of this repository and of official releases, are
+allowed. Any other use (in a product, in a modified distribution, or implying endorsement) needs permission.
+Modified distributions must use another name and brand.

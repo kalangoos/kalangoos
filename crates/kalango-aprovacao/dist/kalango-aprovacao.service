@@ -1,0 +1,15 @@
+# Unidade do usuário (/usr/lib/systemd/user/): a tela de aprovação sobe com a sessão gráfica do KalangoOS.
+[Unit]
+Description=KalangoOS · tela de aprovação dos agentes
+PartOf=graphical-session.target
+After=graphical-session.target
+
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/libexec/kalango/kalango-aprovacao
+Restart=always
+RestartSec=200ms
+
+[Install]
+WantedBy=graphical-session.target

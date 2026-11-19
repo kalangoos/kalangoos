@@ -1,0 +1,4 @@
+# actionlint configuration (Regras da casa › Workflows). No self-hosted runner labels yet: when a runner with the
+# local model joins (to run kalango-agente's integration tests), list its labels here.
+self-hosted-runner:
+  labels: []

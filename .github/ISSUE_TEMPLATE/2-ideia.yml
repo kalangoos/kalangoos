@@ -1,0 +1,38 @@
+name: Ideia ou funcionalidade
+description: Algo que o KalangoOS ainda não faz, ou poderia fazer melhor.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Antes de abrir, procure se a ideia já existe nas issues e no ROADMAP.md. Telas e funções novas passam primeiro
+        pelo Design System; uma ideia boa demais para o sistema base pode virar um complemento.
+  - type: textarea
+    id: problema
+    attributes:
+      label: Que problema isto resolve
+      description: Conte a situação em que você sentiu falta.
+    validations:
+      required: true
+  - type: textarea
+    id: proposta
+    attributes:
+      label: O que você propõe
+    validations:
+      required: true
+  - type: textarea
+    id: outros
+    attributes:
+      label: Como outros sistemas resolvem (se souber)
+      description: Ajuda a ver o que falta, mas o KalangoOS não copia telas de outros sistemas.
+  - type: dropdown
+    id: parte
+    attributes:
+      label: Parte do sistema
+      options:
+        - Shell
+        - Apps do sistema
+        - Agentes
+        - kalangod
+        - Instalação e primeiro uso
+        - Janelas e compositor
+        - Outra

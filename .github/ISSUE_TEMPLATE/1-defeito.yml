@@ -1,0 +1,68 @@
+name: Algo não funciona
+description: Um defeito no shell, nos apps, nos agentes, no kalangod, no instalador ou na sessão.
+labels: ["bugfix"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado por relatar. **Falha de segurança?** Não use este formulário: siga o SECURITY.md.
+        Não cole dados pessoais (nomes, redes Wi-Fi, e-mails, caminhos com o seu nome) nem segredos nos campos abaixo.
+  - type: dropdown
+    id: parte
+    attributes:
+      label: Parte do sistema
+      options:
+        - Shell (barra, dock, barras laterais, área de trabalho, bloqueio)
+        - Apps do sistema (Arquivos, Configurações, Terminal, Editor…)
+        - Agentes (Central de agentes, chat, kalango-agente)
+        - kalangod (permissões, aprovação, Linha do tempo)
+        - Tela de entrada, instalador ou primeiro uso
+        - Janelas e compositor (niri)
+        - Sessão de desenvolvimento ou testes
+        - Documentação
+        - Outra
+    validations:
+      required: true
+  - type: textarea
+    id: aconteceu
+    attributes:
+      label: O que aconteceu
+      description: E o que você esperava que acontecesse.
+    validations:
+      required: true
+  - type: textarea
+    id: passos
+    attributes:
+      label: Como reproduzir
+      placeholder: |
+        1. Abrir…
+        2. Clicar em…
+        3. Ver…
+    validations:
+      required: true
+  - type: input
+    id: versao
+    attributes:
+      label: Versão ou commit
+      placeholder: "por exemplo, 3f2c1ab ou 0.1.0-dev.1"
+  - type: dropdown
+    id: onde
+    attributes:
+      label: Onde roda
+      options:
+        - Sessão de desenvolvimento (sessao/rodar.sh)
+        - Máquina virtual
+        - Instalado num computador
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Placa de vídeo e tela
+      placeholder: "por exemplo, NVIDIA (driver 580), 2560×1440, escala 1,25"
+  - type: textarea
+    id: registro
+    attributes:
+      label: Registro (log) ou captura
+      description: O trecho que importa. Capturas de tela podem ser arrastadas para cá.
+      render: text

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=KalangoOS
+Comment=Sessão KalangoOS: niri, shell, agentes
+Exec=/usr/libexec/kalango/kalango-sessao
+Type=Application
+DesktopNames=KalangoOS;niri

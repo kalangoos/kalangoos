@@ -1,0 +1,32 @@
+# KalangoOS · configuração do kalangod (/etc/kalango/kalangod.toml)
+socket = "/run/kalango/mcp.sock"
+state_dir = "/var/lib/kalango"
+# pastas que nenhum agente acessa, em nenhum nível (~ = casa de quem chama)
+protected_paths = ["~/.ssh", "~/.gnupg", "~/.local/share/keyrings", "~/.local/share/kalango/cofre.json", "/etc/shadow", "/etc/gshadow"]
+# aprovação presencial: precisa vir de um terminal (ou, quando existir, da tela de aprovação do compositor)
+approval_requires_tty = true
+approval_timeout_s = 120
+# o nível total vale por 15 minutos depois de aprovado
+total_grant_s = 900
+dry_run = false
+# quantos pontos de restauração manter
+pontos_max = 20
+
+# limites de cada tarefa que um agente executa (cgroup próprio dentro de kalango-agentes.slice)
+[limites]
+memoria_mb = 2048
+cpu_pct = 200      # 200 = até 2 núcleos
+processos = 256
+tempo_s = 600      # a tarefa é encerrada depois disso
+
+# a primeira regra que combinar vale
+[[callers]]
+name = "agentes-nativos"
+cgroup_prefix = "/kalango.slice/kalango-agentes.slice"
+max_level = "total"
+allowed_paths = ["~"]
+
+[[callers]]
+name = "usuario-local"
+max_level = "total"
+allowed_paths = ["~"]

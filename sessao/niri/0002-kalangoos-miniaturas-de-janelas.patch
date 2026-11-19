@@ -1,0 +1,150 @@
+diff --git a/niri-config/src/binds.rs b/niri-config/src/binds.rs
+index 02b43fd..12c30b2 100644
+--- a/niri-config/src/binds.rs
++++ b/niri-config/src/binds.rs
+@@ -293,6 +293,12 @@ pub enum Action {
+     #[knuffel(skip)]
+     SetSnapTargets(String),
+     #[knuffel(skip)]
++    ThumbnailWindow {
++        id: u64,
++        path: String,
++        max_size: u32,
++    },
++    #[knuffel(skip)]
+     SnapWindowById {
+         id: u64,
+         region: String,
+@@ -594,6 +600,7 @@ impl From<niri_ipc::Action> for Action {
+             niri_ipc::Action::SetWindowWidth { id: None, change } => Self::SetWindowWidth(change),
+             niri_ipc::Action::SnapWindow { id: None, region } => Self::SnapWindow(region),
+             niri_ipc::Action::SetSnapTargets { targets } => Self::SetSnapTargets(targets),
++            niri_ipc::Action::ThumbnailWindow { id, path, max_size } => Self::ThumbnailWindow { id, path, max_size },
+             niri_ipc::Action::SnapWindow {
+                 id: Some(id),
+                 region,
+diff --git a/niri-ipc/src/lib.rs b/niri-ipc/src/lib.rs
+index 8ab2a47..0943584 100644
+--- a/niri-ipc/src/lib.rs
++++ b/niri-ipc/src/lib.rs
+@@ -691,6 +691,19 @@ pub enum Action {
+         /// An empty list removes them; they are removed when the drag ends.
+         targets: String,
+     },
++    /// Render a small picture of a window to a PNG file (KalangoOS window switcher). Unlike a
++    /// screenshot it does not touch the clipboard and shows no notification.
++    ThumbnailWindow {
++        /// Id of the window.
++        #[cfg_attr(feature = "clap", arg(long))]
++        id: u64,
++        /// Absolute path of the PNG to write.
++        #[cfg_attr(feature = "clap", arg(long))]
++        path: String,
++        /// Largest side of the picture, in pixels.
++        #[cfg_attr(feature = "clap", arg(long, default_value_t = 320))]
++        max_size: u32,
++    },
+     /// Snap a window to a region of the screen (KalangoOS).
+     #[cfg_attr(
+         feature = "clap",
+diff --git a/src/input/mod.rs b/src/input/mod.rs
+index a0f8fa2..d50b518 100644
+--- a/src/input/mod.rs
++++ b/src/input/mod.rs
+@@ -2000,6 +2000,20 @@ impl State {
+                     self.niri.layout.set_window_width(None, change);
+                 }
+             }
++            Action::ThumbnailWindow { id, path, max_size } => {
++                let mut windows = self.niri.layout.windows();
++                let window = windows.find(|(_, m)| m.id().get() == id);
++                if let Some((monitor, mapped)) = window {
++                    let output = monitor.map(|m| m.output().clone()).or_else(|| self.niri.layout.active_output().cloned());
++                    if let Some(output) = output {
++                        self.backend.with_primary_renderer(|renderer| {
++                            if let Err(err) = self.niri.thumbnail_window(renderer, &output, mapped, path, max_size) {
++                                warn!("error making a window thumbnail: {err:?}");
++                            }
++                        });
++                    }
++                }
++            }
+             Action::SetSnapTargets(targets) => {
+                 self.niri.layout.set_snap_targets(&targets);
+                 self.niri.queue_redraw_all();
+diff --git a/src/ipc/server.rs b/src/ipc/server.rs
+index 066e08e..785d1fd 100644
+--- a/src/ipc/server.rs
++++ b/src/ipc/server.rs
+@@ -461,6 +461,11 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
+ }
+ 
+ fn validate_action(action: &Action) -> Result<(), String> {
++    if let Action::ThumbnailWindow { path, .. } = action {
++        if !Path::new(path).is_absolute() {
++            return Err(format!("path must be absolute: {path}"));
++        }
++    }
+     if let Action::Screenshot { path, .. }
+     | Action::ScreenshotScreen { path, .. }
+     | Action::ScreenshotWindow { path, .. }
+diff --git a/src/niri.rs b/src/niri.rs
+index ec40e01..713a1ce 100644
+--- a/src/niri.rs
++++ b/src/niri.rs
+@@ -5640,6 +5640,55 @@ impl Niri {
+             .context("error saving screenshot")
+     }
+ 
++    /// A small picture of a window, written to `path` as PNG (KalangoOS window switcher): rendered at a scale
++    /// that makes its largest side `max_size` pixels, without the clipboard or a notification.
++    pub fn thumbnail_window(
++        &self,
++        renderer: &mut GlesRenderer,
++        output: &Output,
++        mapped: &Mapped,
++        path: String,
++        max_size: u32,
++    ) -> anyhow::Result<()> {
++        let size = mapped.window.geometry().size;
++        let largest = size.w.max(size.h).max(1) as f64;
++        let factor = (f64::from(max_size.max(16)) / largest).min(output.current_scale().fractional_scale());
++        let scale = Scale::from(factor);
++        let mut elements: Vec<WindowScreenshotRenderElement<GlesRenderer>> = Vec::new();
++        let ctx = RenderCtx {
++            renderer,
++            target: RenderTarget::ScreenCapture,
++            xray: None,
++        };
++        mapped.render(
++            ctx,
++            mapped.window.geometry().loc.to_f64(),
++            scale,
++            1.,
++            XrayPos::default(),
++            &mut |elem| elements.push(elem.into()),
++        );
++        let geo = encompassing_geo(scale, elements.iter());
++        let elements = elements.iter().rev().map(|elem| {
++            RelocateRenderElement::from_element(elem, geo.loc.upscale(-1), Relocate::Relative)
++        });
++        let pixels = render_to_vec(renderer, geo.size, scale, Transform::Normal, Fourcc::Abgr8888, elements)?;
++        let (w, h) = (geo.size.w as u32, geo.size.h as u32);
++        // encoding is slow: in a thread; written next to the target and renamed, so a reader never sees half a file
++        thread::spawn(move || {
++            let tmp = format!("{path}.tmp");
++            let result = std::fs::File::create(&tmp)
++                .map_err(anyhow::Error::from)
++                .and_then(|f| write_png_rgba8(std::io::BufWriter::new(f), w, h, &pixels).map_err(anyhow::Error::from))
++                .and_then(|_| std::fs::rename(&tmp, &path).map_err(anyhow::Error::from));
++            if let Err(err) = result {
++                warn!("error writing a window thumbnail: {err:?}");
++                let _ = std::fs::remove_file(&tmp);
++            }
++        });
++        Ok(())
++    }
++
+     pub fn save_screenshot(
+         &self,
+         size: Size<i32, Physical>,

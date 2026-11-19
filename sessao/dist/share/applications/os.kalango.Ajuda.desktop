@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Ajuda
+Name[en]=Help
+Comment=Pergunte qualquer coisa sobre o computador: responde sem internet e mostra onde clicar
+Comment[en]=Ask anything about the computer: answered offline, and it shows where to click
+Exec=kalango-shell ajuda
+Icon=help-browser
+Categories=System;Documentation;
+StartupWMClass=os.kalango.Ajuda
+Keywords=ajuda;help;manual;como;suporte;dúvida;

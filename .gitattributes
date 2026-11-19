@@ -1,0 +1,20 @@
+# Scripts, patches and session files run on Linux: keep LF in every checkout and archive.
+*.sh      text eol=lf
+*.patch   text eol=lf
+*.kdl     text eol=lf
+*.service text eol=lf
+*.desktop text eol=lf
+sessao/dist/**  text eol=lf
+
+# Binary assets: never diffed or merged as text.
+*.png      binary
+*.webp     binary
+*.jpg      binary
+*.pdf      binary
+*.figcraft binary
+
+# GitHub's language stats and diffs: generated and vendored data.
+Cargo.lock                              linguist-generated
+docs/especificacao/index.html           linguist-generated
+crates/kalango-shell/assets/emoji-pt.tsv linguist-vendored
+design/tokens/**                        linguist-generated

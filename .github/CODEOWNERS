@@ -1,0 +1,11 @@
+# Who reviews what. The team must exist in the organization (Settings › Teams) before this file takes effect.
+# Required code-owner review stays off until there are two or more maintainers (one person cannot approve their own
+# pull request, and AutoCraft's merge queue would wait forever).
+*                         @kalangoos/mantenedores
+
+# Security-sensitive parts: the privileged daemon, the agent engine's defences, the sandboxes, the compositor patches
+# and the CI itself.
+/crates/kalangod/         @kalangoos/mantenedores
+/crates/kalango-agente/   @kalangoos/mantenedores
+/sessao/niri/             @kalangoos/mantenedores
+/.github/                 @kalangoos/mantenedores

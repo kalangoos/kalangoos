@@ -1,0 +1,7 @@
+#!/bin/sh
+# The test's CUPS (lp): writes down what would be printed (the options, and a copy of the file) — nothing is printed.
+log="${KALANGO_LP_LOG:-/dev/null}"
+echo "lp $*" >> "$log"
+for a in "$@"; do f="$a"; done
+[ -f "$f" ] && cp "$f" "${log%.log}.pdf"
+echo "request id is HP_LaserJet_M110-42 (1 file(s))"

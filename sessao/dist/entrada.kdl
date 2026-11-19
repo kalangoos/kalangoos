@@ -1,0 +1,25 @@
+// niri for the KalangoOS login screen (/usr/share/kalango/entrada.kdl): only kalango-entrada, then quit.
+// The keyboard follows the system's layout (systemd-localed) when xkb is left empty.
+input {
+    keyboard {
+        xkb {
+        }
+    }
+    touchpad {
+        tap
+    }
+}
+hotkey-overlay { skip-at-startup; }
+prefer-no-csd
+gestures {
+    hot-corners {
+        off
+    }
+}
+cursor {
+    xcursor-theme "Adwaita"
+    xcursor-size 24
+}
+spawn-sh-at-startup "/usr/bin/kalango-entrada; niri msg action quit --skip-confirmation"
+binds {
+}

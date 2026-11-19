@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Monitor do sistema
+Name[en]=System Monitor
+Comment=O que usa o processador, a memória, a GPU, os discos e a rede — e o agente explica o que pesa
+Comment[en]=What uses the processor, memory, GPU, disks and network — and the agent explains what weighs
+Exec=kalango-shell monitor
+Icon=utilities-system-monitor
+Categories=System;Monitor;
+StartupWMClass=os.kalango.Monitor
+Keywords=monitor;processos;processes;tarefas;task manager;cpu;memória;memory;gpu;rede;network;disco;

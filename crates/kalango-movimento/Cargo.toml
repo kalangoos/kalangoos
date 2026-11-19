@@ -1,0 +1,10 @@
+[package]
+name = "kalango-movimento"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+description = "KalangoOS · movimento: as molas do Design System (rápida, suave, elástica, lenta) e um widget que anima só transformação e opacidade"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.9", features = ["v4_14"] }

@@ -1,0 +1,5 @@
+# The style agreed for KalangoOS: long lines and compact one-line blocks, as the code is written by hand today.
+# The code has not been through a one-time reformat yet: until it is, CI only warns about `cargo fmt --check`, and
+# pull requests must not reformat whole files (CONTRIBUTING.md › Formatação).
+max_width = 150
+use_small_heuristics = "Max"

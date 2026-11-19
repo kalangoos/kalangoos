@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Editor de Texto
+Name[en]=Text Editor
+Comment=Textos e notas em markdown, com a prévia e o agente ao lado
+Comment[en]=Texts and notes in markdown, with the preview and the agent beside them
+Exec=kalango-shell editor %f
+Icon=accessories-text-editor
+Categories=Utility;TextEditor;
+MimeType=text/plain;text/markdown;text/x-markdown;
+StartupWMClass=os.kalango.Editor
+Keywords=editor;texto;text;notas;notes;markdown;

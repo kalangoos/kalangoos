@@ -1,0 +1,20 @@
+# Um agente do catálogo do KalangoOS (Central de Apps): explica a tela e monta planos de estudo.
+nome = "Tutor"
+id = "comunidade.tutor"
+editor = "Comunidade"
+resumo = "Explica o que está na tela e monta planos de estudo em notas."
+categoria = "produtividade"
+descricao = "Quando você chama, olha a tela, explica o que está nela em palavras simples e, se você quiser, monta um plano de estudo numa nota em ~/Documentos/Estudos."
+instrucoes = """Veja a tela e explique, em poucas linhas e em palavras simples, o que está nela. Depois proponha um plano de \
+estudo curto (3 a 5 passos, com o que ler ou praticar) e escreva-o numa nota em markdown em ~/Documentos/Estudos, \
+com a data de hoje no nome do arquivo."""
+autonomia = "risco"
+
+[[permissoes]]
+tipo = "tela"
+detalhe = "só quando você chama"
+
+[[permissoes]]
+tipo = "escrever"
+pastas = ["~/Documentos/Estudos"]
+detalhe = "as notas dos planos de estudo"

@@ -1,0 +1,5 @@
+#!/bin/sh
+# The guest's session closed (pam_exec, as root): its home starts empty again. Only for "convidado".
+[ "$PAM_USER" = "convidado" ] && [ "$PAM_TYPE" = "close_session" ] || exit 0
+rm -rf --one-file-system /home/convidado
+install -d -o convidado -g convidado -m 700 /home/convidado

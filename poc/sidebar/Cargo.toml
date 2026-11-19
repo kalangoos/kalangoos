@@ -1,0 +1,13 @@
+[package]
+name = "kalango-sidebar-poc"
+version = "0.1.0"
+edition = "2021"
+description = "KalangoOS · prova de conceito: barra superior e barra lateral direita do sistema em Rust + GTK4 sobre Wayland (layer-shell), com molas"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.9", features = ["v4_14"] }
+gtk4-layer-shell = "0.5"
+
+[profile.release]
+opt-level = 2
+lto = "thin"

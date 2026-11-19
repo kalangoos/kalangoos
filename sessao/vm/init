@@ -1,0 +1,18 @@
+#!/bin/busybox sh
+# init da VM gráfica: a raiz do host (só leitura) com a camada do KalangoOS por cima e uma camada em memória para o que
+# mudar; depois o systemd do host sobe como num computador de verdade (e entra sozinho na sessão KalangoOS).
+/bin/busybox --install -s /bin
+export PATH=/bin
+mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev
+for m in netfs 9pnet 9pnet_virtio 9p overlay; do [ -f /mods/$m.ko ] && insmod /mods/$m.ko; done
+mkdir -p /host /kalango
+mount -t 9p -o trans=virtio,version=9p2000.L,ro,msize=1048576,cache=loose hostroot /host || { echo "falha 9p"; sleep 5; poweroff -f; }
+mount -t 9p -o trans=virtio,version=9p2000.L,ro,msize=1048576,cache=loose kalango /kalango || { echo "falha 9p kalango"; sleep 5; poweroff -f; }
+mount -t tmpfs -o size=6G tmpfs /mnt
+mkdir -p /mnt/up /mnt/work /mnt/root
+mount -t overlay overlay -o lowerdir=/kalango:/host,upperdir=/mnt/up,workdir=/mnt/work /mnt/root || { echo "falha overlay"; sleep 5; poweroff -f; }
+R=/mnt/root
+mkdir -p $R/lib/modules/$(uname -r) && mount -t 9p -o trans=virtio,version=9p2000.L,ro modulos $R/lib/modules/$(uname -r)
+echo "KALANGO-VM: kernel $(uname -r); subindo o systemd"
+for m in dev proc sys; do mount --move /$m $R/$m; done
+exec switch_root $R /lib/systemd/systemd

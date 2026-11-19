@@ -1,0 +1,31 @@
+#!/usr/bin/python3
+"""A stand-in for gst-launch-1.0 in the session test (the nested niri gives no real stream to record): the pipeline
+goes to $KALANGO_GST_LOG, the file named by filesink's location= is written while it runs, and SIGINT finishes it
+(as gst-launch-1.0 -e does)."""
+import os
+import signal
+import sys
+import time
+
+args = sys.argv[1:]
+log = os.environ.get("KALANGO_GST_LOG", "/tmp/gst-teste.log")
+with open(log, "a") as f:
+    f.write(" ".join(args) + "\n")
+destino = next((a.split("=", 1)[1] for a in args if a.startswith("location=")), None)
+fim = {"agora": False}
+
+
+def parar(*_):
+    fim["agora"] = True
+
+
+signal.signal(signal.SIGINT, parar)
+signal.signal(signal.SIGTERM, parar)
+with open(destino, "wb") if destino else open(os.devnull, "wb") as f:
+    f.write(b"\x1a\x45\xdf\xa3")
+    while not fim["agora"]:
+        f.write(b"\0" * 4096)
+        f.flush()
+        time.sleep(0.2)
+with open(log, "a") as f:
+    f.write("fim\n")

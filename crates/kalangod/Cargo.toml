@@ -1,0 +1,31 @@
+[package]
+name = "kalangod"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+description = "KalangoOS · MCP do sistema: deixa os agentes nativos operarem o sistema com níveis de poder, aprovação, auditoria e desfazer"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+nix = { version = "0.29", features = ["socket", "user", "fs", "signal", "process"] }
+landlock = "0.4"
+libc = "0.2"
+seccompiler = "0.5"
+aya = { version = "0.13", default-features = false }
+# conectores remotos (MCP por HTTP) e OAuth com PKCE
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+url = "2"
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.2"
+kalango-i18n = { path = "../kalango-i18n" }
+pdf-extract = "0.12.1"
+
+[package.metadata]
+# o programa eBPF é compilado com clang (C com CO-RE) por build.rs
+
+[dev-dependencies]
+tempfile = "3"

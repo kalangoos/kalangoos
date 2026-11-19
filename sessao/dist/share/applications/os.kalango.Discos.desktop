@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Discos
+Name[en]=Disks
+Comment=As unidades do computador: partições, saúde, velocidade e o que fazer com elas
+Comment[en]=The computer's drives: partitions, health, speed and what to do with them
+Exec=kalango-shell discos
+Icon=drive-harddisk
+Categories=System;Utility;
+StartupWMClass=os.kalango.Discos
+Keywords=disco;discos;disk;partição;partition;formatar;format;smart;ssd;hd;pendrive;

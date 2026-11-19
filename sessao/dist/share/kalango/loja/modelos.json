@@ -1,0 +1,18 @@
+[
+  {"id": "lfm3-1.7b", "nome": "LFM3 1.7B", "descricao": "conversa, ferramentas e código", "tipo": "texto",
+   "arquivos": [{"url": "https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-Q4_K_M.gguf", "nome": "LFM3-1.7B-Q4_K_M.gguf", "bytes": 1099627808}]},
+  {"id": "qwen3-8b", "nome": "Qwen3 8B", "descricao": "raciocínio e código", "tipo": "texto",
+   "arquivos": [{"url": "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf", "nome": "Qwen3-8B-Q4_K_M.gguf", "bytes": 5027783488}]},
+  {"id": "lfm3-audio-2b", "nome": "LFM3 Audio 2B", "descricao": "voz para texto (modo voz)", "tipo": "voz",
+   "arquivos": [{"url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B-GGUF/resolve/main/LFM3-Audio-2B-Q4_K_M.gguf", "nome": "LFM3-Audio-2B-Q4_K_M.gguf", "bytes": 1099626016},
+                {"url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B-GGUF/resolve/main/mmproj-LFM3-Audio-2B-Q8_0.gguf", "nome": "mmproj-LFM3-Audio-2B-Q8_0.gguf", "bytes": 303811840}]},
+  {"id": "qwen3-32b", "nome": "Qwen3 32B", "descricao": "o mais capaz para raciocínio", "tipo": "texto",
+   "arquivos": [{"url": "https://huggingface.co/Qwen/Qwen3-32B-GGUF/resolve/main/Qwen3-32B-Q4_K_M.gguf", "nome": "Qwen3-32B-Q4_K_M.gguf", "bytes": 19762149024}]},
+  {"id": "lfm3-vl-2b", "nome": "LFM3 VL 2B", "descricao": "vê imagens e a tela", "tipo": "visao",
+   "arquivos": [{"url": "https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/main/LFM3-VL-2B-Q4_K_M.gguf", "nome": "LFM3-VL-2B-Q4_K_M.gguf", "bytes": 1099627808},
+                {"url": "https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/main/mmproj-LFM3-VL-2B-Q8_0.gguf", "nome": "mmproj-LFM3-VL-2B-Q8_0.gguf", "bytes": 203031872}]},
+  {"id": "llama-3.1-8b", "nome": "Llama 3.1 8B", "descricao": "rápido para tarefas do dia a dia", "tipo": "texto",
+   "arquivos": [{"url": "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", "nome": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", "bytes": 4920739232}]},
+  {"id": "gemma-3-27b", "nome": "Gemma 3 27B", "descricao": "escreve bem em português", "tipo": "texto",
+   "arquivos": [{"url": "https://huggingface.co/bartowski/google_gemma-3-27b-it-GGUF/resolve/main/google_gemma-3-27b-it-Q4_K_M.gguf", "nome": "google_gemma-3-27b-it-Q4_K_M.gguf", "bytes": 16546404992}]}
+]

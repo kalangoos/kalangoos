@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Documentos
+Name[en]=Documents
+Comment=Leia PDFs com um resumo do agente que aponta a página de cada coisa
+Comment[en]=Read PDFs with a summary from the agent that points to each thing's page
+Exec=kalango-shell documentos %f
+Icon=x-office-document
+Categories=Office;Viewer;
+MimeType=application/pdf;application/x-pdf;
+StartupWMClass=os.kalango.Documentos
+Keywords=pdf;documento;document;leitor;reader;ler;

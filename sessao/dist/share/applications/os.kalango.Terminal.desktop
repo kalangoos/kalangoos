@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Name[en]=Terminal
+Comment=A linha de comando, com o agente para explicar erros e escrever comandos
+Comment[en]=The command line, with the agent to explain errors and write commands
+Exec=kalango-shell terminal
+Icon=utilities-terminal
+Categories=System;TerminalEmulator;
+StartupWMClass=os.kalango.Terminal
+Keywords=terminal;console;shell;linha de comando;command line;prompt;

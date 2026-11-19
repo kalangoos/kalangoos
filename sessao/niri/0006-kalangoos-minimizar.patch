@@ -1,0 +1,542 @@
+diff --git a/niri-config/src/binds.rs b/niri-config/src/binds.rs
+index 2d562af..e639b84 100644
+--- a/niri-config/src/binds.rs
++++ b/niri-config/src/binds.rs
+@@ -148,6 +148,9 @@ pub enum Action {
+     CloseWindow,
+     #[knuffel(skip)]
+     CloseWindowById(u64),
++    MinimizeWindow,
++    #[knuffel(skip)]
++    MinimizeWindowById(u64),
+     FullscreenWindow,
+     #[knuffel(skip)]
+     FullscreenWindowById(u64),
+@@ -447,6 +450,8 @@ impl From<niri_ipc::Action> for Action {
+             }
+             niri_ipc::Action::CloseWindow { id: None } => Self::CloseWindow,
+             niri_ipc::Action::CloseWindow { id: Some(id) } => Self::CloseWindowById(id),
++            niri_ipc::Action::MinimizeWindow { id: None } => Self::MinimizeWindow,
++            niri_ipc::Action::MinimizeWindow { id: Some(id) } => Self::MinimizeWindowById(id),
+             niri_ipc::Action::FullscreenWindow { id: None } => Self::FullscreenWindow,
+             niri_ipc::Action::FullscreenWindow { id: Some(id) } => Self::FullscreenWindowById(id),
+             niri_ipc::Action::ToggleWindowedFullscreen { id: None } => {
+diff --git a/niri-ipc/src/lib.rs b/niri-ipc/src/lib.rs
+index 16cda6b..09a5d9c 100644
+--- a/niri-ipc/src/lib.rs
++++ b/niri-ipc/src/lib.rs
+@@ -294,6 +294,15 @@ pub enum Action {
+         #[cfg_attr(feature = "clap", arg(long))]
+         id: Option<u64>,
+     },
++    /// Minimize a window (KalangoOS): it stays open out of sight; focusing it brings it back.
++    #[cfg_attr(feature = "clap", clap(about = "Minimize the focused window"))]
++    MinimizeWindow {
++        /// Id of the window to minimize.
++        ///
++        /// If `None`, uses the focused window.
++        #[cfg_attr(feature = "clap", arg(long))]
++        id: Option<u64>,
++    },
+     /// Toggle fullscreen on a window.
+     #[cfg_attr(
+         feature = "clap",
+@@ -1370,6 +1379,9 @@ pub struct Window {
+     pub is_floating: bool,
+     /// Whether this window requests your attention.
+     pub is_urgent: bool,
++    /// Whether this window is minimized (KalangoOS): open, but out of sight until activated.
++    #[serde(default)]
++    pub is_minimized: bool,
+     /// Position- and size-related properties of the window.
+     pub layout: WindowLayout,
+     /// Timestamp when the window was most recently focused.
+diff --git a/src/handlers/mod.rs b/src/handlers/mod.rs
+index 3532078..23584c5 100644
+--- a/src/handlers/mod.rs
++++ b/src/handlers/mod.rs
+@@ -552,6 +552,13 @@ impl ForeignToplevelHandler for State {
+         }
+     }
+ 
++    fn set_minimized(&mut self, wl_surface: WlSurface) {
++        if let Some((mapped, _)) = self.niri.layout.find_window_and_output(&wl_surface) {
++            let window = mapped.window.clone();
++            self.minimize_window(&window);
++        }
++    }
++
+     fn set_fullscreen(&mut self, wl_surface: WlSurface, wl_output: Option<WlOutput>) {
+         if let Some((mapped, current_output)) = self.niri.layout.find_window_and_output(&wl_surface)
+         {
+diff --git a/src/handlers/xdg_shell.rs b/src/handlers/xdg_shell.rs
+index 38440c9..5dbf2dc 100644
+--- a/src/handlers/xdg_shell.rs
++++ b/src/handlers/xdg_shell.rs
+@@ -406,6 +406,14 @@ impl XdgShellHandler for State {
+         });
+     }
+ 
++    fn minimize_request(&mut self, toplevel: ToplevelSurface) {
++        // (KalangoOS: the window's own minimize button)
++        if let Some((mapped, _)) = self.niri.layout.find_window_and_output(toplevel.wl_surface()) {
++            let window = mapped.window.clone();
++            self.minimize_window(&window);
++        }
++    }
++
+     fn maximize_request(&mut self, toplevel: ToplevelSurface) {
+         if let Some((mapped, _)) = self
+             .niri
+diff --git a/src/input/mod.rs b/src/input/mod.rs
+index 525a149..9fea11e 100644
+--- a/src/input/mod.rs
++++ b/src/input/mod.rs
+@@ -883,6 +883,19 @@ impl State {
+                     mapped.toplevel().send_close();
+                 }
+             }
++            Action::MinimizeWindow => {
++                let focus = self.niri.layout.focus().map(|m| m.window.clone());
++                if let Some(window) = focus {
++                    self.minimize_window(&window);
++                }
++            }
++            Action::MinimizeWindowById(id) => {
++                let window = self.niri.layout.windows().find(|(_, m)| m.id().get() == id);
++                let window = window.map(|(_, m)| m.window.clone());
++                if let Some(window) = window {
++                    self.minimize_window(&window);
++                }
++            }
+             Action::FullscreenWindow => {
+                 let focus = self.niri.layout.focus().map(|m| m.window.clone());
+                 if let Some(window) = focus {
+diff --git a/src/ipc/client.rs b/src/ipc/client.rs
+index 757b79d..189ef23 100644
+--- a/src/ipc/client.rs
++++ b/src/ipc/client.rs
+@@ -676,7 +676,8 @@ fn print_output(output: Output) -> anyhow::Result<()> {
+ fn print_window(window: &Window) {
+     let focused = if window.is_focused { " (focused)" } else { "" };
+     let urgent = if window.is_urgent { " (urgent)" } else { "" };
+-    println!("Window ID {}:{focused}{urgent}", window.id);
++    let minimized = if window.is_minimized { " (minimized)" } else { "" };
++    println!("Window ID {}:{focused}{urgent}{minimized}", window.id);
+ 
+     if let Some(title) = &window.title {
+         println!("  Title: \"{title}\"");
+diff --git a/src/ipc/server.rs b/src/ipc/server.rs
+index 785d1fd..7e37d50 100644
+--- a/src/ipc/server.rs
++++ b/src/ipc/server.rs
+@@ -521,6 +521,7 @@ fn make_ipc_window(
+     mapped: &Mapped,
+     workspace_id: Option<WorkspaceId>,
+     layout: WindowLayout,
++    is_minimized: bool,
+ ) -> niri_ipc::Window {
+     with_toplevel_role(mapped.toplevel(), |role| niri_ipc::Window {
+         id: mapped.id().get(),
+@@ -531,6 +532,7 @@ fn make_ipc_window(
+         is_focused: mapped.is_focused(),
+         is_floating: mapped.is_floating(),
+         is_urgent: mapped.is_urgent(),
++        is_minimized,
+         layout,
+         focus_timestamp: mapped.get_focus_timestamp().map(Timestamp::from),
+     })
+@@ -716,22 +718,24 @@ impl State {
+                 focused_id = Some(id);
+             }
+ 
++            let minimized = layout.is_minimized(&mapped.window);
+             let Some(ipc_win) = state.windows.get(&id) else {
+-                let window = make_ipc_window(mapped, ws_id, window_layout);
++                let window = make_ipc_window(mapped, ws_id, window_layout, minimized);
+                 events.push(Event::WindowOpenedOrChanged { window });
+                 return;
+             };
+ 
+             let workspace_id = ws_id.map(|id| id.get());
+-            let mut changed =
+-                ipc_win.workspace_id != workspace_id || ipc_win.is_floating != mapped.is_floating();
++            let mut changed = ipc_win.workspace_id != workspace_id
++                || ipc_win.is_floating != mapped.is_floating()
++                || ipc_win.is_minimized != minimized;
+ 
+             changed |= with_toplevel_role(mapped.toplevel(), |role| {
+                 ipc_win.title != role.title || ipc_win.app_id != role.app_id
+             });
+ 
+             if changed {
+-                let window = make_ipc_window(mapped, ws_id, window_layout);
++                let window = make_ipc_window(mapped, ws_id, window_layout, minimized);
+                 events.push(Event::WindowOpenedOrChanged { window });
+                 return;
+             }
+diff --git a/src/layout/floating.rs b/src/layout/floating.rs
+index 06124eb..e8545ce 100644
+--- a/src/layout/floating.rs
++++ b/src/layout/floating.rs
+@@ -302,7 +302,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
+         &self,
+     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> {
+         let scale = self.scale;
+-        self.tiles_with_offsets().map(move |(tile, offset)| {
++        // (minimized windows are neither drawn nor under the pointer)
++        self.tiles_with_offsets().filter(|(tile, _)| !tile.minimized).map(move |(tile, offset)| {
+             let pos = offset + tile.render_offset();
+             // Round to physical pixels.
+             let pos = pos.to_physical_precise_round(scale).to_logical(scale);
+@@ -563,7 +564,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
+     }
+ 
+     pub fn activate_window_without_raising(&mut self, id: &W::Id) -> bool {
+-        if !self.contains(id) {
++        // (focus following the pointer never wakes a minimized window)
++        if !self.contains(id) || self.is_minimized(id) {
+             return false;
+         }
+ 
+@@ -576,6 +578,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
+             return false;
+         };
+ 
++        // activating a minimized window restores it (the dock, a taskbar, the app asking for focus)
++        if self.tiles[idx].minimized {
++            self.tiles[idx].minimized = false;
++            self.tiles[idx].start_open_animation();
++        }
++
+         self.raise_window(idx, 0);
+         self.active_window_id = Some(id.clone());
+         self.bring_up_descendants_of(0);
+@@ -680,6 +688,43 @@ impl<W: LayoutElement> FloatingSpace<W> {
+         self.interactive_resize_end(Some(&id));
+     }
+ 
++    /// Whether this window is minimized here.
++    pub fn is_minimized(&self, id: &W::Id) -> bool {
++        self.idx_of(id).is_some_and(|idx| self.tiles[idx].minimized)
++    }
++
++    /// Whether a window here is on screen (not minimized).
++    pub fn has_visible_tiles(&self) -> bool {
++        self.tiles.iter().any(|tile| !tile.minimized)
++    }
++
++    /// Minimizes a window here (KalangoOS); the topmost window still on screen becomes the active one.
++    /// Returns false if it is not here or already minimized.
++    pub fn minimize_window(&mut self, id: &W::Id, from_tiling: bool) -> bool {
++        let Some(idx) = self.idx_of(id) else {
++            return false;
++        };
++        if self.tiles[idx].minimized {
++            return false;
++        }
++        self.tiles[idx].minimized = true;
++        self.tiles[idx].minimized_from_tiling = from_tiling;
++        if self.active_window_id.as_ref() == Some(id) {
++            self.active_window_id = self
++                .tiles
++                .iter()
++                .find(|tile| !tile.minimized)
++                .map(|tile| tile.window().id().clone());
++        }
++        true
++    }
++
++    /// Whether this window came from the scrolling layout before it was minimized (cleared).
++    pub fn take_minimized_from_tiling(&mut self, id: &W::Id) -> bool {
++        self.idx_of(id)
++            .is_some_and(|idx| std::mem::take(&mut self.tiles[idx].minimized_from_tiling))
++    }
++
+     pub fn start_open_animation(&mut self, id: &W::Id) -> bool {
+         let Some(idx) = self.idx_of(id) else {
+             return false;
+@@ -847,7 +892,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
+         let center = self.data[active_idx].center();
+ 
+         let result = zip(&self.tiles, &self.data)
+-            .filter(|(tile, _)| tile.window().id() != active_id)
++            .filter(|(tile, _)| tile.window().id() != active_id && !tile.minimized)
+             .map(|(tile, data)| (tile, distance(center, data.center())))
+             .filter(|(_, dist)| *dist > 0.)
+             .min_by(|(_, dist_a), (_, dist_b)| f64::total_cmp(dist_a, dist_b));
+@@ -879,6 +924,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
+     pub fn focus_leftmost(&mut self) {
+         let result = self
+             .tiles_with_offsets()
++            .filter(|(tile, _)| !tile.minimized)
+             .min_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.x, &pos_b.x));
+         if let Some((tile, _)) = result {
+             let id = tile.window().id().clone();
+@@ -889,6 +935,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
+     pub fn focus_rightmost(&mut self) {
+         let result = self
+             .tiles_with_offsets()
++            .filter(|(tile, _)| !tile.minimized)
+             .max_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.x, &pos_b.x));
+         if let Some((tile, _)) = result {
+             let id = tile.window().id().clone();
+@@ -899,6 +946,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
+     pub fn focus_topmost(&mut self) {
+         let result = self
+             .tiles_with_offsets()
++            .filter(|(tile, _)| !tile.minimized)
+             .min_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.y, &pos_b.y));
+         if let Some((tile, _)) = result {
+             let id = tile.window().id().clone();
+@@ -909,6 +957,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
+     pub fn focus_bottommost(&mut self) {
+         let result = self
+             .tiles_with_offsets()
++            .filter(|(tile, _)| !tile.minimized)
+             .max_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.y, &pos_b.y));
+         if let Some((tile, _)) = result {
+             let id = tile.window().id().clone();
+diff --git a/src/layout/mod.rs b/src/layout/mod.rs
+index 3e70654..63a0380 100644
+--- a/src/layout/mod.rs
++++ b/src/layout/mod.rs
+@@ -3285,6 +3285,22 @@ impl<W: LayoutElement> Layout<W> {
+     }
+ 
+     /// KalangoOS window snapping from the keyboard or IPC (see `Workspace::snap_window`).
++    /// Minimizes a window (KalangoOS): it stays open, out of sight, until activated again.
++    pub fn minimize_window(&mut self, window: &W::Id) -> bool {
++        if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
++            if move_.tile.window().id() == window {
++                return false;
++            }
++        }
++        self.workspaces_mut()
++            .find(|ws| ws.has_window(window))
++            .is_some_and(|ws| ws.minimize_window(window))
++    }
++
++    pub fn is_minimized(&self, window: &W::Id) -> bool {
++        self.workspaces().any(|(_, _, ws)| ws.is_minimized(window))
++    }
++
+     pub fn snap_window(&mut self, window: Option<&W::Id>, region: &str) {
+         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
+             if window.is_none() || window == Some(move_.tile.window().id()) {
+diff --git a/src/layout/tile.rs b/src/layout/tile.rs
+index bb60060..3a73a0a 100644
+--- a/src/layout/tile.rs
++++ b/src/layout/tile.rs
+@@ -109,6 +109,13 @@ pub struct Tile<W: LayoutElement> {
+     /// Floating position before it was snapped (restored by un-snapping from the keyboard).
+     pub(super) unsnapped_pos: Option<Point<f64, SizeFrac>>,
+ 
++    /// Minimized (KalangoOS): kept in the floating space, but not drawn, not under the pointer and
++    /// never focused, until something activates it again.
++    pub(super) minimized: bool,
++
++    /// It was in the scrolling layout before it was minimized (it goes back there when restored).
++    pub(super) minimized_from_tiling: bool,
++
+     /// Snapshot of the last render for use in the close animation.
+     unmap_snapshot: Option<TileRenderSnapshot>,
+ 
+@@ -219,6 +226,8 @@ impl<W: LayoutElement> Tile<W> {
+             snapped: None,
+             unsnapped_size: None,
+             unsnapped_pos: None,
++            minimized: false,
++            minimized_from_tiling: false,
+             unmap_snapshot: None,
+             rounded_corner_damage: Default::default(),
+             view_size,
+diff --git a/src/layout/workspace.rs b/src/layout/workspace.rs
+index bc69bd1..f593601 100644
+--- a/src/layout/workspace.rs
++++ b/src/layout/workspace.rs
+@@ -1831,8 +1831,13 @@ impl<W: LayoutElement> Workspace<W> {
+     }
+ 
+     pub fn activate_window(&mut self, window: &W::Id) -> bool {
++        let was_minimized = self.floating.is_minimized(window);
+         if self.floating.activate_window(window) {
+             self.floating_is_active = FloatingActive::Yes;
++            // (restored: back to its column when it came from one)
++            if was_minimized && self.floating.take_minimized_from_tiling(window) {
++                self.set_window_floating(Some(window), false);
++            }
+             true
+         } else if self.scrolling.activate_window(window) {
+             self.floating_is_active = FloatingActive::No;
+@@ -1877,6 +1882,30 @@ impl<W: LayoutElement> Workspace<W> {
+     /// `region`: "left", "right", "up", "down" step like Super+arrows on other desktops (left half →
+     /// top-left quarter with up, back with down, the opposite side restores); "restore"; a named region
+     /// ("maximize", "left-half", "top-left"…) or "x,y,w,h" in thousandths of the working area.
++    /// Minimizes a window (KalangoOS). A window in the scrolling layout goes to the floating space
++    /// first (and back to a column when restored), so its column closes up meanwhile.
++    pub fn minimize_window(&mut self, id: &W::Id) -> bool {
++        if !self.has_window(id) || self.floating.is_minimized(id) {
++            return false;
++        }
++        let from_tiling = !self.floating.has_window(id);
++        if from_tiling {
++            self.set_window_floating(Some(id), true);
++            if !self.floating.has_window(id) {
++                return false;
++            }
++        }
++        self.floating.minimize_window(id, from_tiling);
++        if !self.floating.has_visible_tiles() {
++            self.floating_is_active = FloatingActive::No;
++        }
++        true
++    }
++
++    pub fn is_minimized(&self, id: &W::Id) -> bool {
++        self.floating.is_minimized(id)
++    }
++
+     pub fn snap_window(&mut self, id: Option<&W::Id>, region: &str) {
+         let id = match id {
+             Some(id) => id.clone(),
+diff --git a/src/niri.rs b/src/niri.rs
+index d164997..5d7c291 100644
+--- a/src/niri.rs
++++ b/src/niri.rs
+@@ -997,6 +997,38 @@ impl State {
+         self.niri.queue_redraw_all();
+     }
+ 
++    /// Minimizes a window (KalangoOS): it leaves with the close animation and stays open out of
++    /// sight; activating it again (focus-window, the dock, a taskbar, the app asking for focus)
++    /// brings it back.
++    pub fn minimize_window(&mut self, window: &Window) {
++        if self.niri.layout.is_minimized(window) {
++            return;
++        }
++        let output = self
++            .niri
++            .layout
++            .windows()
++            .find(|(_, m)| &m.window == window)
++            .and_then(|(mon, _)| mon.map(|mon| mon.output().clone()));
++
++        self.store_unmap_snapshot(window, output.as_ref());
++        let transaction = crate::utils::transaction::Transaction::new();
++        let blocker = transaction.blocker();
++        self.backend.with_primary_renderer(|renderer| {
++            self.niri
++                .layout
++                .start_close_animation_for_window(renderer, window, blocker);
++        });
++        drop(transaction);
++
++        if !self.niri.layout.minimize_window(window) {
++            self.niri.layout.clear_unmap_snapshot(window);
++        }
++        self.niri.layer_shell_on_demand_focus = None;
++        // FIXME: granular
++        self.niri.queue_redraw_all();
++    }
++
+     pub fn confirm_mru(&mut self) {
+         if let Some(window) = self.niri.close_mru(MruCloseRequest::Confirm) {
+             self.focus_window(&window);
+@@ -2266,7 +2298,8 @@ impl Niri {
+         let compositor_state = CompositorState::new_v6::<State>(&display_handle);
+         let xdg_shell_state = XdgShellState::new_with_capabilities::<State>(
+             &display_handle,
+-            [WmCapabilities::Fullscreen, WmCapabilities::Maximize],
++            // (KalangoOS: minimize too — GTK asks for it only when the compositor says it can)
++            [WmCapabilities::Fullscreen, WmCapabilities::Maximize, WmCapabilities::Minimize],
+         );
+         let xdg_decoration_state =
+             XdgDecorationState::new_with_filter::<State, _>(&display_handle, |client| {
+diff --git a/src/protocols/foreign_toplevel.rs b/src/protocols/foreign_toplevel.rs
+index 1137916..f150d9c 100644
+--- a/src/protocols/foreign_toplevel.rs
++++ b/src/protocols/foreign_toplevel.rs
+@@ -43,13 +43,14 @@ pub trait ForeignToplevelHandler {
+     fn unset_fullscreen(&mut self, wl_surface: WlSurface);
+     fn set_maximized(&mut self, wl_surface: WlSurface);
+     fn unset_maximized(&mut self, wl_surface: WlSurface);
++    fn set_minimized(&mut self, wl_surface: WlSurface);
+ }
+ 
+ struct ToplevelData {
+     identifier: MappedId,
+     title: Option<String>,
+     app_id: Option<String>,
+-    states: ArrayVec<u32, 3>,
++    states: ArrayVec<u32, 4>,
+     output: Option<Output>,
+ 
+     ext_list_instances: HashSet<ExtForeignToplevelHandleV1>,
+@@ -117,6 +118,14 @@ pub fn refresh(state: &mut State) {
+     // Save the focused window for last, this way when the focus changes, we will first deactivate
+     // the previous window and only then activate the newly focused window.
+     let mut focused = None;
++    // (KalangoOS: minimized windows say so to taskbars)
++    let minimized: Vec<_> = state
++        .niri
++        .layout
++        .windows()
++        .filter(|(_, m)| state.niri.layout.is_minimized(&m.window))
++        .map(|(_, m)| m.window.clone())
++        .collect();
+     state.niri.layout.with_windows(|mapped, output, _, _| {
+         let toplevel = mapped.toplevel();
+         let wl_surface = toplevel.wl_surface();
+@@ -137,6 +146,7 @@ pub fn refresh(state: &mut State) {
+                     cur,
+                     output,
+                     false,
++                    minimized.contains(&mapped.window),
+                 );
+             }
+         });
+@@ -160,6 +170,7 @@ pub fn refresh(state: &mut State) {
+                 cur,
+                 output.as_ref(),
+                 true,
++                false,
+             );
+         });
+     }
+@@ -198,8 +209,9 @@ fn refresh_toplevel(
+     current: &ToplevelState,
+     output: Option<&Output>,
+     has_focus: bool,
++    minimized: bool,
+ ) {
+-    let states = to_state_vec(&current.states, has_focus);
++    let states = to_state_vec(&current.states, has_focus, minimized);
+ 
+     match protocol_state.toplevels.entry(wl_surface.clone()) {
+         Entry::Occupied(entry) => {
+@@ -586,8 +598,9 @@ where
+             zwlr_foreign_toplevel_handle_v1::Request::UnsetMaximized => {
+                 state.unset_maximized(surface)
+             }
+-            zwlr_foreign_toplevel_handle_v1::Request::SetMinimized => (),
+-            zwlr_foreign_toplevel_handle_v1::Request::UnsetMinimized => (),
++            zwlr_foreign_toplevel_handle_v1::Request::SetMinimized => state.set_minimized(surface),
++            // (restoring is activating it)
++            zwlr_foreign_toplevel_handle_v1::Request::UnsetMinimized => state.activate(surface),
+             zwlr_foreign_toplevel_handle_v1::Request::Activate { .. } => {
+                 state.activate(surface);
+             }
+@@ -619,8 +632,11 @@ where
+     }
+ }
+ 
+-fn to_state_vec(states: &ToplevelStateSet, has_focus: bool) -> ArrayVec<u32, 3> {
++fn to_state_vec(states: &ToplevelStateSet, has_focus: bool, minimized: bool) -> ArrayVec<u32, 4> {
+     let mut rv = ArrayVec::new();
++    if minimized {
++        rv.push(zwlr_foreign_toplevel_handle_v1::State::Minimized as u32);
++    }
+     if states.contains(xdg_toplevel::State::Maximized) {
+         rv.push(zwlr_foreign_toplevel_handle_v1::State::Maximized as u32);
+     }

@@ -1,0 +1,21 @@
+# Um agente do catálogo do KalangoOS (Central de Apps): arruma a pasta Downloads.
+nome = "Organizador"
+id = "labs.organizador"
+editor = "KalangoOS Labs"
+resumo = "Arruma Downloads, encontra duplicados e explica cada mudança."
+categoria = "produtividade"
+descricao = "Agrupa os arquivos de Downloads por tipo, aponta cópias repetidas e explica cada movimento antes de fazê-lo. Nunca apaga nada e não usa a rede."
+instrucoes = """Na pasta ~/Downloads: agrupe os arquivos por tipo em subpastas (Documentos, Imagens, Instaladores, Compactados), \
+aponte os arquivos duplicados (o mesmo nome com (1) ou -copia, ou o mesmo tamanho e conteúdo) e explique cada movimento \
+antes de fazê-lo. Não apague nada."""
+autonomia = "sempre"
+
+[[permissoes]]
+tipo = "ler"
+pastas = ["~/Downloads"]
+detalhe = "para ver o que há em cada arquivo"
+
+[[permissoes]]
+tipo = "escrever"
+pastas = ["~/Downloads"]
+detalhe = "move e cria subpastas; nunca apaga"

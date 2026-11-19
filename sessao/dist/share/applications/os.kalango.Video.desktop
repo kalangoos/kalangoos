@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Vídeo
+Name[en]=Video
+Comment=Assista vídeos, com capítulos, legendas ao vivo e resumo pelo agente
+Comment[en]=Watch videos, with chapters, live captions and a summary from the agent
+Exec=kalango-shell video %f
+Icon=video-x-generic
+Categories=AudioVideo;Video;Player;
+MimeType=video/mp4;video/x-matroska;video/webm;video/quicktime;video/x-msvideo;video/ogg;video/mpeg;video/x-m4v;video/3gpp;video/mp2t;video/x-flv;video/x-ms-wmv;
+StartupWMClass=os.kalango.Video
+Keywords=vídeo;video;filme;movie;player;assistir;

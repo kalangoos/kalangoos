@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Arquivos
+Name[en]=Files
+Comment=Suas pastas e arquivos, com o agente para organizar, resumir e encontrar
+Comment[en]=Your folders and files, with the agent to organise, summarise and find
+Exec=kalango-shell arquivos %U
+Icon=system-file-manager
+Categories=System;Utility;FileManager;
+MimeType=inode/directory;
+StartupWMClass=os.kalango.Arquivos
+Keywords=arquivos;files;pastas;folders;gerenciador;manager;

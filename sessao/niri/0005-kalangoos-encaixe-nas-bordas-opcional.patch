@@ -1,0 +1,142 @@
+diff --git a/niri-config/src/binds.rs b/niri-config/src/binds.rs
+index 12c30b2..2d562af 100644
+--- a/niri-config/src/binds.rs
++++ b/niri-config/src/binds.rs
+@@ -293,6 +293,8 @@ pub enum Action {
+     #[knuffel(skip)]
+     SetSnapTargets(String),
+     #[knuffel(skip)]
++    SetEdgeSnap(bool),
++    #[knuffel(skip)]
+     ThumbnailWindow {
+         id: u64,
+         path: String,
+@@ -600,6 +602,7 @@ impl From<niri_ipc::Action> for Action {
+             niri_ipc::Action::SetWindowWidth { id: None, change } => Self::SetWindowWidth(change),
+             niri_ipc::Action::SnapWindow { id: None, region } => Self::SnapWindow(region),
+             niri_ipc::Action::SetSnapTargets { targets } => Self::SetSnapTargets(targets),
++            niri_ipc::Action::SetEdgeSnap { on } => Self::SetEdgeSnap(on),
+             niri_ipc::Action::ThumbnailWindow { id, path, max_size } => Self::ThumbnailWindow { id, path, max_size },
+             niri_ipc::Action::SnapWindow {
+                 id: Some(id),
+diff --git a/niri-ipc/src/lib.rs b/niri-ipc/src/lib.rs
+index 0943584..16cda6b 100644
+--- a/niri-ipc/src/lib.rs
++++ b/niri-ipc/src/lib.rs
+@@ -691,6 +691,13 @@ pub enum Action {
+         /// An empty list removes them; they are removed when the drag ends.
+         targets: String,
+     },
++    /// Whether dragging a window to a screen edge or corner snaps it (KalangoOS; on by default).
++    #[cfg_attr(feature = "clap", clap(about = "Turn snapping by dragging to the screen edges on or off"))]
++    SetEdgeSnap {
++        /// On or off.
++        #[cfg_attr(feature = "clap", arg(action = clap::ArgAction::Set))]
++        on: bool,
++    },
+     /// Render a small picture of a window to a PNG file (KalangoOS window switcher). Unlike a
+     /// screenshot it does not touch the clipboard and shows no notification.
+     ThumbnailWindow {
+diff --git a/src/input/mod.rs b/src/input/mod.rs
+index e7018ff..525a149 100644
+--- a/src/input/mod.rs
++++ b/src/input/mod.rs
+@@ -2075,6 +2075,9 @@ impl State {
+                 self.niri.layout.set_snap_targets(&targets);
+                 self.niri.queue_redraw_all();
+             }
++            Action::SetEdgeSnap(on) => {
++                self.niri.layout.set_edge_snap(on);
++            }
+             Action::SnapWindow(region) => {
+                 self.niri.layout.snap_window(None, &region);
+                 self.maybe_warp_cursor_to_focus();
+diff --git a/src/layout/mod.rs b/src/layout/mod.rs
+index ed77859..3e70654 100644
+--- a/src/layout/mod.rs
++++ b/src/layout/mod.rs
+@@ -353,6 +353,8 @@ pub struct Layout<W: LayoutElement> {
+     interactive_move: Option<InteractiveMoveState<W>>,
+     /// KalangoOS layout picker: drop targets of the current drag (output coordinates → region).
+     snap_targets: Vec<(Rectangle<f64, Logical>, SnapFrac)>,
++    /// KalangoOS: dragging a window to a screen edge or corner snaps it (Settings can turn it off).
++    edge_snap: bool,
+     /// Ongoing drag-and-drop operation.
+     dnd: Option<DndData<W>>,
+     /// Clock for driving animations.
+@@ -701,6 +703,7 @@ impl<W: LayoutElement> Layout<W> {
+             last_active_workspace_id: HashMap::new(),
+             interactive_move: None,
+             snap_targets: Vec::new(),
++            edge_snap: true,
+             dnd: None,
+             clock,
+             update_render_elements_time: Duration::ZERO,
+@@ -727,6 +730,7 @@ impl<W: LayoutElement> Layout<W> {
+             last_active_workspace_id: HashMap::new(),
+             interactive_move: None,
+             snap_targets: Vec::new(),
++            edge_snap: true,
+             dnd: None,
+             clock,
+             update_render_elements_time: Duration::ZERO,
+@@ -2859,6 +2863,7 @@ impl<W: LayoutElement> Layout<W> {
+ 
+         let _span = tracy_client::span!("Layout::update_insert_hint::update");
+         let targets = self.snap_targets.clone();
++        let edge_snap = self.edge_snap;
+ 
+         if let Some(mon) = self.monitor_for_output_mut(&move_.output) {
+             let zoom = mon.overview_zoom();
+@@ -2875,7 +2880,9 @@ impl<W: LayoutElement> Layout<W> {
+                     let snap = (zoom >= 0.999)
+                         .then(|| {
+                             target_at(&targets, move_.pointer_pos_within_output).or_else(|| {
+-                                snap_zone_at(pos_within_workspace, ws.view_size(), ws.working_area())
++                                edge_snap
++                                    .then(|| snap_zone_at(pos_within_workspace, ws.view_size(), ws.working_area()))
++                                    .flatten()
+                             })
+                         })
+                         .flatten();
+@@ -3253,6 +3260,11 @@ impl<W: LayoutElement> Layout<W> {
+         workspace.switch_focus_floating_tiling();
+     }
+ 
++    /// KalangoOS: whether dragging a window to a screen edge or corner snaps it.
++    pub fn set_edge_snap(&mut self, on: bool) {
++        self.edge_snap = on;
++    }
++
+     /// KalangoOS layout picker: where a dragged window can be dropped (see `Action::SetSnapTargets`).
+     pub fn set_snap_targets(&mut self, json: &str) {
+         self.snap_targets = serde_json::from_str::<Vec<serde_json::Value>>(json)
+@@ -4213,6 +4225,7 @@ impl<W: LayoutElement> Layout<W> {
+         let allow_to_activate_workspace = !self.overview_open;
+         // KalangoOS layout picker targets are only for this drag.
+         let targets = std::mem::take(&mut self.snap_targets);
++        let edge_snap = self.edge_snap;
+ 
+         match &mut self.monitor_set {
+             MonitorSet::Normal {
+@@ -4241,11 +4254,15 @@ impl<W: LayoutElement> Layout<W> {
+                                         .then(|| {
+                                             target_at(&targets, move_.pointer_pos_within_output)
+                                                 .or_else(|| {
+-                                                    snap_zone_at(
+-                                                        pos_within_workspace,
+-                                                        ws.view_size(),
+-                                                        ws.working_area(),
+-                                                    )
++                                                    edge_snap
++                                                        .then(|| {
++                                                            snap_zone_at(
++                                                                pos_within_workspace,
++                                                                ws.view_size(),
++                                                                ws.working_area(),
++                                                            )
++                                                        })
++                                                        .flatten()
+                                                 })
+                                         })
+                                         .flatten()

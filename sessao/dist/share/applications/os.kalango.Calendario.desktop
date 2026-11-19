@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Calendário
+Name[en]=Calendar
+Comment=Seus compromissos e as rotinas dos agentes, numa semana que se arrasta
+Comment[en]=Your appointments and the agents' routines, in a week you can drag
+Exec=kalango-shell calendario
+Icon=x-office-calendar
+Categories=Office;Calendar;
+StartupWMClass=os.kalango.Calendario
+Keywords=calendário;calendario;calendar;agenda;evento;event;compromisso;

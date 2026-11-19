@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Calculadora
+Name[en]=Calculator
+Comment=Contas com as teclas ou em palavras ("15% de 1.240")
+Comment[en]=Calculations with the keys or in words ("15% of 1,240")
+Exec=kalango-shell calculadora
+Icon=accessories-calculator
+Categories=Utility;Calculator;
+StartupWMClass=os.kalango.Calculadora
+Keywords=calculadora;calculator;contas;porcentagem;percent;

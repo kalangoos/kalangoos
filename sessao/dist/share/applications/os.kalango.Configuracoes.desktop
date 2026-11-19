@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Configurações
+Name[en]=Settings
+Comment=Rede, som, tela, energia e o resto do computador, num lugar só
+Comment[en]=Network, sound, display, power and the rest of the computer, in one place
+Exec=kalango-shell configuracoes
+Icon=preferences-system
+Categories=Settings;System;
+StartupWMClass=os.kalango.Configuracoes
+Keywords=configurações;settings;ajustes;preferências;preferences;sistema;system;

@@ -1,0 +1,16 @@
+[Unit]
+Description=KalangoOS · tarefas dos agentes
+Documentation=https://kalangoos.com
+# Cada tarefa que o kalangod executa para um agente vira um escopo aqui dentro, com limites próprios.
+# A guarda eBPF reconhece os agentes por este cgroup (/kalango.slice/kalango-agentes.slice).
+
+[Slice]
+MemoryAccounting=yes
+CPUAccounting=yes
+TasksAccounting=yes
+# teto do conjunto de todos os agentes
+MemoryHigh=75%
+TasksMax=4096
+
+[Install]
+WantedBy=multi-user.target

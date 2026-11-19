@@ -1,0 +1,4 @@
+# PAM service for the KalangoOS lock screen (kalango-shell), installed as /etc/pam.d/kalango-bloqueio.
+# The same password check as logging in, without starting a new session. Without this file the shell uses "login".
+@include common-auth
+@include common-account

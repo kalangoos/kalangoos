@@ -1,0 +1,83 @@
+name: "Preparar o ambiente de build"
+description: >-
+  System libraries (apt), gtk4-layer-shell built from a pinned commit (Ubuntu 24.04 has no package), the pinned Rust
+  toolchain and the cargo cache. Every Rust job of the CI and of the release starts with it.
+
+inputs:
+  rust-toolchain:
+    description: "The rustup toolchain (keep it equal to what developers use; bump it in its own pull request)"
+    required: false
+    default: "1.98.0"
+  cache-key:
+    description: "Extra key for the cargo cache, so jobs that build different things keep separate caches"
+    required: false
+    default: "ci"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Bibliotecas do sistema
+      shell: bash
+      run: |
+        set -euo pipefail
+        # The man-db trigger rebuilds the manual index after every install; CI never reads it.
+        sudo rm -f /var/lib/man-db/auto-update
+        sudo apt-get -o Acquire::Retries=3 update -q
+        # GTK 4, VTE (Terminal), Poppler (PDF), GStreamer (media) for the shell; clang + libbpf for the eBPF program of
+        # kalangod; meson/ninja/wayland for gtk4-layer-shell; python3 for the stand-in servers some tests start.
+        sudo apt-get -o Acquire::Retries=3 install -y -q --no-install-recommends \
+          build-essential pkg-config clang libbpf-dev \
+          libgtk-4-dev libvte-2.91-gtk4-dev libpoppler-glib-dev \
+          libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+          libwayland-dev wayland-protocols meson ninja-build python3
+
+    - name: gtk4-layer-shell (cache)
+      id: layer-shell-cache
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: ~/.local/kalango-deps
+        key: gtk4-layer-shell-1c963c51514581c41b9bdae08cdf69171265cdda-${{ runner.os }}-${{ runner.arch }}-v1
+
+    - name: gtk4-layer-shell (compilar)
+      if: steps.layer-shell-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        # v1.3.0 (with the session lock the lock screen uses); the commit, not the tag, so a moved tag changes nothing
+        LAYER_SHELL_COMMIT: 1c963c51514581c41b9bdae08cdf69171265cdda
+      run: |
+        set -euo pipefail
+        src="$RUNNER_TEMP/gtk4-layer-shell"
+        git init -q "$src"
+        git -C "$src" fetch -q --depth 1 https://github.com/wmww/gtk4-layer-shell "$LAYER_SHELL_COMMIT"
+        git -C "$src" checkout -q FETCH_HEAD
+        meson setup "$src/build" "$src" --prefix="$HOME/.local/kalango-deps" --libdir=lib \
+          -Dintrospection=false -Dvapi=false -Dtests=false -Ddocs=false -Dexamples=false
+        ninja -C "$src/build" install
+
+    - name: Variáveis do build
+      shell: bash
+      run: |
+        set -euo pipefail
+        deps="$HOME/.local/kalango-deps"
+        {
+          echo "PKG_CONFIG_PATH=$deps/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          echo "LD_LIBRARY_PATH=$deps/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          echo "KALANGO_DEPS_PREFIX=$deps"
+        } >> "$GITHUB_ENV"
+
+    - name: Rust ${{ inputs.rust-toolchain }}
+      shell: bash
+      env:
+        TOOLCHAIN: ${{ inputs.rust-toolchain }}
+      run: |
+        set -euo pipefail
+        rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy,rustfmt --no-self-update
+        rustup default "$TOOLCHAIN"
+        rustc --version
+
+    - name: Cache do cargo
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        shared-key: ${{ inputs.cache-key }}
+        # pull requests restore the cache main saved and never write their own (keeps the 10 GB cache budget for main)
+        save-if: ${{ github.ref == 'refs/heads/main' }}

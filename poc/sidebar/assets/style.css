@@ -1,0 +1,67 @@
+/* KalangoOS · prova de conceito · estilo da barra superior e da barra lateral direita.
+   Só usa os tokens (@k_*) exportados do Design System: sem sombras, raios 8 / 6 / 4. */
+
+window { background: transparent; color: @k_text; font-family: "Inter", "Roboto", "Cantarell", sans-serif; font-size: 13px; }
+button { all: unset; }
+label.muted { color: @k_muted; font-size: 12px; }
+label.dim { color: @k_dim; font-size: 11px; }
+label.strong { font-weight: 600; }
+label.title { font-weight: 700; font-size: 14px; }
+label.cap { color: @k_muted; font-size: 11px; font-weight: 600; letter-spacing: 1px; }
+label.mono { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @k_muted; }
+image { color: @k_muted; -gtk-icon-size: 16px; }
+
+/* ---------- barra superior ---------- */
+.topbar { background: alpha(@k_bg, 0.92); min-height: 32px; padding: 0 8px; }
+.pill { background: alpha(@k_realce, 0.06); border-radius: 99px; padding: 0 12px; min-height: 22px; transition: background-color 140ms ease; }
+.pill:hover { background: alpha(@k_realce, 0.12); }
+.pill.agents label, .pill.agents image { color: @k_accent_text; }
+.dot { background: alpha(@k_realce, 0.25); border-radius: 99px; min-width: 6px; min-height: 6px; }
+.dot.on { background: @k_text; min-width: 14px; }
+
+/* ---------- barra lateral ---------- */
+.sidebar { background: alpha(@k_sunken, 0.97); border: 1px solid @k_divider; border-radius: 8px; padding: 14px 16px 16px 16px; }
+.edge-handle { background: alpha(@k_realce, 0.35); border-radius: 99px; min-width: 4px; min-height: 96px; }
+.kcard { background: @k_surface; border: 1px solid @k_border; border-radius: 8px; padding: 12px; }
+.kcard.tint { background: alpha(@k_accent, 0.08); border-color: alpha(@k_accent, 0.3); }
+.kcard.warn { background: alpha(@k_gold, 0.08); border-color: alpha(@k_gold, 0.35); }
+.kcard.list { padding: 6px; }
+.row { border-radius: 6px; padding: 0 10px; min-height: 44px; }
+.row:hover { background: alpha(@k_realce, 0.04); }
+
+.seg { background: @k_panel; border: 1px solid @k_border; border-radius: 6px; padding: 2px; }
+.seg button { border-radius: 4px; min-height: 28px; padding: 0 12px; color: @k_muted; font-size: 12px; transition: background-color 140ms ease, color 140ms ease; }
+.seg button:checked { background: @k_raised; color: @k_text; font-weight: 600; }
+
+.icon-btn { border-radius: 6px; min-width: 32px; min-height: 32px; background: @k_control; }
+.icon-btn image { color: @k_text; }
+.icon-btn.ghost { background: transparent; min-width: 28px; min-height: 28px; }
+.icon-btn.ghost image { color: @k_muted; }
+.icon-btn.danger { background: alpha(@k_coral, 0.14); }
+.icon-btn.danger image { color: @k_coral; }
+.icon-btn:hover { background: @k_raised; }
+
+.qtile { background: @k_control; border-radius: 6px; padding: 0 12px; min-height: 52px; transition: background-color 180ms cubic-bezier(.2, .9, .3, 1.2); }
+.qtile label.t { font-weight: 600; }
+.qtile label.s { color: @k_muted; font-size: 12px; }
+.qtile:checked { background: @k_accent; }
+.qtile:checked label, .qtile:checked image { color: @k_accent_fg; }
+
+.btn { border-radius: 4px; min-height: 28px; padding: 0 12px; font-size: 12px; font-weight: 600; background: @k_control; color: @k_text; }
+.btn.primary { background: @k_accent; color: @k_accent_fg; }
+.btn.tint { background: alpha(@k_accent, 0.16); color: @k_accent_text; }
+.btn.ghost { background: transparent; color: @k_muted; }
+
+.avatar { background: @k_surface2; border-radius: 99px; min-width: 36px; min-height: 36px; color: @k_text; font-weight: 700; }
+.cover { background: alpha(@k_accent, 0.25); border-radius: 6px; min-width: 44px; min-height: 44px; }
+.bubble { background: @k_mensagem; border-radius: 8px; padding: 10px 14px; }
+.badge { background: alpha(@k_muted, 0.14); color: @k_muted; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 600; }
+.badge.gold { background: alpha(@k_gold, 0.14); color: @k_gold; }
+
+scale { padding: 0; min-height: 16px; }
+scale trough { background: @k_control; border-radius: 3px; min-height: 6px; border: none; }
+scale highlight { background: @k_accent; border-radius: 3px; border: none; }
+scale.gold highlight { background: @k_gold; }
+scale slider { background: @k_knob; border-radius: 99px; min-width: 16px; min-height: 16px; margin: -5px 0; border: none; box-shadow: none; }
+
+separator { background: @k_border; min-height: 1px; }

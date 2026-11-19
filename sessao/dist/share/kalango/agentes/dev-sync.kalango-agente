@@ -1,0 +1,29 @@
+# Um agente de exemplo do KalangoOS: abra este arquivo no Arquivos para ver a instalação (as permissões antes).
+nome = "Dev Sync"
+id = "labs.devsync"
+editor = "KalangoOS Labs"
+resumo = "Mantém seus repositórios em dia: diz o que falta enviar ou atualizar."
+categoria = "desenvolvimento"
+descricao = "Mantém seus repositórios sincronizados, avisa quando há conflito e prepara o push para você aprovar. Não envia código para fora do computador."
+instrucoes = """Para cada pasta com repositório git em ~/Projetos: rode git status e diga, em poucas linhas, quais têm mudanças \
+sem commit e quais estão atrás do remoto. Não faça push nem commit."""
+autonomia = "risco"
+
+[quando]
+dias = [1, 2, 3, 4, 5]
+hora = 9
+minuto = 0
+
+[[permissoes]]
+tipo = "ler"
+pastas = ["~/Projetos"]
+detalhe = "somente as pastas com repositório git"
+
+[[permissoes]]
+tipo = "programas"
+programas = ["git"]
+detalhe = "comandos de leitura e atualização"
+
+[[permissoes]]
+tipo = "rede"
+dominios = ["github.com"]

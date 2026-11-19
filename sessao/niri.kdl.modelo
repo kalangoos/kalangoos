@@ -1,0 +1,286 @@
+// KalangoOS · configuração do compositor (niri). Gerada a partir de sessao/niri.kdl.modelo.
+// Cores e raios do Design System; sem sombras. O shell (barra, dock, área de trabalho) é o kalango-shell.
+
+input {
+    keyboard {
+        xkb {
+            layout "@TECLADO@"
+        }
+        numlock
+    }
+    touchpad {
+        tap
+        natural-scroll
+    }
+    // focus-follows-mouse: in janelas.kdl (Settings › Appearance › Dock and multitasking)
+}
+
+layout {
+    // windows side by side meet edge to edge, and meet the screen's edges and the bar (no strip of wallpaper)
+    gaps 0
+    center-focused-column "never"
+    preset-column-widths {
+        proportion 0.33333
+        proportion 0.5
+        proportion 0.66667
+    }
+    default-column-width { proportion 0.5; }
+    // as in the design "Estados de janela": the window in use outlined in lavender at 60%, the others with the plain
+    // thin border (KalangoOS's own apps draw theirs, the same way, and dim their content when not in use)
+    focus-ring { off; }
+    border {
+        width 1
+        active-color "#A5A1E299"
+        inactive-color "#26272F"
+    }
+    shadow { off; }
+    // zona de encaixe ao arrastar uma janela (lilás a 12%, como no design)
+    insert-hint { color "#A5A1E21F"; }
+    struts {
+        left 0
+        right 0
+        top 0
+        bottom 0
+    }
+}
+
+// os apps desenham a própria barra de título (com fechar, maximizar e minimizar): o niri não desenha uma
+hotkey-overlay { skip-at-startup; }
+// niri's own overview opens from the top-left corner: KalangoOS has its own (Mod+O, the shell's "visao")
+gestures {
+    hot-corners {
+        off
+    }
+}
+
+// o niri desenha o cursor: tema e tamanho do sistema
+cursor {
+    xcursor-theme "@CURSOR_TEMA@"
+    xcursor-size @CURSOR_TAMANHO@
+}
+screenshot-path "~/Imagens/Capturas/Captura de %Y-%m-%d %H-%M-%S.png"
+
+// cantos com o raio das janelas do Design System (8 px)
+window-rule {
+    geometry-corner-radius 8
+    clip-to-geometry true
+}
+// side by side (not floating): square corners — two windows meet in a straight line — and GTK's "tiled" state, so
+// the apps' own corners are square too (floating windows keep the 8 px of the design)
+window-rule {
+    match is-floating=false
+    geometry-corner-radius 0
+    tiled-state true
+}
+// KalangoOS's own windows draw their border themselves (and the agent's outline)
+window-rule {
+    match app-id="^os\\.kalango\\."
+    border { off; }
+}
+// the agents center opens as a window in the middle of the screen, at the size it asks for (the design's
+// 1520 × 900, less on a smaller screen)
+window-rule {
+    match app-id="^os\\.kalango\\.Agentes$"
+    open-floating true
+}
+// Files too: a window of the system, at the design's 1320 × 820 (less on a smaller screen)
+window-rule {
+    match app-id="^os\\.kalango\\.Arquivos$"
+    open-floating true
+}
+
+// Settings too, at the design's 1520 × 710
+window-rule {
+    match app-id="^os\\.kalango\\.Configuracoes$"
+    open-floating true
+}
+// the Text Editor, at its design's 1400 × 880
+window-rule {
+    match app-id="^os\\.kalango\\.Editor$"
+    open-floating true
+}
+// the System Monitor, at its design's 1500 × 910
+window-rule {
+    match app-id="^os\\.kalango\\.Monitor$"
+    open-floating true
+}
+// the Terminal, at its design's 1400 × 880
+window-rule {
+    match app-id="^os\\.kalango\\.Terminal$"
+    open-floating true
+}
+// the print dialog, centred over what is printed
+window-rule {
+    match app-id="^os\\.kalango\\.Imprimir$"
+    open-floating true
+}
+// the Help, at its design's 1500 × 910
+window-rule {
+    match app-id="^os\\.kalango\\.Ajuda$"
+    open-floating true
+}
+// the Calendar, at its design's 1500 × 910
+window-rule {
+    match app-id="^os\\.kalango\\.Calendario$"
+    open-floating true
+}
+// the Disks app, at its design's 1500 × 910
+window-rule {
+    match app-id="^os\\.kalango\\.Discos$"
+    open-floating true
+}
+// the App Center, at its design's 1500 × 910
+window-rule {
+    match app-id="^os\\.kalango\\.Apps$"
+    open-floating true
+}
+// the document reader, at its design's 1500 × 910
+window-rule {
+    match app-id="^os\\.kalango\\.Documentos$"
+    open-floating true
+}
+// the Video app, at its design's 1500 × 910
+window-rule {
+    match app-id="^os\\.kalango\\.Video$"
+    open-floating true
+}
+// the Music app, at its design's 1500 × 910
+window-rule {
+    match app-id="^os\\.kalango\\.Musica$"
+    open-floating true
+}
+// the image viewer, at its design's 1500 × 910
+window-rule {
+    match app-id="^os\\.kalango\\.Imagens$"
+    open-floating true
+}
+// the Calculator, at its design's 460 × 612
+window-rule {
+    match app-id="^os\\.kalango\\.Calculadora$"
+    open-floating true
+}
+// the file chooser of every app (the portal's): a window of the system, floating in the middle
+window-rule {
+    match app-id="^os\\.kalango\\.Seletor$"
+    open-floating true
+}
+// every app's "Abrir"/"Salvar" goes to the system's chooser (xdg-desktop-portal, KalangoOS's FileChooser)
+environment {
+    XDG_CURRENT_DESKTOP "KalangoOS"
+    GDK_DEBUG "portals"
+    GTK_USE_PORTAL "1"
+}
+
+// a tela de aprovação e a barra de comando ficam acima de tudo e sem foco roubado por outras superfícies
+layer-rule {
+    match namespace="^kalango-"
+    shadow { off; }
+}
+// the blur of the background effects (the windows behind a card open from the island): a gentle one, as the
+// design's
+blur {
+    passes 1
+    offset 0.5
+    saturation 1
+}
+// behind an expanded card from the island (a long copy), the windows are blurred, as in the design
+layer-rule {
+    match namespace="^kalango-operacao-fundo$"
+    background-effect {
+        blur true
+        xray false
+    }
+}
+
+// o papel de parede é do shell (uma versão por proporção de tela, com swaybg): ver crates/kalango-shell/src/papel.rs
+@INICIO@
+
+
+// niri's own window switcher stays off: Alt+Tab is the KalangoOS one (the design's, with the agent), in the shell
+recent-windows {
+    off
+}
+
+binds {
+    Mod+Slash repeat=false hotkey-overlay-title="Folha de atalhos" { spawn "@SHELL@" "atalhos"; }
+    Mod+Shift+Slash { spawn "@SHELL@" "atalhos"; }
+
+    // KalangoOS
+    Mod+Space repeat=false hotkey-overlay-title="Barra de comando" { spawn "@SHELL@" "comando"; }
+    Mod+A repeat=false hotkey-overlay-title="Todos os apps" { spawn "@SHELL@" "apps"; }
+    Mod+Shift+E repeat=false hotkey-overlay-title="Menu de energia" { spawn "@SHELL@" "energia"; }
+    Mod+Shift+P repeat=false hotkey-overlay-title="Pausar sensores e agentes" { spawn "@SHELL@" "privacidade" "pausar"; }
+    Alt+Tab hotkey-overlay-title="Alternar janelas" { spawn "@SHELL@" "alternar"; }
+    Alt+Shift+Tab { spawn "@SHELL@" "alternar-voltar"; }
+    Mod+N repeat=false hotkey-overlay-title="Avisos e calendário" { spawn "@SHELL@" "lateral" "avisos"; }
+    Mod+C repeat=false hotkey-overlay-title="Controles" { spawn "@SHELL@" "lateral" "controles"; }
+    Mod+G repeat=false hotkey-overlay-title="Agente" { spawn "@SHELL@" "lateral" "agente"; }
+    Mod+W repeat=false hotkey-overlay-title="Hoje" { spawn "@SHELL@" "hoje"; }
+    Mod+Z repeat=false hotkey-overlay-title="Layouts de janela" { spawn "@SHELL@" "encaixe"; }
+    Mod+T hotkey-overlay-title="Terminal" { spawn "@TERMINAL@"; }
+
+    Mod+Q repeat=false { close-window; }
+    // minimize (KalangoOS's niri: out of sight until focused again — the dock, Alt+Tab)
+    Mod+M repeat=false { minimize-window; }
+    Mod+O repeat=false hotkey-overlay-title="Visão geral" { spawn "@SHELL@" "visao"; }
+    Mod+F { maximize-column; }
+    Mod+Shift+F { fullscreen-window; }
+    Mod+V repeat=false hotkey-overlay-title="Área de transferência" { spawn "@SHELL@" "transferencia"; }
+    Mod+H repeat=false hotkey-overlay-title="Ditado" { spawn "@SHELL@" "ditar"; }
+    Mod+Period repeat=false hotkey-overlay-title="Emoji e símbolos" { spawn "@SHELL@" "emoji"; }
+    Mod+Alt+D repeat=false hotkey-overlay-title="Descrever a tela" { spawn "@SHELL@" "descrever-tela"; }
+    Mod+Shift+V { toggle-window-floating; }
+    Mod+Tab repeat=false hotkey-overlay-title="Trocar de espaço" { spawn "@SHELL@" "espacos"; }
+    Mod+R { switch-preset-column-width; }
+    Mod+Minus { set-column-width "-10%"; }
+    Mod+Equal { set-column-width "+10%"; }
+
+    // encaixe de janelas (design "Layouts de janela"): Super+← / → metades, ↑ maximiza (ou o quarto de
+    // cima a partir de uma metade), ↓ volta; arrastar até a borda ou o canto também encaixa
+    Mod+Left  { snap-window "left"; }
+    Mod+Right { snap-window "right"; }
+    Mod+Up    { snap-window "up"; }
+    Mod+Down  { snap-window "down"; }
+    // navegar e mover colunas
+    Mod+Ctrl+Left  { focus-column-left; }
+    Mod+Ctrl+Right { focus-column-right; }
+    Mod+Ctrl+Up    { focus-window-or-workspace-up; }
+    Mod+Ctrl+Down  { focus-window-or-workspace-down; }
+    Mod+Ctrl+Shift+Left  { move-column-left; }
+    Mod+Ctrl+Shift+Right { move-column-right; }
+    Mod+Ctrl+Shift+Up    { move-window-up-or-to-workspace-up; }
+    Mod+Ctrl+Shift+Down  { move-window-down-or-to-workspace-down; }
+
+    Mod+1 { focus-workspace 1; }
+    Mod+2 { focus-workspace 2; }
+    Mod+3 { focus-workspace 3; }
+    Mod+4 { focus-workspace 4; }
+    Mod+Ctrl+1 { move-column-to-workspace 1; }
+    Mod+Ctrl+2 { move-column-to-workspace 2; }
+    Mod+Ctrl+3 { move-column-to-workspace 3; }
+    Mod+Ctrl+4 { move-column-to-workspace 4; }
+    Mod+WheelScrollDown cooldown-ms=150 { focus-workspace-down; }
+    Mod+WheelScrollUp   cooldown-ms=150 { focus-workspace-up; }
+
+    Print repeat=false hotkey-overlay-title="Captura de tela" { spawn "@SHELL@" "captura"; }
+    Shift+Print repeat=false hotkey-overlay-title="Gravar a tela" { spawn "@SHELL@" "captura" "video"; }
+    Mod+L repeat=false hotkey-overlay-title="Bloquear a tela" { spawn "@SHELL@" "bloquear"; }
+    Mod+D repeat=false hotkey-overlay-title="Mostrar a área de trabalho" { spawn "@SHELL@" "area-de-trabalho"; }
+    Ctrl+Print { screenshot-screen; }
+    Alt+Print { screenshot-window; }
+
+    // the media keys: the change and the on-screen indicator (kalango-shell osd)
+    XF86AudioRaiseVolume allow-when-locked=true { spawn "@SHELL@" "osd" "volume" "+5"; }
+    XF86AudioLowerVolume allow-when-locked=true { spawn "@SHELL@" "osd" "volume" "-5"; }
+    XF86AudioMute        allow-when-locked=true { spawn "@SHELL@" "osd" "volume" "mudo"; }
+    XF86AudioMicMute     allow-when-locked=true { spawn "@SHELL@" "osd" "microfone"; }
+    XF86MonBrightnessUp   allow-when-locked=true { spawn "@SHELL@" "osd" "brilho" "+5"; }
+    XF86MonBrightnessDown allow-when-locked=true { spawn "@SHELL@" "osd" "brilho" "-5"; }
+}
+
+// Configurações › Entrada: o teclado, o mouse e o touchpad, e os atalhos que a pessoa mudou (o shell escreve; o niri
+// recarrega quando mudam). Depois dos binds acima: um atalho mudado troca o daqui.
+include optional=true "@CONFIG@/kalango/entrada.kdl"
+include optional=true "@CONFIG@/kalango/atalhos.kdl"
+include optional=true "@CONFIG@/kalango/acessibilidade.kdl"
+include optional=true "@CONFIG@/kalango/janelas.kdl"

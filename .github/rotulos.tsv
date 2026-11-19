@@ -1,0 +1,11 @@
+nome	cor	descrição
+bugfix	d73a4a	Corrige algo quebrado: resultado errado, travamento, perda de dados
+performance	fbca04	Mesmo comportamento, mais rápido ou com menos memória
+missing feature	0e8a16	O design ou a referência tem e o KalangoOS ainda não, ou só em parte
+small extra	c5def5	Vai além do design, mas é pequeno e não muda nenhum padrão
+plugin candidate	7057ff	Boa ideia, mas específica ou grande demais para o sistema base
+infra	bfd4f2	Testes, CI, documentação, build, empacotamento, ferramentas
+security	b60205	Corrige uma falha de segurança ou endurece o sistema
+needs decision	e99695	Precisa de uma decisão de produto ou de escopo de um mantenedor
+tela	a5a1e2	Tela diferente do Design System, ou que se ajusta mal ao tamanho
+good first issue	8ed2c3	Boa para quem está começando no projeto

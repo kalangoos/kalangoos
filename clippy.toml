@@ -1,0 +1,9 @@
+# CI fails on clippy errors (the deny-by-default lints) and shows warnings as annotations; warnings become errors
+# once the backlog is cleared (CONTRIBUTING.md).
+# Tests may unwrap, expect and panic: a failing assertion is the point of a test.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+# GTK code keeps widgets and state in Rc<RefCell<…>> structures and callbacks: long types are the norm there.
+type-complexity-threshold = 500
+too-many-arguments-threshold = 10

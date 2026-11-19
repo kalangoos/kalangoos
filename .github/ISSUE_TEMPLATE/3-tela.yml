@@ -1,0 +1,45 @@
+name: Tela diferente do design
+description: Uma tela que não bate com o Design System, se ajusta mal ao tamanho, ou não tem uma função que devia ter.
+labels: ["tela"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        As telas do KalangoOS nascem no Design System (FigCraft) e a implementação deve bater com ele. Diga qual tela,
+        o que difere e, se puder, o quadro do design (nome da página e do quadro, ou o id do nó).
+  - type: input
+    id: tela
+    attributes:
+      label: Tela
+      placeholder: "por exemplo, Configurações › Rede"
+    validations:
+      required: true
+  - type: dropdown
+    id: tipo
+    attributes:
+      label: O que acontece
+      options:
+        - Diferente do design (espaço, cor, ícone, texto, raio)
+        - Não se ajusta ao tamanho da janela ou da tela
+        - Falta uma função que outro sistema tem
+        - A tela não existe no design
+        - Tema claro ou escuro errado
+    validations:
+      required: true
+  - type: input
+    id: design
+    attributes:
+      label: Quadro do design
+      placeholder: "por exemplo, 15 · Configurações › Rede (nó 48709)"
+  - type: textarea
+    id: detalhe
+    attributes:
+      label: O que difere
+      description: Capturas lado a lado (implementação × design), ampliadas, ajudam muito.
+    validations:
+      required: true
+  - type: input
+    id: tamanho
+    attributes:
+      label: Tamanho da tela e tema
+      placeholder: "por exemplo, 1280×800, tema escuro"

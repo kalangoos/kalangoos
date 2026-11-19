@@ -1,0 +1,9 @@
+#!/bin/sh
+# The test's CUPS (lpstat -p -d): two printers, one of them the default; no real printer is ever used by a test.
+case " $* " in
+  *" -p "*|*" -p"|*"-p -d"*) printf 'printer HP_LaserJet_M110 is idle.  enabled since qui 19 nov 2026 08:00:00\nprinter Epson_EcoTank_L3250 disabled since qui 19 nov 2026 07:00:00 -\n\tSem papel\n' ;;
+esac
+case " $* " in
+  *" -d "*|*" -d") printf 'system default destination: HP_LaserJet_M110\n' ;;
+esac
+exit 0

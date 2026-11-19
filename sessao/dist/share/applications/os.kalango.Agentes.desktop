@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Agentes
+Name[en]=Agents
+Comment=Central de agentes: o que os agentes fazem, o que espera você e o que já terminou
+Comment[en]=Agents center: what the agents do, what waits for you and what has ended
+Exec=kalango-shell central
+Icon=system-run
+Categories=System;Utility;
+StartupWMClass=os.kalango.Agentes
+Keywords=agentes;agents;ia;ai;tarefas;tasks;

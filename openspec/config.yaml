@@ -1,0 +1,20 @@
+schema: spec-driven
+
+context: |
+  Language: pt-BR
+  All artifacts must be written in pt-BR.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+
+  Projeto: KalangoOS, distribuição Linux de mercado feita para trabalhar com agentes de IA.
+  Base: Ubuntu LTS com kernel HWE, sem alterações no kernel. Apps de terceiros via Flatpak.
+  Princípios: Rust em tudo o que for nosso; compatibilidade com o driver NVIDIA proprietário é requisito;
+  tudo o que um agente faz é registrado e pode ser desfeito.
+  Design: design/KalangoOS-DesignSystem.figcraft (fonte da verdade visual); tokens em design/tokens/.
+  Decisões e motivos: docs/ARQUITETURA.md. Visão de produto: docs/VISAO.md.
+
+rules:
+  proposal:
+    - Diga o que fica fora do escopo.
+  tasks:
+    - Cada tarefa diz como verificar que terminou.
+    - Marque [x] só o que foi feito e verificado; nunca o que foi apenas desenhado.

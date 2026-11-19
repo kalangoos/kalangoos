@@ -1,0 +1,166 @@
+name: Regras da casa
+
+# Repository hygiene, in seconds and without a Rust build: no secrets, no big or unlisted files, workflows that
+# lint, actions pinned to a commit, the OpenSpec valid, and CLAUDE.md pointing at AGENTS.md.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: regras-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  ACTIONLINT_VERSION: "1.7.12"
+  ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+  OPENSPEC_VERSION: "2.1.0"
+  # files bigger than this need a line in .github/arquivos-grandes.txt (GitHub warns at 50 MB and refuses 100 MB)
+  MAX_FILE_KB: "5120"
+
+jobs:
+  segredos:
+    name: Sem segredos
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: gitleaks
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -sSfL --retry 3 -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar xzf gitleaks.tar.gz gitleaks
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/gitleaks" git --no-banner --redact --exit-code 1 .
+
+  arquivos:
+    name: Arquivos e atribuições
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tamanho dos arquivos
+        run: |
+          set -euo pipefail
+          allow=.github/arquivos-grandes.txt
+          bad=0
+          while IFS= read -r -d '' f; do
+            kb=$(( $(stat -c %s "$f") / 1024 ))
+            if [ "$kb" -gt "$MAX_FILE_KB" ] && ! grep -qxF "$f" "$allow" 2>/dev/null; then
+              echo "::error file=$f::$kb KB (limite ${MAX_FILE_KB} KB; liste em $allow se for mesmo necessário)"
+              bad=1
+            fi
+          done < <(git ls-files -z)
+          exit "$bad"
+      - name: Caminhos que não entram no repositório
+        # the design source holds the whole version history of the file (and draft data); machine-local trees too
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '\.figcraft$|^poc/\.deps|^kernel/(src|out|linux-)'; then
+            echo "::error::arquivos que não devem ser versionados aqui (veja .gitignore e ATTRIBUTION.md)"
+            exit 1
+          fi
+      - name: Toda imagem, fonte e PDF está no ATTRIBUTION.md
+        run: |
+          set -euo pipefail
+          # the backticked paths of ATTRIBUTION.md's tables are glob patterns (** and * match across folders)
+          # shellcheck disable=SC2016 # the backticks are literal Markdown, not a command substitution
+          mapfile -t globs < <(grep -o '`[^`]*`' ATTRIBUTION.md | tr -d '`' | grep '/' | sed 's/ .*//')
+          bad=0
+          while IFS= read -r f; do
+            ok=0
+            for g in "${globs[@]}"; do
+              # shellcheck disable=SC2053 # $g is a pattern on purpose
+              if [[ "$f" == $g ]]; then ok=1; break; fi
+            done
+            if [ "$ok" = 0 ]; then echo "::error file=$f::sem linha no ATTRIBUTION.md"; bad=1; fi
+          done < <(git ls-files | grep -iE '\.(png|jpe?g|webp|gif|svg|ico|ttf|otf|woff2?|pdf)$')
+          exit "$bad"
+      - name: CLAUDE.md aponta para o AGENTS.md
+        run: |
+          [ "$(cat CLAUDE.md)" = "@AGENTS.md" ] || { echo "::error file=CLAUDE.md::CLAUDE.md deve conter só @AGENTS.md"; exit 1; }
+
+  workflows:
+    name: Workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -sSfL --retry 3 -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/actionlint" -color
+      - name: Ações fixadas por commit
+        # a tag can be moved to other code; a 40-character commit cannot (Dependabot keeps the pins current)
+        run: |
+          set -euo pipefail
+          bad=$(grep -rhoE '^\s*-?\s*uses:\s*[^ #]+' .github/workflows .github/actions \
+            | sed -E 's/.*uses:\s*//' | grep -vE '^\./' | grep -vE '@[0-9a-f]{40}$' || true)
+          if [ -n "$bad" ]; then echo "::error::ações sem commit fixo:"; echo "$bad"; exit 1; fi
+
+  especificacao:
+    name: Especificação (OpenSpec)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: openspec validate
+        run: npx -y "@fission-ai/openspec@${OPENSPEC_VERSION}" validate --all --strict --no-interactive
+
+  regras:
+    name: Regras
+    if: always()
+    needs: [segredos, arquivos, workflows, especificacao]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Todos os jobs passaram
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "resultados: $RESULTS"
+          for r in $RESULTS; do [ "$r" = success ] || exit 1; done

@@ -1,0 +1,39 @@
+[package]
+name = "kalango-shell"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+description = "KalangoOS · shell: barra superior, dock, área de trabalho, barra de comando e menu de energia sobre o niri (layer-shell)"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.9", features = ["v4_14"] }
+gtk4-layer-shell = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+# the App Center reads the Flatpak remotes' AppStream catalogs
+quick-xml = "0.41"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+kalango-movimento = { path = "../kalango-movimento" }
+kalango-i18n = { path = "../kalango-i18n" }
+# the compositor's idle notifications (ext-idle-notify-v1): the screens go dark, the computer suspends
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+# the clipboard history (Super+V): reading each copy, and putting one back
+os_pipe = "1"
+wl-clipboard-rs = "0.9"
+# pasting into the window in use (the compositor's virtual keyboard)
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# the Terminal's emulator (VTE for GTK 4: the cells, the PTY, selection and scrollback; the app around it is ours)
+vte4 = { version = "0.8", features = ["v0_76"] }
+# the Music app's library: the tags, the cover and the waveform of each track (pure Rust; playing is GTK's media,
+# through GStreamer)
+pangocairo = "0.20"
+# (the same cairo as GTK's, with its SVG and PDF surfaces: diagrams exported from the conversation)
+cairo-rs = { version = "0.20", features = ["svg", "pdf"] }
+poppler-rs = { version = "0.24", features = ["v23_7"] }
+gstreamer = "0.23"
+gstreamer-app = "0.23"
+gstreamer-video = "0.23"
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "aac", "isomp4", "flac", "vorbis", "ogg", "pcm", "wav", "alac"] }

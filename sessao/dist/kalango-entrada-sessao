@@ -1,0 +1,5 @@
+#!/bin/sh
+# The login screen's compositor (greetd runs this as the "greeter" account): niri with a minimal configuration that
+# starts kalango-entrada and quits when it ends; greetd then starts the session the person chose.
+export XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=KalangoOS-Entrada
+exec niri --config /usr/share/kalango/entrada.kdl

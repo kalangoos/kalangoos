@@ -1,0 +1,10 @@
+[package]
+name = "kalango-i18n"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+description = "KalangoOS · translations: UI text follows the language chosen in the system (English source, catalogs per locale)"
+
+[dependencies]
+serde_json = "1"

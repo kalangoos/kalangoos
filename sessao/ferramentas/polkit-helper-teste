@@ -1,0 +1,9 @@
+#!/bin/bash
+# KalangoOS · polkit-agent-helper-1 de teste: lê o cookie, pede a senha como o PAM pediria e só aceita a senha de
+# teste ("kalango-teste"); cada passo vai para $KALANGO_POLKIT_LOG (nunca a senha).
+read -r cookie
+echo "helper $1 cookie $cookie" >> "${KALANGO_POLKIT_LOG:-/dev/null}"
+echo "PAM_PROMPT_ECHO_OFF Senha: "
+read -r senha
+if [ "$senha" = "kalango-teste" ]; then echo "helper: certa" >> "${KALANGO_POLKIT_LOG:-/dev/null}"; echo SUCCESS; exit 0; fi
+echo "helper: errada" >> "${KALANGO_POLKIT_LOG:-/dev/null}"; echo FAILURE; exit 1

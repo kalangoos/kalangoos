@@ -1,0 +1,73 @@
+/* KalangoOS · instalador (designs "Instalador · 1 Boas-vindas", "2 Disco", "3 Conta", "4 Instalando") */
+window.instalador { background: #16171B; border: 1px solid #26272F; border-radius: 8px; font-family: "Inter", sans-serif; }
+.inst-lateral { background: #121317; border-right: 1px solid #26272F; padding: 28px; border-radius: 8px 0 0 8px; }
+.inst-versao { font-family: "Ubuntu", "Inter", sans-serif; font-size: 24px; font-weight: 700; color: #E2E2E6; }
+.inst-direita { padding: 28px 36px 24px 36px; }
+.inst-passos { color: #7A7B88; font-size: 12px; }
+.inst-passo { color: #7A7B88; }
+.inst-passo label.atual { color: #E2E2E6; font-weight: 600; }
+.inst-passo label.feito { color: #B9BAC4; }
+.inst-passo-num { border: 1.5px solid #3A3B47; border-radius: 999px; font-size: 10px; font-weight: 700; color: #8E8F99; transition: background 200ms ease-out, border-color 200ms ease-out; }
+.inst-passo-num.atual { background: @k_accent; border-color: @k_accent; color: #1C1D24; }
+.inst-passo-num.feito { background: @k_accent; border-color: @k_accent; color: #1C1D24; }
+.inst-passo-linha { background: #3A3B47; min-height: 1px; }
+.inst-titulo { font-family: "Ubuntu", "Inter", sans-serif; font-size: 26px; font-weight: 700; color: #E2E2E6; }
+.inst-sub { font-size: 12px; color: #8E8F99; }
+.inst-sub-verde { font-size: 12px; color: #8ED2C3; }
+.inst-sub-verde.fraca { color: #EFA2A6; }
+.inst-texto { font-size: 13px; color: #E2E2E6; }
+.inst-texto-forte { font-size: 13px; font-weight: 600; color: #E2E2E6; }
+.inst-cartao { background: #1C1D23; border: 1px solid #26272F; border-radius: 6px; padding: 4px 12px; }
+.inst-linha { min-height: 42px; }
+button.inst-linha-botao { all: unset; border-radius: 4px; outline: 1.5px solid transparent; outline-offset: -1.5px; }
+button.inst-linha-botao:hover { background: alpha(#FFFFFF, 0.03); }
+button.inst-linha-botao:focus-visible { outline-color: @k_accent; }
+button.inst-escolha, button.inst-disco { all: unset; background: #1C1D23; border: 1px solid #26272F; border-radius: 6px; padding: 14px 16px; outline: 2px solid transparent; outline-offset: 2px;
+  transition: border-color 160ms ease-out, background 160ms ease-out; }
+button.inst-escolha:hover, button.inst-disco:hover { background: #20212A; }
+button.inst-escolha:checked, button.inst-disco:checked { background: #22232E; border-color: @k_accent; }
+button.inst-escolha:focus-visible, button.inst-disco:focus-visible { outline-color: @k_accent; }
+.inst-escolha-icone { background: #2A2B35; border-radius: 6px; color: #B9BAC4; }
+.inst-escolha-titulo { font-size: 14px; font-weight: 600; color: #E2E2E6; }
+dropdown.inst-seletor > button { background: #1A1B21; border: 1px solid #26272F; border-radius: 4px; box-shadow: none; padding: 0 10px; min-height: 30px; font-size: 12px; color: #E2E2E6; }
+button.inst-pilula { all: unset; border: 1px solid #2E2F3A; border-radius: 4px; padding: 0 10px; min-height: 26px; font-size: 12px; color: #B9BAC4; outline: 1.5px solid transparent; outline-offset: 1px; }
+button.inst-pilula:hover { background: alpha(#FFFFFF, 0.04); }
+button.inst-pilula:checked { background: alpha(@k_accent, 0.14); border-color: alpha(@k_accent, 0.6); color: #E2E2E6; }
+button.inst-pilula:focus-visible { outline-color: @k_accent; }
+checkbutton.inst-radio { font-size: 13px; color: #E2E2E6; }
+checkbutton.inst-radio radio, checkbutton.inst-radio check { background: transparent; border: 1.5px solid #4A4B57; box-shadow: none; min-width: 14px; min-height: 14px; margin-right: 8px; -gtk-icon-source: none; color: transparent; }
+checkbutton.inst-radio radio:checked { border-color: @k_accent; background: radial-gradient(circle, @k_accent 45%, transparent 50%); }
+checkbutton.inst-radio check { border-radius: 4px; }
+checkbutton.inst-radio check:checked { background: @k_accent; border-color: @k_accent; -gtk-icon-source: -gtk-icontheme("object-select-symbolic"); color: #1C1D24; }
+checkbutton.inst-radio:focus-visible radio, checkbutton.inst-radio:focus-visible check { outline: 1.5px solid @k_accent; outline-offset: 2px; }
+entry.inst-campo, passwordentry.inst-campo { outline: none; }
+.inst-divisao { border-radius: 4px; }
+switch.inst-switch { background: #2E2F3A; border: none; border-radius: 999px; min-width: 36px; min-height: 20px; }
+switch.inst-switch:checked { background: @k_accent; }
+switch.inst-switch slider { background: #E2E2E6; border-radius: 999px; min-width: 16px; min-height: 16px; margin: 2px; border: none; box-shadow: none; }
+entry.inst-campo, passwordentry.inst-campo { background: #1A1B21; border: 1px solid #26272F; border-radius: 4px; padding: 0 10px; min-height: 34px; font-size: 13px; color: #E2E2E6; box-shadow: none; }
+entry.inst-campo:focus-within, passwordentry.inst-campo:focus-within { border-color: @k_accent; }
+entry.inst-campo.erro { border-color: #EFA2A6; }
+.inst-confere { color: #8ED2C3; transition: opacity 180ms ease-out; }
+.inst-avatar { background: #2A2B35; border-radius: 999px; }
+.inst-avatar-letra { font-family: "Ubuntu", "Inter", sans-serif; font-size: 28px; font-weight: 700; color: #E2E2E6; }
+.inst-pct { font-family: "Ubuntu", "Inter", sans-serif; font-size: 34px; font-weight: 700; color: @k_accent; }
+.inst-etapa { min-height: 34px; }
+.inst-etapa label.atual { font-weight: 600; }
+.inst-etapa-espera { color: #7A7B88; }
+.inst-dica { background: alpha(@k_accent, 0.08); border: 1px solid alpha(@k_accent, 0.30); border-radius: 6px; padding: 12px 14px; }
+.inst-dica-n { font-size: 11px; font-weight: 600; color: @k_accent; letter-spacing: 0.66px; }
+.inst-rodape { min-height: 40px; }
+button.inst-voltar { all: unset; border-radius: 4px; padding: 0 10px; min-height: 32px; font-size: 13px; color: #B9BAC4; outline: 1.5px solid transparent; outline-offset: 1px; }
+button.inst-voltar:hover { background: alpha(#FFFFFF, 0.05); }
+button.inst-voltar:focus-visible { outline-color: @k_accent; }
+.inst-contagem { font-size: 12px; color: #7A7B88; }
+button.inst-seguir { all: unset; background: @k_accent; color: #1C1D24; border-radius: 4px; padding: 0 18px; min-height: 34px; font-size: 13px; font-weight: 600; outline: 2px solid transparent; outline-offset: 2px; transition: background 160ms ease-out; }
+button.inst-seguir:hover { background: shade(@k_accent, 1.06); }
+button.inst-seguir:disabled { opacity: 0.5; }
+button.inst-seguir.perigo { background: #EFA2A6; }
+button.inst-seguir:focus-visible { outline-color: @k_accent; }
+/* help to see: high contrast */
+window.instalador.alto-contraste { background: #000000; border-color: #FFFFFF; }
+window.instalador.alto-contraste .inst-lateral, window.instalador.alto-contraste .inst-cartao, window.instalador.alto-contraste button.inst-escolha, window.instalador.alto-contraste button.inst-disco { background: #000000; border-color: #FFFFFF; }
+window.instalador.alto-contraste .inst-sub, window.instalador.alto-contraste .inst-contagem, window.instalador.alto-contraste .inst-passo { color: #FFFFFF; }

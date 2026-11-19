@@ -1,0 +1,30 @@
+# Build output
+target/
+shell/target/
+/core
+__pycache__/
+
+# Local, machine-specific dependencies and downloads (poc/setup-deps.sh): never committed.
+# Without the trailing slash so a symlink to a shared copy (git worktrees) is ignored too.
+/poc/.deps
+*.log
+!kernel/build-console.log
+
+# Kernel build tree (kernel/build.sh downloads and builds tens of GB here; only the script and config are tracked)
+/kernel/*
+!/kernel/.gitignore
+!/kernel/build.sh
+!/kernel/kalango.config
+!/kernel/build-console.log
+
+# The website (branch/repo "site"): dependencies and builds
+/site/node_modules/
+/site/dist/
+/site/dist-ssr/
+
+# Editors and local tool state
+.vscode/
+.idea/
+*~
+.DS_Store
+.claude/settings.local.json

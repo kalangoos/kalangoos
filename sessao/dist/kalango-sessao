@@ -1,0 +1,13 @@
+#!/bin/sh
+# KalangoOS · início da sessão gráfica (chamado pela tela de entrada).
+# Usa a configuração do compositor do KalangoOS; quem quiser personalizar copia para ~/.config/kalango/niri.kdl.
+if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/kalango/niri.kdl" ]; then
+    export NIRI_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/kalango/niri.kdl"
+else
+    export NIRI_CONFIG=/usr/share/kalango/niri.kdl
+fi
+export XDG_CURRENT_DESKTOP=KalangoOS:niri
+export XDG_SESSION_DESKTOP=kalango
+# o niri-session importa este ambiente para o systemd do usuário e sobe niri.service; ao chegar em
+# graphical-session.target, sobem kalango-shell.service e kalango-aprovacao.service
+exec niri-session -l
