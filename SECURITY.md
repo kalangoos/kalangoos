@@ -5,12 +5,11 @@ ameaças e as camadas de defesa estão em [docs/SEGURANCA.md](docs/SEGURANCA.md)
 
 ## Como relatar uma falha
 
-**Não abra issue, pull request nem discussão pública sobre uma falha.** Use um destes caminhos:
+**Não abra issue, pull request nem discussão pública sobre uma falha.** Use o caminho abaixo:
 
 1. **Relato privado no GitHub** (preferido): aba **Security** deste repositório → **Report a vulnerability**.
-   <!-- TODO (mantenedores): ativar "Private vulnerability reporting" em Settings → Code security. -->
-2. **E-mail:** **TODO: definir o endereço de segurança (por exemplo, seguranca@ em kalangoos.com)** e, se quiser,
-   uma chave PGP publicada em `kalangoos.com/seguranca` (página ainda não publicada).
+2. Sem acesso ao GitHub? Por enquanto não há outro canal privado; um endereço de e-mail de segurança será publicado
+   aqui quando existir.
 
 Inclua, se puder: a versão ou o commit, o componente (`kalangod`, `kalango-agente`, shell, instalador, patches do
 niri…), os passos para reproduzir e o impacto que você enxerga. Não teste em computadores ou contas que não são seus.
@@ -46,5 +45,5 @@ O projeto ainda não tem versões publicadas. Até a primeira, só o ramo `main`
 ---
 
 **English.** Please do not report security issues in public. Use GitHub's private vulnerability reporting
-(Security tab → Report a vulnerability) or the security e-mail above (to be defined). We acknowledge reports within
+(Security tab → Report a vulnerability). We acknowledge reports within
 5 business days and coordinate disclosure with you.
