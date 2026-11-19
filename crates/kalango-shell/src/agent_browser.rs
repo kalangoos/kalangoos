@@ -157,6 +157,9 @@ impl AgentBrowser {
         crate::central::posicao_debug_sempre("navegador nova pagina", new_tab.upcast_ref());
         let session = rotulo(tr("isolated session · none of your logins"), "navegador-sessao");
         session.set_valign(Align::Center);
+        session.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        session.set_max_width_chars(34);
+        session.set_width_chars(6);
         top.append(&session);
         raiz.append(&top);
         // the address bar
@@ -214,6 +217,8 @@ impl AgentBrowser {
         texts.set_hexpand(true);
         let band_title = rotulo("", "navegador-faixa-titulo");
         band_title.set_xalign(0.0);
+        band_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        band_title.set_max_width_chars(24);
         let band_sub = rotulo("", "central-agente-sub");
         band_sub.set_xalign(0.0);
         band_sub.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -261,6 +266,9 @@ impl AgentBrowser {
             let w = Rc::downgrade(&b);
             btn.connect_clicked(move |_| {
                 if let Some(b) = w.upgrade() {
+                    if debug() {
+                        eprintln!("debug navegador: botão {}", ["voltar", "avançar", "recarregar"][job]);
+                    }
                     b.push(match job {
                         0 => Job::Back,
                         1 => Job::Forward,
@@ -627,7 +635,11 @@ impl AgentBrowser {
         if !self.address.state_flags().contains(gtk::StateFlags::FOCUS_WITHIN) {
             self.address.set_text(&st.live.url);
         }
-        self.back.set_sensitive(st.live.back && !st.working);
+        let back_on = st.live.back && !st.working;
+        if debug() && self.back.is_sensitive() != back_on {
+            eprintln!("debug navegador: voltar ativo {back_on}");
+        }
+        self.back.set_sensitive(back_on);
         self.forward.set_sensitive(st.live.forward && !st.working);
         self.marks.queue_draw();
         // the pages as tabs

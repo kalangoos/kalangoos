@@ -1,11 +1,13 @@
 // Writes src/styles/tokens.css from design/tokens/tokens.json (the variables exported from the
 // FigCraft Design System): colours in both modes, radii and spacing. Run with `npm run tokens`.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const all = JSON.parse(readFileSync(join(here, '../../design/tokens/tokens.json'), 'utf8'));
+// the Design System's tokens: a copy in this repository (design-tokens/), or the monorepo's design/tokens/
+const tokensFile = () => [join(here, '../design-tokens/tokens.json'), join(here, '../../design/tokens/tokens.json')].find((p) => existsSync(p));
+const all = JSON.parse(readFileSync(tokensFile(), 'utf8'));
 const colors = all['KalangoOS · Cores'];
 const layout = all['KalangoOS · Layout'];
 

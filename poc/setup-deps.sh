@@ -7,7 +7,8 @@ set -e
 cd "$(dirname "$0")"
 mkdir -p .deps/debs .deps/root
 # (KALANGO_DEPS: only these packages, e.g. one added later; the Terminal's emulator is VTE for GTK 4)
-todo="${KALANGO_DEPS:-sway grim libgtk4-layer-shell-dev fonts-inter wlsunset libvte-2.91-gtk4-dev}"; seen=""; need=""
+# (glslc and spirv-headers: the Vulkan shaders of the llama.cpp in the image — local models on any GPU)
+todo="${KALANGO_DEPS:-sway grim libgtk4-layer-shell-dev fonts-inter wlsunset libvte-2.91-gtk4-dev glslc spirv-headers}"; seen=""; need=""
 while [ -n "$todo" ]; do
   set -- $todo; p=$1; shift; todo="$*"
   case " $seen " in *" $p "*) continue ;; esac

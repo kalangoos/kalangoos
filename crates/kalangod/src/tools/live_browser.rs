@@ -45,6 +45,10 @@ struct Session {
     height: u32,
     /// the address last asked for (an error page shows it, not the engine's own address)
     requested: String,
+    /// the pages of this session, kept here: Moli's own history misses a navigation made by a click on a link (suite
+    /// run 53: "Voltar" stayed off after following a link)
+    back_stack: Vec<String>,
+    fwd_stack: Vec<String>,
     dir: PathBuf,
     _proxy: Proxy,
 }
@@ -165,7 +169,7 @@ impl Session {
             }
         });
         let mut s = Session { child, to: std::fs::File::from(we_write), from: rx, next: 1, target: String::new(), started: Instant::now(), used: Instant::now(),
-            width: WIDTH, height: HEIGHT, requested: String::new(), dir, _proxy: proxy };
+            width: WIDTH, height: HEIGHT, requested: String::new(), back_stack: Vec::new(), fwd_stack: Vec::new(), dir, _proxy: proxy };
         let t = s.call("Target.createTarget", json!({"url": "about:blank"}), false, 20)?;
         let tid = t["targetId"].as_str().ok_or("the browser did not open a page")?.to_string();
         let a = s.call("Target.attachToTarget", json!({"targetId": tid, "flatten": true}), false, 20)?;
@@ -241,27 +245,43 @@ impl Session {
         if info[0].as_str().is_some_and(|u| u.starts_with("chrome-error:") || u == "about:blank") && !self.requested.is_empty() {
             info[0] = json!(self.requested);
         }
-        let hist = self.call("Page.getNavigationHistory", json!({}), true, 10).unwrap_or(json!({}));
-        let i = hist["currentIndex"].as_i64().unwrap_or(0);
-        let n = hist["entries"].as_array().map(|a| a.len() as i64).unwrap_or(0);
+        // (a page reached any way — opened, a link followed, a form sent — is a step back; a new one clears forward)
+        if let Some(u) = info[0].as_str().filter(|u| u.starts_with("http")) {
+            if self.back_stack.last().map(String::as_str) != Some(u) {
+                self.back_stack.push(u.to_string());
+                if self.fwd_stack.last().map(String::as_str) != Some(u) {
+                    self.fwd_stack.clear();
+                } else {
+                    self.fwd_stack.pop();
+                }
+            }
+        }
         let shot = self.call("Page.captureScreenshot", json!({"format": "png"}), true, 20)?;
         Ok(json!({
             "url": info[0], "titulo": info[1], "rolagem": info[2],
             "foto": shot["data"], "largura": self.width, "altura": self.height,
             // (the first entry is the blank page the browser starts on)
-            "voltar": i > 1, "avancar": i + 1 < n,
+            "voltar": self.back_stack.len() > 1, "avancar": !self.fwd_stack.is_empty(),
         }))
     }
 
     fn history(&mut self, delta: i64) -> Result<(), String> {
-        let hist = self.call("Page.getNavigationHistory", json!({}), true, 10)?;
-        let i = hist["currentIndex"].as_i64().unwrap_or(0) + delta;
-        let Some(e) = hist["entries"].as_array().and_then(|a| a.get(i.max(0) as usize)).cloned() else { return Ok(()) };
-        if i < 1 {
-            return Ok(());
+        let target = if delta < 0 {
+            if self.back_stack.len() < 2 {
+                return Ok(());
+            }
+            let cur = self.back_stack.pop().unwrap_or_default();
+            self.fwd_stack.push(cur);
+            self.back_stack.last().cloned()
+        } else {
+            let Some(u) = self.fwd_stack.last().cloned() else { return Ok(()) };
+            Some(u)
+        };
+        if let Some(u) = target {
+            self.requested = u.clone();
+            self.call("Page.navigate", json!({"url": u}), true, 30)?;
+            self.settle();
         }
-        self.call("Page.navigateToHistoryEntry", json!({"entryId": e["id"]}), true, 20)?;
-        self.settle();
         Ok(())
     }
 

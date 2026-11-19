@@ -592,7 +592,9 @@ impl Central {
         let novo = id == "novo-agente";
         let id_trilho = if novo || id == "instalar-agente" { "agentes" } else { id };
         let Some((pid, nome, _, true)) = PAGINAS.iter().find(|p| p.0 == id_trilho) else { return };
-        let ja_aqui = *self.atual.borrow() == *pid;
+        // ("again" only while the window is on screen: a closed window reopened on this page starts as its band wants
+        // — suite run 53, §80 found the list opened as if the rail's button had been pressed)
+        let ja_aqui = self.janela.is_visible() && *self.atual.borrow() == *pid;
         *self.atual.borrow_mut() = pid;
         self.pedido.set_text("");
         for ((pid, _, glifo, _), (_, b)) in PAGINAS.iter().zip(&self.trilho) {
