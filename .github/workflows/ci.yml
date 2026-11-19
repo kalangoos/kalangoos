@@ -77,9 +77,13 @@ jobs:
         with:
           cache-key: testes
       - name: Testes do workspace (sem o motor de agentes)
-        # kalangod's tests start the daemon in dry-run mode (no root) and its Landlock/seccomp sandboxes; the
-        # limits test skips itself where the user systemd is missing.
-        run: cargo test --workspace --locked --no-fail-fast --exclude kalango-agente
+        # kalangod's tests start the daemon in dry-run mode (no root) and its Landlock/seccomp sandboxes. Two need what a
+        # GitHub runner lacks and run on a developer machine and in the VM (crates/kalangod/vm/run.sh) instead:
+        # - administracao: calls nmcli, and the runner has no NetworkManager;
+        # - tarefas_com_limites: needs the user systemd to own the memory controller, so an OOM kill is seen as one.
+        run: >-
+          cargo test --workspace --locked --no-fail-fast --exclude kalango-agente --
+          --skip administracao --skip tarefas_com_limites
       - name: Testes de unidade do motor de agentes
         run: cargo test -p kalango-agente --bins --locked --no-fail-fast
 
