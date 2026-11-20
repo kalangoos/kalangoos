@@ -7,6 +7,7 @@ pub mod observar;
 pub mod sistema;
 pub mod navegador;
 pub mod live_browser;
+pub mod maquinas;
 pub mod web;
 
 use crate::peer::Peer;
@@ -58,6 +59,7 @@ pub fn all() -> Vec<Tool> {
     v.extend(admin::tools());
     v.extend(importar::tools());
     v.extend(web::tools());
+    v.extend(maquinas::tools());
     v
 }
 

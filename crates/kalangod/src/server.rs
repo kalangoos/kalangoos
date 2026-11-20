@@ -281,6 +281,18 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
         // recorded in the timeline)
         Level::Sistema if st.approvals.is_standing(peer.uid, &peer.exe, name, args) => {}
         Level::Sistema => approve("sistema", "mudança no sistema".into())?,
+        // the virtual machines ask as the person chose in VirtualDesk (turning off and deleting, always); an
+        // "always" answered here for exactly this request goes ahead
+        _ if name.starts_with("vm.") && !st.approvals.is_standing(peer.uid, &peer.exe, name, args) => {
+            match crate::tools::maquinas::needs_approval(peer, name, args) {
+                Ok(Some(reason)) => approve("usuario", reason)?,
+                Ok(None) => {}
+                Err(e) => {
+                    log(st, peer, rule, name, tool.level, args, "erro", &e, None, None);
+                    return Err(e);
+                }
+            }
+        }
         _ => {}
     }
     // a page on the person's own network (a router, a printer, a NAS): only with their approval, for that address
