@@ -183,8 +183,31 @@ jobs:
         run: >-
           cargo build --release --locked
           -p kalango-shell -p kalangod -p kalango-agente -p kalango-aprovacao -p kalango-entrada -p kalango-instalador
+      # the native apps that live in their own repositories, at fixed commits (bump them here, in their own pull request)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: kalangoos/kalango-remote
+          ref: 70108db3e4bd33f92ca31b35877abd6c209f3813
+          path: apps/kalango-remote
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: kalangoos/kalango-audio
+          ref: 6609815f97b306f12edbbced192707d5aff8366c
+          path: apps/kalango-audio
+          persist-credentials: false
+      - name: Kalango Remote e Kalango Audio
+        run: |
+          set -euo pipefail
+          # Remote: the RustDesk core's codec libraries and cloudflared (pinned with its SHA-256), without sudo
+          (cd apps/kalango-remote && kalangoos/scripts/deps.sh && kalangoos/scripts/cloudflared.sh \
+            && source kalangoos/scripts/env.sh \
+            && cargo build --release --locked -p kalango-remote -p kalango-remote-core --features kalango-remote-core/linux-pkg-config)
+          (cd apps/kalango-audio && cargo build --release --locked)
       - name: Montar a ISO
         env:
+          KALANGO_REMOTE_DIR: ${{ github.workspace }}/apps/kalango-remote
+          KALANGO_AUDIO_DIR: ${{ github.workspace }}/apps/kalango-audio
           KALANGO_IMAGEM_ISO: "1"
           KALANGO_IMAGEM_TMP: /mnt/kalango/build
           # no local model in the ISO the CI publishes (its licence is being reviewed): the agent gets it later
