@@ -125,7 +125,7 @@ jobs:
           set -euo pipefail
           sudo apt-get -o Acquire::Retries=3 update -q
           sudo apt-get -o Acquire::Retries=3 install -y -q --no-install-recommends \
-            gawk flex bison bc dwarves dpkg-dev debhelper libelf-dev libssl-dev libdw-dev rsync zstd cpio kmod
+            build-essential gawk flex bison bc dwarves dpkg-dev debhelper libelf-dev libssl-dev libdw-dev rsync zstd cpio kmod
           # the build tree with debug info needs tens of GB: the runner's second disk
           sudo mkdir -p /mnt/kernel-src && sudo chown "$USER" /mnt/kernel-src
           ln -s /mnt/kernel-src kernel/src
@@ -169,6 +169,11 @@ jobs:
             qemu-system-x86 qemu-utils ovmf cmake libvulkan-dev \
             libudev-dev libgbm-dev libxkbcommon-dev libegl1-mesa-dev libinput-dev libseat-dev libpipewire-0.3-dev \
             libpango1.0-dev libdisplay-info-dev libdbus-1-dev libsystemd-dev
+          # mmdebstrap --mode=unshare builds the image without root: it needs subordinate ids for this user and user
+          # namespaces, which Ubuntu 24.04 restricts through AppArmor
+          grep -q "^$USER:" /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
+          grep -q "^$USER:" /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           # the VM test: KVM for this user (the runner has the device, not the permission)
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
