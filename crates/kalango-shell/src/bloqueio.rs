@@ -55,6 +55,11 @@ struct Tela {
     anims: RefCell<Vec<Animavel>>,
     avatar: gtk::Widget,
     dica: gtk::Box,
+    /// the password state: the account's photo big in the middle, the name, the field (design 130156)
+    centro: Animavel,
+    /// the time, small, on top while the field is open
+    topo: Animavel,
+    topo_txt: gtk::Label,
     senha: Animavel,
     entrada: gtk::PasswordEntry,
     erro: gtk::Label,
@@ -296,7 +301,7 @@ impl Bloqueio {
         // the field (as the login screen's): lock, the dots, and the arrow that confirms
         let caixa_senha = caixa(Orientation::Vertical, 8, "");
         let campo = caixa(Orientation::Horizontal, 8, "bloqueio-campo");
-        campo.set_size_request(260, 40);
+        campo.set_size_request(px(320.0) as i32, px(44.0) as i32);
         let cadeado = ui_icon("cadeado", "#8E8F99", 16);
         cadeado.set_valign(Align::Center);
         campo.append(&cadeado);
@@ -312,12 +317,36 @@ impl Bloqueio {
         campo.append(&ir);
         caixa_senha.append(&campo);
         let erro = rotulo("", "bloqueio-erro");
+        erro.set_halign(Align::Center);
         caixa_senha.append(&erro);
+        caixa_senha.set_size_request(px(320.0) as i32, -1);
         let senha = Animavel::new(&caixa_senha);
         senha.set_visible(false);
-        baixo.append(&senha);
+        // the password state, as the login screens of other systems: the photo big in the middle, the name under it,
+        // then the field and what it says
+        let centro_box = caixa(Orientation::Vertical, 0, "");
+        let grande = crate::energia::avatar(&nome, px(160.0) as i32, "bloqueio-avatar-grande");
+        centro_box.append(&grande);
+        let nome_l = rotulo(&nome, "bloqueio-nome");
+        nome_l.set_halign(Align::Center);
+        nome_l.set_margin_top(px(20.0) as i32);
+        centro_box.append(&nome_l);
+        senha.set_margin_top(px(24.0) as i32);
+        centro_box.append(&senha);
+        let centro = Animavel::new(&centro_box);
+        centro.set_halign(Align::Center);
+        centro.set_valign(Align::Center);
+        centro.set_visible(false);
+        let topo_txt = rotulo("", "bloqueio-topo");
+        let topo = Animavel::new(&topo_txt);
+        topo.set_halign(Align::Center);
+        topo.set_valign(Align::Start);
+        topo.set_margin_top(px(44.0) as i32);
+        topo.set_visible(false);
         if principal {
             raiz.add_overlay(&baixo);
+            raiz.add_overlay(&centro);
+            raiz.add_overlay(&topo);
         }
         janela.set_child(Some(&raiz));
         let w = Rc::downgrade(self);
@@ -364,7 +393,7 @@ impl Bloqueio {
             }
         });
         raiz.add_controller(clique);
-        let t = Tela { janela: janela.clone(), relogio, horas, data, cartoes, anims: RefCell::default(), avatar, dica, senha, entrada, erro, principal };
+        let t = Tela { janela: janela.clone(), relogio, horas, data, cartoes, anims: RefCell::default(), avatar, dica, centro, topo, topo_txt, senha, entrada, erro, principal };
         self.telas.borrow_mut().push(t);
         self.resumo.borrow_mut().clear();
         self.preencher_cartoes();
@@ -387,6 +416,7 @@ impl Bloqueio {
                 l.set_text(&dig.chars().nth(i).map(String::from).unwrap_or_default());
             }
             t.data.set_text(&data);
+            t.topo_txt.set_text(&format!("{hh}:{mm} · {data}"));
         }
     }
 
@@ -520,11 +550,14 @@ impl Bloqueio {
         for t in self.telas.borrow().iter() {
             t.relogio.ir(Canal::Y, -24.0, mv::SUAVE).ir(Canal::Opacidade, 0.0, mv::SUAVE);
             if t.principal {
-                // the avatar becomes the field
+                // the small avatar goes; the photo comes big to the middle, with the field (design 130156)
                 t.dica.set_visible(false);
-                t.avatar.add_css_class("ativo");
+                t.avatar.set_visible(false);
                 t.senha.set_visible(true);
-                t.senha.entrar((0.0, -8.0), 0.97);
+                t.centro.set_visible(true);
+                t.centro.entrar((0.0, 16.0), 0.96);
+                t.topo.set_visible(true);
+                t.topo.entrar((0.0, -8.0), 1.0);
                 t.erro.set_text("");
                 t.entrada.grab_focus();
             }
@@ -543,7 +576,9 @@ impl Bloqueio {
             if t.principal {
                 t.entrada.set_text("");
                 t.senha.set_visible(false);
-                t.avatar.remove_css_class("ativo");
+                t.centro.set_visible(false);
+                t.topo.set_visible(false);
+                t.avatar.set_visible(true);
                 t.dica.set_visible(true);
             }
         }

@@ -565,6 +565,15 @@ impl Area {
     }
 
     /// Builds every widget of the layout (again).
+    /// Clicks anywhere on the desktop (seen before its widgets; they still get them): the drop-down Terminal goes up on
+    /// a click outside it.
+    pub fn on_click(&self, f: impl Fn() + 'static) {
+        let g = gtk::GestureClick::new();
+        g.set_propagation_phase(gtk::PropagationPhase::Capture);
+        g.connect_pressed(move |_, _, _, _| f());
+        self.janela.add_controller(g);
+    }
+
     pub fn construir(self: &Rc<Self>) {
         for it in self.itens.borrow_mut().drain(..) {
             self.fixo.remove(&it.anim);

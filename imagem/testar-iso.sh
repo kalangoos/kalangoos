@@ -15,7 +15,7 @@ parar() { [ -n "$VM" ] && kill "$VM" 2>/dev/null; wait 2>/dev/null || true; }
 trap parar EXIT
 ligar() {  # ligar iso|instalado
   rm -f "$D/serial.sock"
-  VM_DIR=$D VM_TELA=none DISCO_NOVO=0 MEM=${MEM:-6144} CPUS=${CPUS:-4} imagem/rodar-iso.sh "$1" > "$D/qemu-$1.log" 2>&1 &
+  VM_DIR=$D VM_TELA=none MEM=${MEM:-6144} CPUS=${CPUS:-4} imagem/rodar-iso.sh "$1" > "$D/qemu-$1.log" 2>&1 &
   VM=$!
   for _ in $(seq 60); do [ -S "$D/serial.sock" ] && return; sleep 1; done
   echo "a VM não ligou:"; cat "$D/qemu-$1.log"; exit 1

@@ -36,8 +36,11 @@ kernel/build-console.log
 # Atalhos das habilidades do OpenSpec: apontam para .agents/, que não é versionado.
 .claude/*
 
-# Decisão de publicação (2026-11-19): a árvore do kernel fica fora; os links do OpenSpec também.
-kernel/*
+# Decisão de publicação (2026-11-19): a árvore de compilação do kernel fica fora (kernel/src e kernel/out nem são
+# versionadas); o script e a configuração do kernel vão a público: a CI compila o kernel por eles. Os links do
+# OpenSpec também ficam fora.
+kernel/src/*
+kernel/out/*
 .agents/*
 site/node_modules/*
 site/dist/*

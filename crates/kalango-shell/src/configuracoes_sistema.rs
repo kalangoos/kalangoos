@@ -900,6 +900,87 @@ impl SystemPage {
     }
 
     /// A change that only the system can make: through kalangod (the person approves it); the tab is read again after.
+    /// One's own avatar as a button with a camera badge: a menu to choose a photo (the file chooser, images only) or to
+    /// take it away; the login screen gets it through kalangod (usuarios.foto).
+    fn photo_button(self: &Rc<Self>, a: &Account) -> gtk::Widget {
+        let over = gtk::Overlay::new();
+        over.set_child(Some(&avatar(a, 52)));
+        let badge = caixa(Orientation::Horizontal, 0, "cfg-avatar-selo");
+        badge.set_halign(Align::End);
+        badge.set_valign(Align::End);
+        badge.set_can_target(false);
+        badge.append(&ui_icon("camera", "#E2E2E6", 12));
+        over.add_overlay(&badge);
+        let btn = gtk::MenuButton::new();
+        btn.add_css_class("cfg-avatar-botao");
+        btn.set_child(Some(&over));
+        btn.set_tooltip_text(Some(tr("Change the photo")));
+        btn.set_valign(Align::Center);
+        let pop = gtk::Popover::new();
+        pop.add_css_class("cfg-menu-foto");
+        pop.set_has_arrow(false);
+        pop.set_position(gtk::PositionType::Bottom);
+        // (left edge with the avatar's, as the design: a popover centres on its button, and the menu is wider)
+        pop.connect_map(|p| {
+            let w = p.width().max(p.child().map(|c| c.width()).unwrap_or(0));
+            p.set_offset((w - 52) / 2, 6);
+        });
+        let lista = caixa(Orientation::Vertical, 2, "");
+        let item = |icone: &str, texto: &str| {
+            let b = gtk::Button::new();
+            b.add_css_class("cfg-menu-item");
+            let r = caixa(Orientation::Horizontal, 10, "");
+            r.append(&ui_icon(icone, "#B9BAC4", 16));
+            r.append(&left(texto, "cfg-menu-texto"));
+            b.set_child(Some(&r));
+            b
+        };
+        let escolher = item("imagem", tr("Choose photo…"));
+        let remover = item("lixeira", tr("Remove photo"));
+        lista.append(&escolher);
+        let face = a.home.join(".face");
+        if face.is_file() {
+            lista.append(&remover);
+        }
+        pop.set_child(Some(&lista));
+        btn.set_popover(Some(&pop));
+        let (w, home, p2) = (Rc::downgrade(self), a.home.clone(), pop.clone());
+        escolher.connect_clicked(move |b| {
+            p2.popdown();
+            let filtro = gtk::FileFilter::new();
+            filtro.set_name(Some(tr("Images")));
+            filtro.add_mime_type("image/*");
+            let filtros = gtk::gio::ListStore::new::<gtk::FileFilter>();
+            filtros.append(&filtro);
+            let d = gtk::FileDialog::new();
+            d.set_title(tr("Choose photo"));
+            d.set_filters(Some(&filtros));
+            d.set_initial_folder(Some(&gtk::gio::File::for_path(glib::user_special_dir(glib::UserDirectory::Pictures).unwrap_or_else(glib::home_dir))));
+            let (w, home) = (w.clone(), home.clone());
+            d.open(b.root().and_downcast_ref::<gtk::Window>(), gtk::gio::Cancellable::NONE, move |r| {
+                let Ok(f) = r else { return };
+                let Some(path) = f.path() else { return };
+                match save_face(&path, &home) {
+                    Ok(()) => {
+                        if let Some(p) = w.upgrade() {
+                            p.system_call("usuarios.foto", json!({}));
+                        }
+                    }
+                    Err(e) => eprintln!("kalango-shell: foto da conta: {e}"),
+                }
+            });
+        });
+        let (w, home, p3) = (Rc::downgrade(self), a.home.clone(), pop.clone());
+        remover.connect_clicked(move |_| {
+            p3.popdown();
+            let _ = std::fs::remove_file(home.join(".face"));
+            if let Some(p) = w.upgrade() {
+                p.system_call("usuarios.foto", json!({"limpar": true}));
+            }
+        });
+        btn.upcast()
+    }
+
     fn system_call(self: &Rc<Self>, tool: &'static str, args: Value) {
         if depurando() {
             eprintln!("debug sistema: pedindo {tool} {args}");
@@ -1465,7 +1546,8 @@ impl SystemPage {
         let Some(a) = accounts.iter().find(|a| Some(&a.login) == chosen.as_ref()).cloned() else { return };
         self.account_panel.append(&rotulo_cartao("usuario", tr("CHOSEN ACCOUNT")));
         let head = caixa(Orientation::Horizontal, 12, "");
-        head.append(&avatar(&a, 52));
+        // (one's own photo: the avatar opens "Choose photo…" / "Remove photo", design 129857)
+        head.append(&if a.me { self.photo_button(&a) } else { avatar(&a, 52) });
         let hc = caixa(Orientation::Vertical, 2, "");
         hc.set_valign(Align::Center);
         hc.append(&left(&a.name, "cfg-titulo-cartao"));
@@ -1478,12 +1560,8 @@ impl SystemPage {
             let pw = gtk::Button::new();
             pw.add_css_class("cfg-linha-botao");
             pw.set_child(Some(&row(tr("Password"), Some(tr("change it in the terminal (passwd)")), &chev())));
-            pw.connect_clicked(|_| {
-                let term = ["kgx", "ptyxis", "gnome-terminal", "xterm"].iter().find(|t| glib::find_program_in_path(t).is_some()).map(|t| t.to_string());
-                if let Some(t) = term {
-                    let _ = std::process::Command::new(t).arg("--").arg("passwd").spawn();
-                }
-            });
+            // (in KalangoOS's own Terminal: the other systems' terminals are not in KalangoOS, and nothing happened)
+            pw.connect_clicked(|_| in_terminal("passwd"));
             card.append(&pw);
         }
         let lock = interruptor();
@@ -1500,12 +1578,7 @@ impl SystemPage {
                 let fp = gtk::Button::new();
                 fp.add_css_class("cfg-linha-botao");
                 fp.set_child(Some(&row(tr("Fingerprint"), Some(&if n == 0 { tr("none enrolled").to_string() } else { trf("{n} fingers enrolled", &[("n", n.to_string())]) }), &chev())));
-                fp.connect_clicked(|_| {
-                    let term = ["kgx", "ptyxis", "gnome-terminal", "xterm"].iter().find(|t| glib::find_program_in_path(t).is_some()).map(|t| t.to_string());
-                    if let Some(t) = term {
-                        let _ = std::process::Command::new(t).arg("--").arg("fprintd-enroll").spawn();
-                    }
-                });
+                fp.connect_clicked(|_| in_terminal("fprintd-enroll"));
                 card.append(&fp);
             }
             // signing in without a password at start (greetd's initial session; kalangod, approved)
@@ -1999,6 +2072,25 @@ fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
     cr.close_path();
 }
 
+/// The photo as the account's: cropped to the middle square, 256 px, written as ~/.face (beside, then renamed).
+fn save_face(from: &Path, home: &Path) -> Result<(), String> {
+    let pb = gtk::gdk_pixbuf::Pixbuf::from_file(from).map_err(|e| e.to_string())?;
+    let (w, h) = (pb.width(), pb.height());
+    let side = w.min(h);
+    let square = pb.new_subpixbuf((w - side) / 2, (h - side) / 2, side, side);
+    let out = square.scale_simple(256, 256, gtk::gdk_pixbuf::InterpType::Bilinear).ok_or("scale")?;
+    let tmp = home.join(".face.novo");
+    out.savev(&tmp, "png", &[]).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, home.join(".face")).map_err(|e| e.to_string())
+}
+
+/// Runs `command` in a new tab of KalangoOS's Terminal (passwd, fprintd-enroll: they ask in the terminal).
+fn in_terminal(command: &str) {
+    if let Some(shell) = crate::shell_atual() {
+        crate::terminal::run(&shell, None, command);
+    }
+}
+
 /// An account's picture (~/.face) or its initial.
 fn avatar(a: &Account, px: i32) -> gtk::Widget {
     let face = a.home.join(".face");
@@ -2091,5 +2183,31 @@ mod tests {
         assert!(a.cpu.contains("threads"), "{}", a.cpu);
         assert!(a.memory.ends_with("GB"));
         assert!(a.kernel.starts_with("Linux"));
+    }
+}
+
+#[cfg(test)]
+mod photo_tests {
+    use super::*;
+
+    #[test]
+    fn a_photo_becomes_a_256_square_face() {
+        let d = std::env::temp_dir().join(format!("kalango-face-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        // a wide picture: the middle square is kept
+        let pb = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 600, 300).unwrap();
+        pb.fill(0x3366ccff);
+        let src = d.join("foto.png");
+        pb.savev(&src, "png", &[]).unwrap();
+        save_face(&src, &d).unwrap();
+        let face = gtk::gdk_pixbuf::Pixbuf::from_file(d.join(".face")).unwrap();
+        assert_eq!((face.width(), face.height()), (256, 256));
+        assert!(!d.join(".face.novo").exists());
+        // not a picture: nothing is written
+        std::fs::write(d.join("nota.txt"), "oi").unwrap();
+        std::fs::remove_file(d.join(".face")).unwrap();
+        assert!(save_face(&d.join("nota.txt"), &d).is_err());
+        assert!(!d.join(".face").exists());
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }

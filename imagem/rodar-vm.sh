@@ -4,7 +4,8 @@
 # kernel e o initramfs são os da própria imagem.
 #
 #   imagem/rodar-vm.sh                 RES=1920x1080 MEM=8192 CPUS=6 (opcionais)
-#   VM_TELA=none imagem/rodar-vm.sh    sem janela (só o console serial em target/imagem/console.log)
+#   VM_TELA=none imagem/rodar-vm.sh    sem janela (a sessão roda num vídeo virtual; o console serial em
+#                                       target/imagem/console.log)
 #   socat - UNIX-CONNECT:target/imagem/serial.sock   o console serial, interativo (o login da imagem de teste:
 #                                       kalango / kalango)
 set -euo pipefail
@@ -19,7 +20,7 @@ mkdir -p "$OUT/saida"
 RES=${RES:-1920x1080}
 TELA=${VM_TELA:-sdl}
 if [ "$TELA" = none ]; then
-  DISP=(-display none -vga none)
+  DISP=(-display none -device "virtio-vga,xres=${RES%x*},yres=${RES#*x}")
 else
   DISP=(-device "virtio-vga-gl,xres=${RES%x*},yres=${RES#*x},edid=on" -display "$TELA,gl=on")
 fi

@@ -15,6 +15,7 @@ use std::path::PathBuf;
 pub enum Group {
     System,
     Windows,
+    Terminal,
 }
 
 pub struct Shortcut {
@@ -50,7 +51,9 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut { id: "gravar", group: Group::System, name: n_("Record the screen"), glyph: "video-d", actions: &[r#"spawn "@SHELL@" "captura" "video";"#], default: "Shift+Print", repeat: false },
     Shortcut { id: "atalhos", group: Group::System, name: n_("Shortcuts sheet"), glyph: "teclado", actions: &[r#"spawn "@SHELL@" "atalhos";"#], default: "Mod+Slash", repeat: false },
     Shortcut { id: "energia", group: Group::System, name: n_("Power menu"), glyph: "desligar-d", actions: &[r#"spawn "@SHELL@" "energia";"#], default: "Mod+Shift+E", repeat: false },
-    Shortcut { id: "terminal", group: Group::System, name: n_("Terminal"), glyph: "terminal", actions: &[r#"spawn "@TERMINAL@";"#], default: "Mod+T", repeat: true },
+    Shortcut { id: "terminal", group: Group::System, name: n_("Terminal"), glyph: "terminal", actions: &[r#"spawn "@SHELL@" "terminal";"#], default: "Mod+T", repeat: true },
+    Shortcut { id: "terminal-suspenso", group: Group::Terminal, name: n_("Show and hide the drop-down Terminal"), glyph: "terminal", actions: &[r#"spawn "@SHELL@" "terminal-suspenso";"#], default: "F12", repeat: false },
+    Shortcut { id: "terminal-suspenso-expandir", group: Group::Terminal, name: n_("Expand and restore the drop-down Terminal"), glyph: "expandir-altura", actions: &[r#"spawn "@SHELL@" "terminal-suspenso" "expandir";"#], default: "Shift+F12", repeat: false },
     Shortcut { id: "encaixar", group: Group::Windows, name: n_("Snap left / right"), glyph: "layout", actions: &[r#"snap-window "left";"#, r#"snap-window "right";"#], default: "Mod+Left Right", repeat: true },
     Shortcut { id: "alternar", group: Group::Windows, name: n_("Switch windows"), glyph: "apps-pontos", actions: &[r#"spawn "@SHELL@" "alternar";"#], default: "Alt+Tab", repeat: true },
     Shortcut { id: "espaco", group: Group::Windows, name: n_("Switch space"), glyph: "colunas", actions: &[r#"spawn "@SHELL@" "espacos";"#], default: "Mod+Tab", repeat: false },
@@ -100,6 +103,9 @@ pub fn caps_of(combo: &str) -> Vec<String> {
         "Period" | "period" => ".".into(),
         "Slash" | "slash" => "/".into(),
         "Comma" | "comma" => ",".into(),
+        "Apostrophe" | "apostrophe" => "'".into(),
+        "Grave" | "grave" => "`".into(),
+        "Semicolon" | "semicolon" => ";".into(),
         "Equal" | "equal" => "=".into(),
         "Minus" | "minus" => "−".into(),
         "Delete" => "Del".into(),
@@ -283,6 +289,7 @@ mod tests {
         assert_eq!(caps_of("Mod+Slash"), vec!["Super", "/"]);
         assert_eq!(caps_of("Mod+Left Right"), vec!["Super", "← →"]);
         assert_eq!(caps_of("Alt+Tab"), vec!["Alt", "Tab"]);
+        assert_eq!(caps_of("Ctrl+Apostrophe"), vec!["Ctrl", "'"]);
     }
 
     #[test]
@@ -318,6 +325,32 @@ mod tests {
     }
 
     #[test]
+    fn the_drop_down_terminal_moves_to_its_new_keys() {
+        let mut c = BTreeMap::new();
+        c.insert("terminal-suspenso".to_string(), "Ctrl+Grave".to_string());
+        let k = kdl(&c, &[], "/x/kalango-shell", "kgx");
+        assert!(k.contains(r#"Ctrl+Grave repeat=false { spawn "/x/kalango-shell" "terminal-suspenso"; }"#), "{k}");
+        // its old key does nothing now; the expand one is untouched (the session's bind holds)
+        assert!(k.contains("    F12 { spawn \"true\"; }"), "{k}");
+        assert!(!k.contains("Shift+F12"), "{k}");
+        assert_eq!(clash("Shift+F12", "", &c, &[]).as_deref(), Some(kalango_i18n::tr("Expand and restore the drop-down Terminal")));
+        assert_eq!(caps_of("Shift+F12"), vec!["Shift", "F12"]);
+        assert_eq!(normalize("shift+f12").as_deref(), Some("Shift+F12"));
+    }
+
+    /// The session's own binds (sessao/niri.kdl.modelo) have every shortcut's default keys doing its action.
+    #[test]
+    fn the_session_binds_every_default() {
+        let model = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sessao/niri.kdl.modelo")).unwrap();
+        for s in SHORTCUTS.iter().filter(|s| s.group == Group::Terminal) {
+            for (k, a) in keys_of(s.default).iter().zip(s.actions.iter()) {
+                let line = model.lines().find(|l| l.trim_start().starts_with(&format!("{k} "))).unwrap_or_else(|| panic!("{k} sem bind no modelo"));
+                assert!(line.contains(a.trim_end_matches(';')), "{k}: {line}");
+            }
+        }
+    }
+
+    #[test]
     fn niri_accepts_the_binds() {
         let niri = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../poc/.deps/src/niri/target/release/niri");
         if !niri.exists() {
@@ -328,6 +361,8 @@ mod tests {
         let mut c = BTreeMap::new();
         c.insert("fechar".to_string(), "Mod+Shift+Q".to_string());
         c.insert("encaixar".to_string(), "Mod+Ctrl+Left Right".to_string());
+        c.insert("terminal-suspenso".to_string(), "Mod+F12".to_string());
+        c.insert("terminal-suspenso-expandir".to_string(), "F11".to_string());
         let own = vec![Custom { keys: "Mod+Shift+T".into(), name: "Projeto \"x\"".into(), command: "cd ~ && echo \"oi\"".into() }];
         std::fs::write(d.join("atalhos.kdl"), kdl(&c, &own, "/x/kalango-shell", "kgx")).unwrap();
         std::fs::write(d.join("niri.kdl"), "binds {\n    Mod+Q { close-window; }\n}\ninclude \"atalhos.kdl\"\n").unwrap();

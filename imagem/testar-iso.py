@@ -49,8 +49,9 @@ class Console:
         if not re.search(r"login: *$", self.until(r"(login: *$|\$ *$)", seconds)):
             return
         self.send(user)
-        out = self.until(r"(Password: *$|\$ *$)", 30)
-        if "Password" in out:
+        # (o prompt da senha no idioma do sistema: "Password:" sem os pacotes de idioma, "Senha:" com eles)
+        out = self.until(r"((Password|Senha): *$|\$ *$)", 30)
+        if re.search(r"(Password|Senha): *$", out):
             self.send(password)
             self.until(r"\$ *$", 30)
         # (sem eco, um prompt que não atrapalha a leitura das respostas)
@@ -127,6 +128,12 @@ def main():
         # (pelo estado do dpkg, que não depende do idioma do sistema)
         casper, _ = c.run("dpkg-query -W -f='${Status}' casper 2>/dev/null")
         good &= check("installed" not in casper.split(), "o casper (o boot ao vivo) saiu do sistema instalado", casper)
+        # (o teclado escolhido no instalador, pelo /etc/default/keyboard que o systemd-localed lê e o niri pergunta)
+        kb, _ = c.run(f"XDG_RUNTIME_DIR=/run/user/$(id -u) NIRI_SOCKET=$(ls /run/user/$(id -u)/niri.*.sock | head -1) niri msg keyboard-layouts")
+        good &= check("Portuguese (Brazil)" in kb, "o teclado do instalador (br) vale na sessão", kb)
+        # (o gerenciador de pacotes e as fontes do Ubuntu: sem eles nada se instala nem se atualiza)
+        apt, _ = c.run("command -v apt-get; grep -h '^Suites:' /etc/apt/sources.list.d/*.sources | tr '\\n' ' '; ls /usr/share/keyrings/ubuntu-archive-keyring.gpg")
+        good &= check("/usr/bin/apt-get" in apt and "-security" in apt and "ubuntu-archive-keyring" in apt, "o apt e as fontes do Ubuntu (com as de segurança) estão lá", apt)
         root, _ = c.run("findmnt -no FSTYPE,SOURCE /")
         good &= check(root.startswith("ext4"), "a raiz é o disco instalado (ext4)", root)
         efi, _ = c.run("findmnt -no FSTYPE /boot/efi")

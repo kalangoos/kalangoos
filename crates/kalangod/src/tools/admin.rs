@@ -36,6 +36,8 @@ pub fn tools() -> Vec<Tool> {
             || obj(json!({"ligado": {"type": "boolean"}}), &["ligado"]), time_ntp),
         t("idioma.sistema", n_("The system's language and formats (a locale such as pt_BR.UTF-8)"), Sistema, Escreve, true,
             || obj(json!({"idioma": {"type": "string"}, "formatos": {"type": "string"}, "outros": {"type": "array", "items": {"type": "string"}, "maxItems": 6, "description": "os idiomas seguintes, quando falta uma tradução"}}), &["idioma"]), system_locale),
+        t("usuarios.foto", n_("Shows the account's photo (~/.face) on the login screen, or takes it away; only the account that asks"), Sistema, Escreve, false,
+            || obj(json!({"limpar": {"type": "boolean", "description": "tira a foto da tela de entrada"}}), &[]), user_photo),
         t("usuarios.convidado", n_("Lets a guest use the computer from the login screen (its files are wiped when it leaves), or not"), Sistema, Escreve, true,
             || obj(json!({"ligado": {"type": "boolean"}}), &["ligado"]), guest_toggle),
         t("sessao.entrar_sem_senha", n_("Signs a person in without a password when the computer starts (empty: always ask)"), Sistema, Escreve, true,
@@ -269,6 +271,95 @@ fn guest_toggle(c: &Ctx, a: &Value) -> Result<Out, String> {
     let saida = act(c, "usermod", &["-s", novo, "convidado"])?;
     Ok(Out { value: json!({"ligado": on, "saida": saida.trim()}), summary: if on { tr("the guest can sign in").to_string() } else { tr("the guest is off").to_string() },
         inverse: Some(json!({"ferramenta": "usuarios.convidado", "argumentos": {"ligado": !antes.ends_with("nologin") && !antes.ends_with("false")}})) })
+}
+
+const ICONS: &str = "/var/lib/AccountsService/icons";
+
+/// The bytes of a photo kalangod (root) may copy out of a person's home: a regular file of theirs (never a link: a
+/// ~/.face pointing at /etc/shadow would be copied where everyone reads it), at most 5 MB, a PNG or a JPEG.
+fn photo_bytes(path: &std::path::Path, owner: u32) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let f = std::fs::OpenOptions::new().read(true).custom_flags(nix::libc::O_NOFOLLOW).open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let m = f.metadata().map_err(|e| e.to_string())?;
+    if !m.file_type().is_file() || m.uid() != owner {
+        return Err(tr("the photo is not a file of this account").to_string());
+    }
+    if m.len() > 5 << 20 {
+        return Err(tr("the photo is too big (at most 5 MB)").to_string());
+    }
+    let mut b = Vec::new();
+    f.take(5 << 20).read_to_end(&mut b).map_err(|e| e.to_string())?;
+    let png = b.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+    let jpeg = b.starts_with(&[0xFF, 0xD8, 0xFF]);
+    if !png && !jpeg {
+        return Err(tr("the photo is not an image (PNG or JPEG)").to_string());
+    }
+    Ok(b)
+}
+
+fn user_photo(c: &Ctx, a: &Value) -> Result<Out, String> {
+    let user = c.peer.user.clone();
+    if user.is_empty() || !user.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+        return Err(tr("unknown account").to_string());
+    }
+    let dest = std::path::Path::new(ICONS).join(&user);
+    let clear = a.get("limpar").and_then(Value::as_bool).unwrap_or(false);
+    let had = dest.is_file();
+    let saida = if clear {
+        if c.cfg.dry_run { format!("[simulado] remover {}", dest.display()) } else {
+            if had {
+                std::fs::remove_file(&dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+            }
+            String::new()
+        }
+    } else {
+        let b = photo_bytes(&c.peer.home.join(".face"), c.peer.uid)?;
+        if c.cfg.dry_run { format!("[simulado] {} ({} bytes)", dest.display(), b.len()) } else {
+            std::fs::create_dir_all(ICONS).map_err(|e| format!("{ICONS}: {e}"))?;
+            // (written beside and then renamed: the login screen never reads half a photo)
+            let tmp = dest.with_extension("novo");
+            std::fs::write(&tmp, &b).map_err(|e| format!("{}: {e}", tmp.display()))?;
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).map_err(|e| e.to_string())?;
+            std::fs::rename(&tmp, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+            String::new()
+        }
+    };
+    Ok(Out { value: json!({"usuario": user, "limpar": clear, "saida": saida}),
+        summary: if clear { tr("the login screen shows the name's initial").to_string() } else { tr("the login screen shows the account's photo").to_string() },
+        // (a photo put where there was none comes off again; taking one off has nothing to give back)
+        inverse: (!clear && !had).then(|| json!({"ferramenta": "usuarios.foto", "argumentos": {"limpar": true}})) })
+}
+
+#[cfg(test)]
+mod photo_tests {
+    use super::*;
+
+    #[test]
+    fn only_an_image_file_of_the_account_is_copied() {
+        let d = std::env::temp_dir().join(format!("kalango-foto-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let me = nix::unistd::getuid().as_raw();
+        let png = d.join("png");
+        std::fs::write(&png, [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0]).unwrap();
+        assert!(photo_bytes(&png, me).is_ok());
+        let jpg = d.join("jpg");
+        std::fs::write(&jpg, [0xFF, 0xD8, 0xFF, 0xE0]).unwrap();
+        assert!(photo_bytes(&jpg, me).is_ok());
+        // not an image
+        let txt = d.join("txt");
+        std::fs::write(&txt, b"root:x:0:0").unwrap();
+        assert!(photo_bytes(&txt, me).is_err());
+        // a link (to anything) is refused, even to an image
+        let link = d.join("link");
+        std::os::unix::fs::symlink(&png, &link).unwrap();
+        assert!(photo_bytes(&link, me).is_err());
+        // another owner's file is refused
+        assert!(photo_bytes(&png, me + 1).is_err());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
 }
 
 /// The person greetd signs in by itself (its initial_session), if any.

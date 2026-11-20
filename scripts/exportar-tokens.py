@@ -24,6 +24,7 @@ DESTINOS = {
     "crates/kalango-shell/assets": ("dark", "light"),
     "crates/kalango-entrada/assets": ("dark",),
     "crates/kalango-aprovacao/assets": ("dark",),
+    "crates/kalango-instalador/assets": ("dark", "light"),
 }
 
 

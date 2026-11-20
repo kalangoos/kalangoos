@@ -929,7 +929,7 @@ impl InputPage {
         let custom = shortcuts::read_custom();
         let capturing = self.capturing.borrow().clone();
         let matches = |name: &str, keys: &str| q.is_empty() || name.to_lowercase().contains(&q) || shortcuts::caps_of(keys).join(" ").to_lowercase().contains(&q);
-        for (group, title) in [(Group::System, tr("SYSTEM")), (Group::Windows, tr("WINDOWS AND SPACES"))] {
+        for (group, title) in [(Group::System, tr("SYSTEM")), (Group::Windows, tr("WINDOWS AND SPACES")), (Group::Terminal, tr("TERMINAL"))] {
             let card = caixa(Orientation::Vertical, 2, "cfg-cartao");
             card.append(&left(title, "cfg-rotulo"));
             let mut any = false;

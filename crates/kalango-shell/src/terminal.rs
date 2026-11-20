@@ -11,6 +11,8 @@
 //!   send it to the agent's bar); "Pedir um comando" (Ctrl+Shift+K — Ctrl+K is the shell's) turns a sentence into a
 //!   command line, put at the prompt for the person to read and run.
 //! - **Status:** the shell, the encoding, the size in cells and the git branch of the folder.
+//! - **Two instances:** the window (`kalango-shell terminal`) and the drop-down one (terminal_dropdown.rs, F12), each
+//!   with its own tabs; both follow the Terminal's preferences (terminal_prefs.rs) live.
 
 use crate::conversa::ui_icon;
 use crate::superficies::{caixa, rotulo};
@@ -83,8 +85,17 @@ fn integration_dir() -> PathBuf {
     d
 }
 
-/// The person's shell: $SHELL, else the account's, else bash.
+/// The person's shell: the one chosen in the preferences, else $SHELL, else bash.
 fn user_shell() -> String {
+    let chosen = crate::terminal_prefs::load().shell;
+    if !chosen.is_empty() && Path::new(&chosen).is_file() {
+        return chosen;
+    }
+    account_shell()
+}
+
+/// $SHELL (the account's), else bash.
+pub fn account_shell() -> String {
     std::env::var("SHELL").ok().filter(|s| Path::new(s).is_file()).unwrap_or_else(|| "/bin/bash".into())
 }
 
@@ -139,14 +150,73 @@ fn since(t: Instant) -> String {
 }
 
 /// The KalangoOS palette for the 16 ANSI colours (the prompt's ➜ is cyan = teal, the folder magenta = lavender).
-fn palette() -> Vec<gdk::RGBA> {
-    [
-        "#16171B", "#EFA2A6", "#9FD8A4", "#E5C98C", "#8FB4EC", "#A5A1E2", "#8ED2C3", "#C9CAD3",
-        "#5C5D6A", "#F4B8BB", "#B6E4BA", "#EED7A6", "#A9C6F2", "#BDB9EE", "#A6E0D3", "#E2E2E6",
-    ]
-    .iter()
-    .filter_map(|c| gdk::RGBA::parse(*c).ok())
-    .collect()
+const DARK_PALETTE: [&str; 16] = [
+    "#16171B", "#EFA2A6", "#9FD8A4", "#E5C98C", "#8FB4EC", "#A5A1E2", "#8ED2C3", "#C9CAD3",
+    "#5C5D6A", "#F4B8BB", "#B6E4BA", "#EED7A6", "#A9C6F2", "#BDB9EE", "#A6E0D3", "#E2E2E6",
+];
+/// On the light theme: the light tokens (dark ink on white), black being the text's colour.
+const LIGHT_PALETTE: [&str; 16] = [
+    "k_text", "k_coral", "k_accent_text", "k_gold", "k_blue", "k_purple", "k_teal", "k_muted",
+    "k_dim", "k_red", "k_accent", "k_cream", "k_bt", "k_wifi", "k_teal", "k_text2",
+];
+
+/// The terminal's text, background and 16 colours: the dark ones, or the light theme's when the Terminal follows it.
+fn colors(p: &crate::terminal_prefs::Prefs) -> (gdk::RGBA, gdk::RGBA, Vec<gdk::RGBA>) {
+    let rgba = |c: &str| gdk::RGBA::parse(c).unwrap_or(gdk::RGBA::BLACK);
+    if p.follow_theme && crate::tema::e_claro() {
+        let light = |t: &str| crate::tema::token_claro(t).unwrap_or_else(|| "#322153".into());
+        (rgba(&light("k_text")), rgba(&light("k_panel")), LIGHT_PALETTE.iter().map(|t| rgba(&light(t))).collect())
+    } else {
+        (rgba("#E2E2E6"), rgba("#101114"), DARK_PALETTE.iter().map(|c| rgba(c)).collect())
+    }
+}
+
+/// A terminal as the preferences say: the font and its size, the colours, the cursor, the lines kept.
+fn style_terminal(term: &vte4::Terminal, p: &crate::terminal_prefs::Prefs) {
+    term.set_font(Some(&pango::FontDescription::from_string(&format!("JetBrains Mono {}", p.font_size))));
+    let (fg, bg, pal) = colors(p);
+    term.set_colors(Some(&fg), Some(&bg), &pal.iter().collect::<Vec<_>>());
+    term.set_color_cursor(Some(&fg));
+    term.set_cursor_shape(match p.cursor.as_str() {
+        "bloco" => vte4::CursorShape::Block,
+        "sublinhado" => vte4::CursorShape::Underline,
+        _ => vte4::CursorShape::Ibeam,
+    });
+    term.set_cursor_blink_mode(if p.blink { vte4::CursorBlinkMode::On } else { vte4::CursorBlinkMode::Off });
+    term.set_scrollback_lines(p.scrollback);
+    // (the area around the cells: the terminal's background, also when it stays dark on the light theme)
+    if p.follow_theme { term.remove_css_class("sempre-escuro") } else { term.add_css_class("sempre-escuro") }
+}
+
+/// Both Terminals (the window and the drop-down one), as they are now.
+fn instances() -> Vec<Rc<Terminal>> {
+    let mut v: Vec<Rc<Terminal>> = TERMINAL.with(|t| t.borrow().clone()).into_iter().collect();
+    v.extend(crate::terminal_dropdown::terminal());
+    v
+}
+
+/// The preferences changed (or the theme): every tab of both Terminals follows at once.
+pub fn apply_prefs() {
+    let p = crate::terminal_prefs::load();
+    for t in instances() {
+        for x in t.tabs.borrow().iter() {
+            style_terminal(&x.term, &p);
+        }
+        t.update_status();
+    }
+    if debug() {
+        eprintln!("debug terminal: preferências aplicadas (fonte {}, {} linhas, tema {})", p.font_size, p.scrollback,
+            if p.follow_theme { "do sistema" } else { "escuro" });
+    }
+}
+
+/// Which Terminal this is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// the app's window
+    Window,
+    /// the drop-down one (F12): a layer surface that terminal_dropdown.rs shows and hides
+    Dropdown,
 }
 
 /// A shell in a tab.
@@ -197,6 +267,9 @@ impl Tab {
 
 pub struct Terminal {
     pub window: gtk::ApplicationWindow,
+    pub kind: Kind,
+    /// the end of the toolbar: the window's buttons, or the drop-down's pin and expand
+    pub bar_end: gtk::Box,
     tabs_box: gtk::Box,
     stack: gtk::Stack,
     tabs: RefCell<Vec<Rc<Tab>>>,
@@ -207,10 +280,13 @@ pub struct Terminal {
     st_branch: gtk::Label,
     st_hint: gtk::Label,
     shell: Weak<Shell>,
-    over: gtk::Overlay,
+    pub over: gtk::Overlay,
     asking: RefCell<Option<Rc<dyn Fn()>>>,
     dir: PathBuf,
     count: Cell<u32>,
+    /// (the drop-down: the content keeps its size while the height animates, and lays its lines out once at the end)
+    frozen: Cell<bool>,
+    room: Cell<(i32, i32)>,
 }
 
 thread_local! {
@@ -219,8 +295,8 @@ thread_local! {
 
 /// The Terminal's shells and the folder each one is in (the System Monitor names a command by its tab's folder).
 pub fn shells() -> Vec<(i32, PathBuf)> {
-    TERMINAL.with(|t| t.borrow().as_ref().map(|t| t.tabs.borrow().iter().filter(|x| x.pid.get() > 0).map(|x| (x.pid.get(), x.cwd.borrow().clone())).collect())
-        .unwrap_or_default())
+    instances().iter().flat_map(|t| t.tabs.borrow().iter().filter(|x| x.pid.get() > 0).map(|x| (x.pid.get(), x.cwd.borrow().clone())).collect::<Vec<_>>())
+        .collect()
 }
 
 /// A new tab in `folder` that runs `command` once its prompt is up (as typed: it stays in the shell's history).
@@ -237,7 +313,7 @@ pub fn run(shell: &Rc<Shell>, folder: Option<PathBuf>, command: &str) {
 pub fn open(shell: &Rc<Shell>, folder: Option<PathBuf>) {
     let t = TERMINAL.with(|t| t.borrow().clone()).unwrap_or_else(|| {
         let app = gio::Application::default().and_downcast::<gtk::Application>().expect("app");
-        let t = Terminal::new(&app, shell);
+        let t = Terminal::new(&app, shell, Kind::Window);
         TERMINAL.with(|x| *x.borrow_mut() = Some(t.clone()));
         t
     });
@@ -258,22 +334,39 @@ pub fn open(shell: &Rc<Shell>, folder: Option<PathBuf>) {
 }
 
 impl Terminal {
-    fn new(app: &gtk::Application, shell: &Rc<Shell>) -> Rc<Terminal> {
-        // the design's 1400 × 880; on a smaller screen almost all of it
-        let (w, h) = crate::superficies::tamanho_de_janela(1400, 880);
-        let window = gtk::ApplicationWindow::builder().application(app).title(tr("Terminal")).default_width(w).default_height(h).build();
-        window.add_css_class("ed-janela");
-        let sem_barra = gtk::Box::new(Orientation::Horizontal, 0);
-        sem_barra.set_visible(false);
-        window.set_titlebar(Some(&sem_barra));
-        // the toolbar: the app, its tabs, "+", "Pedir um comando", the menu, the window's buttons
+    pub fn new(app: &gtk::Application, shell: &Rc<Shell>, kind: Kind) -> Rc<Terminal> {
+        let window = match kind {
+            Kind::Window => {
+                // the design's 1400 × 880; on a smaller screen almost all of it
+                let (w, h) = crate::superficies::tamanho_de_janela(1400, 880);
+                let window = gtk::ApplicationWindow::builder().application(app).title(tr("Terminal")).default_width(w).default_height(h).build();
+                window.add_css_class("ed-janela");
+                let sem_barra = gtk::Box::new(Orientation::Horizontal, 0);
+                sem_barra.set_visible(false);
+                window.set_titlebar(Some(&sem_barra));
+                window
+            }
+            Kind::Dropdown => {
+                let window = crate::superficies::camada(app, "kalango-terminal-suspenso", gtk4_layer_shell::Layer::Top, &[gtk4_layer_shell::Edge::Top]);
+                window.add_css_class("term-suspenso-janela");
+                window
+            }
+        };
+        // the toolbar: the app, its tabs, "+", "Pedir um comando", the menu, the window's buttons (the drop-down's: pin
+        // and expand)
         let bar = caixa(Orientation::Horizontal, 10, "ed-barra");
         if let Some(a) = shell.todos.iter().find(|a| a.id == "os.kalango.Terminal") {
             bar.append(&crate::apps::imagem(a, 24));
         }
         let tabs_box = caixa(Orientation::Horizontal, 4, "");
         tabs_box.set_valign(Align::Center);
-        bar.append(&tabs_box);
+        // (many tabs on a narrow screen: they scroll instead of widening the window)
+        let tabs_scroll = gtk::ScrolledWindow::new();
+        tabs_scroll.set_policy(gtk::PolicyType::External, gtk::PolicyType::Never);
+        tabs_scroll.set_propagate_natural_width(true);
+        tabs_scroll.set_valign(Align::Center);
+        tabs_scroll.set_child(Some(&tabs_box));
+        bar.append(&tabs_scroll);
         let new_tab = gtk::Button::new();
         new_tab.add_css_class("ed-nova-aba");
         new_tab.set_child(Some(&ui_icon("mais", "#8E8F99", 14)));
@@ -309,12 +402,40 @@ impl Terminal {
         pop.set_child(Some(&items));
         menu.set_popover(Some(&pop));
         bar.append(&menu);
-        bar.append(&crate::configuracoes::controles_janela());
-        let handle = gtk::WindowHandle::new();
-        handle.set_child(Some(&bar));
+        let bar_end = caixa(Orientation::Horizontal, 10, "");
+        bar_end.set_valign(Align::Center);
+        bar.append(&bar_end);
+        let top: gtk::Widget = match kind {
+            Kind::Window => {
+                bar_end.append(&crate::configuracoes::controles_janela());
+                let handle = gtk::WindowHandle::new();
+                handle.set_child(Some(&bar));
+                handle.upcast()
+            }
+            Kind::Dropdown => bar.clone().upcast(),
+        };
         let stack = gtk::Stack::new();
         stack.set_vexpand(true);
         stack.add_css_class("term-conteudo");
+        // the drop-down's content sits in a frame that clips it: while the height animates, the tabs keep their size
+        // (no reflow at every frame) and take the new one at the end
+        let content: gtk::Widget = match kind {
+            Kind::Window => stack.clone().upcast(),
+            Kind::Dropdown => {
+                let fixed = gtk::Fixed::new();
+                fixed.put(&stack, 0.0, 0.0);
+                let clip = gtk::ScrolledWindow::new();
+                clip.set_policy(gtk::PolicyType::External, gtk::PolicyType::External);
+                clip.add_css_class("term-conteudo");
+                clip.set_child(Some(&fixed));
+                clip.set_vexpand(true);
+                clip.set_hexpand(true);
+                let o = gtk::Overlay::new();
+                o.set_child(Some(&clip));
+                o.set_vexpand(true);
+                o.upcast()
+            }
+        };
         // the status line: the shell, the encoding, the size in cells, the branch; and a word from the agent
         let status = caixa(Orientation::Horizontal, 14, "term-status");
         let st_shell = rotulo("", "term-status-texto");
@@ -330,8 +451,8 @@ impl Terminal {
             status.append(l);
         }
         let root = caixa(Orientation::Vertical, 0, "");
-        root.append(&handle);
-        root.append(&stack);
+        root.append(&top);
+        root.append(&content);
         root.append(&status);
         let over = gtk::Overlay::new();
         over.set_child(Some(&root));
@@ -339,16 +460,44 @@ impl Terminal {
         let meter = gtk::DrawingArea::new();
         meter.set_can_target(false);
         over.add_overlay(&meter);
-        window.set_child(Some(&over));
+        if kind == Kind::Window {
+            window.set_child(Some(&over));
+        }
 
         let t = Rc::new(Terminal {
-            window, tabs_box, stack, tabs: RefCell::default(), current: Cell::new(0), ask, st_shell, st_size, st_branch, st_hint,
+            window, kind, bar_end, tabs_box, stack, tabs: RefCell::default(), current: Cell::new(0), ask, st_shell, st_size, st_branch, st_hint,
             shell: Rc::downgrade(shell), over, asking: RefCell::default(), dir: integration_dir(), count: Cell::new(0),
+            frozen: Cell::new(false), room: Cell::new((0, 0)),
         });
+        if let Ok(o) = content.clone().downcast::<gtk::Overlay>() {
+            let room = gtk::DrawingArea::new();
+            room.set_can_target(false);
+            o.add_overlay(&room);
+            let w = Rc::downgrade(&t);
+            room.connect_resize(move |_, width, height| {
+                let Some(t) = w.upgrade() else { return };
+                t.room.set((width, height));
+                if !t.frozen.get() {
+                    // (not inside the allocation: the next frame)
+                    let w = Rc::downgrade(&t);
+                    glib::idle_add_local_once(move || {
+                        if let Some(t) = w.upgrade().filter(|t| !t.frozen.get()) {
+                            let (w, h) = t.room.get();
+                            t.stack.set_size_request(w, h);
+                        }
+                    });
+                }
+            });
+        }
         let w = Rc::downgrade(&t);
         meter.connect_resize(move |_, width, _| {
             if let Some(t) = w.upgrade() {
+                // (the drop-down has two more buttons at the end and no window controls: about the same room)
                 t.ask.set_size_request((width - 600).clamp(160, 300), 32);
+                // (a very narrow one: "Pedir um comando" goes, the tabs keep the room)
+                if let Some(b) = t.ask.parent() {
+                    b.set_visible(width >= 560);
+                }
             }
         });
         let w = Rc::downgrade(&t);
@@ -357,7 +506,7 @@ impl Terminal {
                 t.new_tab(None);
             }
         });
-        for (label, action) in [(tr("New tab"), "aba"), (tr("Copy"), "copiar"), (tr("Paste"), "colar"), (tr("Clear"), "limpar")] {
+        for (label, action) in [(tr("New tab"), "aba"), (tr("Copy"), "copiar"), (tr("Paste"), "colar"), (tr("Clear"), "limpar"), (tr("Preferences"), "preferencias")] {
             let b = gtk::Button::with_label(label);
             b.add_css_class("menu-item");
             let (w, p) = (Rc::downgrade(&t), pop.downgrade());
@@ -369,8 +518,12 @@ impl Terminal {
                     t.action(action);
                 }
             });
+            if action == "preferencias" {
+                crate::central::posicao_debug(&format!("terminal preferencias {}", if kind == Kind::Window { "janela" } else { "suspenso" }), b.upcast_ref());
+            }
             items.append(&b);
         }
+        crate::central::posicao_debug(&format!("terminal menu {}", if kind == Kind::Window { "janela" } else { "suspenso" }), menu.upcast_ref());
         let w = Rc::downgrade(&t);
         t.ask.connect_activate(move |a| {
             if let Some(t) = w.upgrade() {
@@ -416,19 +569,22 @@ impl Terminal {
                 (false, gdk::Key::plus | gdk::Key::equal | gdk::Key::KP_Add) => t.zoom(1.1),
                 (false, gdk::Key::minus | gdk::Key::KP_Subtract) => t.zoom(1.0 / 1.1),
                 (false, gdk::Key::_0 | gdk::Key::KP_0) => t.zoom(0.0),
+                (false, gdk::Key::comma) => t.action("preferencias"),
                 _ => return glib::Propagation::Proceed,
             }
             glib::Propagation::Stop
         });
         t.window.add_controller(keys);
-        let app_id = |j: &gtk::ApplicationWindow| {
-            if let Some(s) = j.surface().filter(|s| s.type_().name().contains("Wayland")) {
-                let id = CString::new("os.kalango.Terminal").unwrap();
-                unsafe { gdk_wayland_toplevel_set_application_id(s.as_ptr() as *mut gdk::ffi::GdkToplevel, id.as_ptr()) };
-            }
-        };
-        t.window.connect_realize(move |j| app_id(j));
-        t.window.connect_map(move |j| app_id(j));
+        if kind == Kind::Window {
+            let app_id = |j: &gtk::ApplicationWindow| {
+                if let Some(s) = j.surface().filter(|s| s.type_().name().contains("Wayland")) {
+                    let id = CString::new("os.kalango.Terminal").unwrap();
+                    unsafe { gdk_wayland_toplevel_set_application_id(s.as_ptr() as *mut gdk::ffi::GdkToplevel, id.as_ptr()) };
+                }
+            };
+            t.window.connect_realize(move |j| app_id(j));
+            t.window.connect_map(move |j| app_id(j));
+        }
         // closing the window: a tab with a command at work asks first; then every shell is hung up
         let w = Rc::downgrade(&t);
         t.window.connect_close_request(move |win| {
@@ -450,7 +606,40 @@ impl Terminal {
             }
             glib::Propagation::Stop
         });
+        // the theme changes: the terminals follow (once for both instances)
+        thread_local! {
+            static FOLLOWING_THEME: Cell<bool> = const { Cell::new(false) };
+        }
+        if !FOLLOWING_THEME.with(|f| f.replace(true)) {
+            crate::tema::ao_mudar(apply_prefs);
+        }
         t
+    }
+
+    /// The drop-down's height animates: the content keeps the size it has (`true`) until it is let go (`false`).
+    pub fn set_frozen(&self, frozen: bool) {
+        self.frozen.set(frozen);
+        if !frozen {
+            let (w, h) = self.room.get();
+            if w > 0 && h > 0 {
+                self.stack.set_size_request(w, h);
+            }
+        }
+    }
+
+    pub fn has_tabs(&self) -> bool {
+        !self.tabs.borrow().is_empty()
+    }
+
+    /// The keyboard to the tab in view (the drop-down, on its first frame).
+    pub fn focus_current(&self) {
+        if let Some(x) = self.tabs.borrow().get(self.current.get()) {
+            x.term.grab_focus();
+        }
+    }
+
+    pub fn open_tab(self: &Rc<Self>) {
+        self.new_tab(None);
     }
 
     fn new_tab(self: &Rc<Self>, folder: Option<PathBuf>) {
@@ -460,19 +649,11 @@ impl Terminal {
             .unwrap_or_else(glib::home_dir);
         let term = vte4::Terminal::new();
         term.add_css_class("term-vte");
-        term.set_font(Some(&pango::FontDescription::from_string("JetBrains Mono 10.5")));
         // (rows 28 px apart, as drawn)
         term.set_cell_height_scale(1.4);
-        let fg = gdk::RGBA::parse("#E2E2E6").unwrap_or(gdk::RGBA::WHITE);
-        let bg = gdk::RGBA::parse("#101114").unwrap_or(gdk::RGBA::BLACK);
-        let pal = palette();
-        term.set_colors(Some(&fg), Some(&bg), &pal.iter().collect::<Vec<_>>());
-        term.set_color_cursor(Some(&fg));
-        term.set_cursor_shape(vte4::CursorShape::Ibeam);
-        term.set_cursor_blink_mode(vte4::CursorBlinkMode::On);
         term.set_bold_is_bright(false);
-        term.set_scrollback_lines(10_000);
         term.set_mouse_autohide(true);
+        style_terminal(&term, &crate::terminal_prefs::load());
         term.set_vexpand(true);
         term.set_hexpand(true);
         let page = gtk::Overlay::new();
@@ -819,6 +1000,12 @@ impl Terminal {
     }
 
     fn action(self: &Rc<Self>, a: &str) {
+        if a == "preferencias" {
+            if let Some(s) = self.shell.upgrade() {
+                crate::terminal_prefs::open(&s, if self.kind == Kind::Dropdown { "suspenso" } else { "geral" });
+            }
+            return;
+        }
         let Some(x) = self.tabs.borrow().get(self.current.get()).cloned() else { return };
         match a {
             "aba" => self.new_tab(None),
@@ -830,6 +1017,7 @@ impl Terminal {
                 // (a fresh prompt)
                 x.term.feed_child(b"\x0c");
             }
+
             _ => {}
         }
     }
@@ -865,7 +1053,10 @@ impl Terminal {
             eprintln!("debug terminal: fechou a aba «{}»", x.title());
         }
         let n = self.tabs.borrow().len();
-        if n == 0 {
+        if n == 0 && self.kind == Kind::Dropdown {
+            // the drop-down's last one: it goes up (a new tab when it comes down again)
+            crate::terminal_dropdown::hide();
+        } else if n == 0 {
             // the last one: the window goes too (a new tab when it opens again)
             self.window.set_visible(false);
             if debug() {

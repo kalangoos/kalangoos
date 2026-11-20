@@ -97,6 +97,9 @@ Coisas que custaram horas. Leia antes de depurar uma falha de tela ou de teste d
   padding. Uma superfície layer totalmente transparente não recebe ponteiro no niri: use `alpha(#000, 0.01)`.
   `gtk::Fixed` dá aos filhos o tamanho mínimo; rótulos em painéis de largura fixa precisam de `ellipsize` e
   `max_width_chars`.
+- **Tema claro:** o shell monta o claro trocando cada cor do escuro pela clara do mesmo token, **pelo valor**: dois
+  tokens com o mesmo valor no escuro viram a mesma cor no claro (a borda da bolinha, igual à bolinha no escuro, ficava
+  branca no claro). Um token novo precisa de um valor próprio no escuro.
 - **D-Bus:** uma tupla com um `glib::Variant` dentro vira `v` (caixa); monte respostas com
   `Variant::tuple_from_iter` e teste a assinatura.
 - **niri:** recusa ações de IPC com a sessão bloqueada; só dá a posição de janelas lado a lado com o patch 0004;

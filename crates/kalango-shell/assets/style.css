@@ -256,7 +256,7 @@ scale { padding: 0; }
 scale trough { background-image: none; background-color: @k_control; border: none; border-radius: 3px; min-height: 6px; }
 scale highlight, scale.acento highlight { background-image: none; background-color: @k_accent; border: none; border-radius: 3px; margin: 0; min-height: 6px; }
 scale.ouro highlight { background-image: none; background-color: @k_gold; }
-scale slider { background: @k_knob; border-radius: 3px; min-width: 16px; min-height: 6px; margin: 0; border: none; box-shadow: none; }
+scale slider { background: @k_knob; border-radius: 3px; min-width: 16px; min-height: 6px; margin: 0; border: 1px solid @k_knob_borda; box-shadow: none; }
 .pct { font-size: 12px; color: @k_muted; min-width: 27px; font-feature-settings: "tnum"; }
 .capa { border-radius: 6px; background: @k_raised; }
 .capa-deslizante { border-radius: 6px; }
@@ -291,7 +291,7 @@ scale slider { background: @k_knob; border-radius: 3px; min-width: 16px; min-hei
 .anel-valor { font-family: "URW Gothic", sans-serif; font-size: 20px; font-weight: 600; font-feature-settings: "tnum"; color: @k_text; }
 switch { background: @k_control; border-radius: 99px; border: none; min-width: 40px; min-height: 22px; }
 switch:checked { background: @k_accent; }
-switch slider { background: @k_knob; border-radius: 99px; min-width: 18px; min-height: 18px; margin: 2px 0 2px 2px; border: none; box-shadow: none; }
+switch slider { background: @k_knob; border-radius: 99px; min-width: 18px; min-height: 18px; margin: 2px 0 2px 2px; border: 1px solid @k_knob_borda; box-shadow: none; }
 /* GTK makes a switch twice its slider (knob and margins) wide: a 20 px slider keeps it at the design's 40 px, with the
    knob 2 px from the edge on both sides */
 switch:checked slider { margin: 2px 2px 2px 0; }
@@ -648,10 +648,18 @@ window.bloqueio { background: @k_base; }
 .bloqueio-midia-botao:hover { background: alpha(@k_realce, 0.08); }
 .bloqueio-avatar { background: @k_raised; border-radius: 28px; border: 1px solid alpha(@k_realce, 0.2); }
 .bloqueio-avatar.ativo { border-color: @k_accent; }
+/* the password state: the photo big in the middle (design 130156) */
+.bloqueio-avatar-grande { background: @k_raised; border-radius: 999px; border: 2px solid @k_accent; }
+.bloqueio-avatar-grande .energia-inicial { font-size: 56px; font-weight: 600; color: @k_text; }
+.bloqueio-nome { font-size: 24px; font-weight: 600; color: @k_text; }
+.bloqueio-topo { font-size: 15px; font-weight: 500; color: #B9BAC4; }
 .bloqueio-dica { font-size: 13px; color: @k_muted; }
 .bloqueio-campo { background: #1A1B21; border: 1px solid @k_accent; border-radius: 6px; padding: 0 6px 0 12px; }
 .bloqueio-senha { background: none; border: none; box-shadow: none; outline: none; min-height: 38px; padding: 0; color: @k_text; caret-color: @k_accent; font-size: 13px; letter-spacing: 2px; }
 .bloqueio-senha > text > placeholder { color: @k_muted; letter-spacing: 0; }
+/* (GTK's own focus ring inside the field: the field's border already says it has the focus) */
+entry.bloqueio-senha, entry.bloqueio-senha:focus, entry.bloqueio-senha:focus-within, entry.bloqueio-senha:hover,
+entry.bloqueio-senha > text, entry.bloqueio-senha > text:focus { outline: none; outline-width: 0; box-shadow: none; border: none; background: none; }
 .bloqueio-ir { background: none; border: none; box-shadow: none; padding: 4px; min-width: 0; min-height: 0; border-radius: 4px; }
 .bloqueio-ir:hover { background: alpha(@k_realce, 0.08); }
 .bloqueio-erro { font-size: 12px; color: @k_coral; min-height: 16px; }
@@ -831,14 +839,14 @@ button.central-celula:hover { filter: brightness(1.25); }
 .central-pasta-modo:hover { color: @k_text; }
 switch.central-switch { min-width: 38px; min-height: 20px; border-radius: 11px; background: #2E2F3A; border: none; }
 switch.central-switch:checked { background: @k_accent; }
-switch.central-switch > slider { min-width: 16px; min-height: 16px; border-radius: 8px; background: @k_knob; box-shadow: none; border: none; }
+switch.central-switch > slider { min-width: 16px; min-height: 16px; border-radius: 8px; background: @k_knob; box-shadow: none; border: 1px solid @k_knob_borda; }
 .central-adicionar { background: none; border: none; box-shadow: none; padding: 2px 8px; min-height: 0; font-size: 13px; font-weight: 600; color: #C9CAD1; }
 .central-limite { min-height: 42px; }
 .central-limite-nome { font-size: 13px; color: @k_text; }
 .central-limite-valor { font-size: 12px; color: @k_muted; }
 scale.central-escala trough { min-height: 4px; border-radius: 2px; background: #2E2F3A; }
 scale.central-escala highlight { background: @k_accent; border-radius: 2px; }
-scale.central-escala slider { min-width: 12px; min-height: 12px; margin: -5px; border-radius: 6px; background: #E2E2E6; box-shadow: none; border: none; }
+scale.central-escala slider { min-width: 12px; min-height: 12px; margin: -5px; border-radius: 6px; background: @k_knob; box-shadow: none; border: 1px solid @k_knob_borda; }
 dropdown.central-escolha > button { background: #1A1B21; border: 1px solid #26272F; border-radius: 4px; box-shadow: none; padding: 0 8px 0 12px; min-height: 32px; font-size: 13px; color: @k_text; }
 dropdown.central-escolha > button > box { border-spacing: 8px; }
 dropdown.central-escolha:disabled > button { color: @k_muted; }
@@ -1544,6 +1552,15 @@ button.cfg-conta.escolhida { border-color: @k_accent; }
 button.cfg-conta:focus-visible { outline-color: @k_accent; }
 .cfg-avatar { background: #2A2B35; border-radius: 999px; }
 .cfg-avatar-letra { font-size: 15px; font-weight: 600; color: #E2E2E6; }
+/* one's own avatar: a button with a camera badge on its corner (design 129857) */
+menubutton.cfg-avatar-botao > button { all: unset; border-radius: 999px; outline: 2px solid transparent; outline-offset: 2px; }
+menubutton.cfg-avatar-botao > button:focus-visible { outline-color: @k_accent; }
+menubutton.cfg-avatar-botao > button:hover .cfg-avatar { opacity: 0.85; }
+.cfg-avatar-selo { background: #2A2B35; border: 2px solid #101114; border-radius: 999px; min-width: 18px; min-height: 18px; padding: 1px; margin: -2px; }
+popover.cfg-menu-foto > contents { background: #1C1D23; border: 1px solid #26272F; border-radius: 6px; padding: 4px; box-shadow: none; }
+button.cfg-menu-item { all: unset; min-height: 30px; min-width: 180px; padding: 0 10px; border-radius: 4px; }
+button.cfg-menu-item:hover, button.cfg-menu-item:focus-visible { background: #2A2B35; }
+.cfg-menu-texto { font-size: 12px; color: #E2E2E6; }
 .cfg-adicionar-tracejado, .cfg-adicionar-tracejado > button { all: unset; border: 1px dashed #2E2F3A; border-radius: 6px; min-height: 44px; font-size: 13px; color: #B9BAC4; outline: 1.5px solid transparent; outline-offset: -1.5px; }
 .cfg-adicionar-tracejado:hover, .cfg-adicionar-tracejado > button:hover { background: alpha(#FFFFFF, 0.03); color: #E2E2E6; }
 .cfg-adicionar-tracejado:focus-visible, .cfg-adicionar-tracejado > button:focus-visible { outline-color: @k_accent; }
@@ -1659,7 +1676,7 @@ entry.inst-campo, passwordentry.inst-campo { outline: none; }
 .inst-divisao { border-radius: 4px; }
 switch.inst-switch { background: #2E2F3A; border: none; border-radius: 999px; min-width: 36px; min-height: 20px; }
 switch.inst-switch:checked { background: @k_accent; }
-switch.inst-switch slider { background: #E2E2E6; border-radius: 999px; min-width: 16px; min-height: 16px; margin: 2px; border: none; box-shadow: none; }
+switch.inst-switch slider { background: @k_knob; border-radius: 999px; min-width: 16px; min-height: 16px; margin: 2px; border: 1px solid @k_knob_borda; box-shadow: none; }
 entry.inst-campo, passwordentry.inst-campo { background: #1A1B21; border: 1px solid #26272F; border-radius: 4px; padding: 0 10px; min-height: 34px; font-size: 13px; color: #E2E2E6; box-shadow: none; }
 entry.inst-campo:focus-within, passwordentry.inst-campo:focus-within { border-color: @k_accent; }
 entry.inst-campo.erro { border-color: #EFA2A6; }
@@ -2174,6 +2191,7 @@ button.ed-aba-fechar:hover { background: alpha(@k_realce, 0.08); }
 button.ed-nova-aba { background: none; border: none; box-shadow: none; min-width: 28px; min-height: 28px; padding: 0; border-radius: 4px; }
 button.ed-nova-aba:hover { background: alpha(@k_realce, 0.06); }
 entry.ed-pedir { background: #1A1B21; border: 1px solid @k_border; border-radius: 4px; box-shadow: none; outline: none; min-height: 30px; padding: 0 56px 0 10px; font-size: 12px; color: @k_text; }
+entry.term-pedir > text > placeholder { color: @k_muted; }
 textview.ed-fonte, textview.ed-fonte text { background: transparent; color: @k_text; font-family: "JetBrains Mono", monospace; font-size: 14px; caret-color: @k_accent; }
 textview.ed-fonte border { background: transparent; }
 .ed-divisor { background: @k_border; }
@@ -2203,6 +2221,56 @@ button.term-dica-explicar { all: unset; background: #24252D; color: @k_text; bor
 button.term-dica-explicar:hover { background: #2A2B35; }
 button.term-dica-corrigir { all: unset; background: @k_accent; color: #1C1D24; border-radius: 4px; padding: 4px 10px; font-size: 12px; font-weight: 600; }
 button.term-dica-corrigir:hover { background: shade(@k_accent, 1.06); }
+/* the Terminal kept dark on the light theme (preference "Seguir o tema do sistema" off): the token's colour written so
+   the theme does not swap it */
+vte-terminal.term-vte.sempre-escuro { background: rgb(16, 17, 20); }
+/* the drop-down Terminal (designs "Terminal · suspenso"): under the top bar, square at the top and 8 px at the bottom,
+   the line all around; pin and expand at the toolbar's end; the handle on the bottom edge; the keys' hint */
+window.term-suspenso-janela, window.term-suspenso-dica-janela { background: transparent; }
+.term-suspenso { background: #16171B; border: 1px solid @k_border; border-top: none; border-radius: 0 0 8px 8px; }
+.term-suspenso.centralizado { border-top: none; }
+.term-suspenso .term-status { border-radius: 0 0 8px 8px; }
+button.term-suspenso-botao { all: unset; min-width: 28px; min-height: 28px; border-radius: 4px; }
+button.term-suspenso-botao:hover { background: alpha(@k_realce, 0.06); }
+button.term-suspenso-botao:checked { background: alpha(@k_accent, 0.16); }
+.term-suspenso-alca { background: @k_muted; border-radius: 2px; min-height: 4px; min-width: 56px; }
+.term-suspenso-dica { background: #101114; border: 1px solid @k_border; border-radius: 8px; padding: 5px 6px 5px 12px; min-height: 16px; }
+.term-suspenso-dica-texto { font-size: 12px; font-weight: 500; color: @k_text2; }
+/* the Terminal's preferences (design "Terminal · suspenso · ajustes"): a card over the dimmed screen, the sections on
+   the left */
+window.wifi-fundo.termp-fundo.aberto { background: alpha(#0B0C10, 0.45); }
+.termp-cartao { background: #18191E; border: 1px solid @k_border; border-radius: 8px; }
+.termp-nav-fundo { background: @k_base; }
+.termp-nav { padding: 12px; }
+.termp-nav-titulo { font-size: 15px; font-weight: 600; color: @k_text; }
+button.termp-nav-item { all: unset; border-radius: 4px; padding: 7px 10px 6px 10px; min-height: 16px; }
+button.termp-nav-item:hover { background: alpha(@k_realce, 0.04); }
+button.termp-nav-item.ativa { background: alpha(@k_accent, 0.16); }
+.termp-nav-nome { font-size: 13px; font-weight: 500; color: @k_text2; }
+button.termp-nav-item.ativa .termp-nav-nome { color: @k_text; }
+.termp-conteudo { padding: 22px; }
+.termp-cabecalho { font-size: 18px; font-weight: 600; color: @k_text; }
+.termp-descricao { font-size: 13px; color: @k_muted; }
+.termp-titulo { font-size: 13px; font-weight: 500; color: @k_text; }
+.termp-sub { font-size: 12px; color: @k_muted; }
+.termp-sub.erro { color: @k_coral; }
+.termp-linha { min-height: 22px; }
+.termp-linha.capturando .termp-sub { color: @k_accent_text; }
+.termp-div { background: @k_border; min-height: 1px; }
+.termp-tecla { background: #24252D; border: 1px solid alpha(@k_realce, 0.06); border-radius: 4px; padding: 2px 6px; font-size: 12px; font-weight: 600; color: @k_muted; }
+button.termp-mudar { all: unset; border-radius: 4px; padding: 0 8px; min-height: 28px; font-size: 12px; font-weight: 600; color: @k_muted; }
+button.termp-mudar:hover { background: alpha(@k_realce, 0.06); color: @k_text; }
+.termp-valor { font-size: 13px; font-weight: 600; color: @k_text; }
+scale.termp-escala trough { min-height: 4px; border-radius: 2px; background: #2A2B35; }
+scale.termp-escala highlight { min-height: 4px; border-radius: 2px; background: @k_accent; }
+scale.termp-escala slider { min-width: 18px; min-height: 18px; margin: -7px 0; border-radius: 99px; background: @k_knob; }
+.termp-segmentado { background: #1A1B21; border-radius: 6px; padding: 4px; }
+button.termp-seg { all: unset; border-radius: 4px; padding: 0 12px; min-height: 28px; font-size: 12px; font-weight: 600; color: @k_muted; }
+button.termp-seg:checked { background: alpha(@k_accent, 0.16); color: @k_accent_text; }
+menubutton.termp-pct > button { all: unset; min-width: 40px; min-height: 28px; font-size: 13px; color: @k_text; }
+menubutton.termp-pct:disabled > button { color: @k_dim; }
+menubutton.termp-pct > button arrow { min-width: 0; min-height: 0; -gtk-icon-size: 0; }
+dropdown.termp-seletor > button { min-height: 34px; }
 /* the System Monitor (design "Monitor do sistema" and its four pages) */
 .mon-trilho { background: @k_base; border-right: 1px solid @k_border; padding: 12px 10px; min-width: 44px; }
 button.mon-pagina { all: unset; min-width: 44px; min-height: 40px; border-radius: 4px; }
