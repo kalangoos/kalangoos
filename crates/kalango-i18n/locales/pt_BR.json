@@ -3979,5 +3979,22 @@
  "Turns a virtual machine off (asks its system; at once with forcar)": "Desliga uma máquina virtual (pede ao sistema dela; na hora com forcar)",
  "Turns a virtual machine on (or resumes its saved state)": "Liga uma máquina virtual (ou retoma o estado salvo)",
  "Virtual machines of Kalango VirtualDesk and the state of each (on, paused, off), with processors, memory, folders and snapshots": "As máquinas virtuais do Kalango VirtualDesk e o estado de cada uma (ligada, pausada, desligada), com processadores, memória, pastas e snapshots",
- "turning off or deleting a machine always asks": "desligar ou apagar uma máquina sempre pede"
+ "turning off or deleting a machine always asks": "desligar ou apagar uma máquina sempre pede",
+ "GPU {a} back to this computer": "GPU {a} de volta a este computador",
+ "GPU {a} given to vfio-pci ({n} devices)": "GPU {a} entregue ao vfio-pci ({n} dispositivos)",
+ "GPUs of this computer for virtual machines: driver, IOMMU group, whether it shows the screen, and whether the IOMMU is on": "GPUs deste computador para máquinas virtuais: driver, grupo IOMMU, se mostra a tela e se o IOMMU está ligado",
+ "Gives a GPU back from vfio-pci to this computer's drivers": "Devolve uma GPU do vfio-pci aos drivers deste computador",
+ "Gives a whole GPU (and the rest of its IOMMU group) to vfio-pci so a virtual machine can use it; never the GPU that shows the screen": "Entrega uma GPU inteira (e o resto do grupo IOMMU dela) ao vfio-pci para uma máquina virtual usar; nunca a GPU que mostra a tela",
+ "IOMMU on in the kernel line ({a}); restart to use it": "IOMMU ligado na linha do kernel ({a}); reinicie para usar",
+ "IOMMU options out of the kernel line; restart to apply": "Opções do IOMMU fora da linha do kernel; reinicie para valer",
+ "Takes the IOMMU options out of the kernel line (GRUB); takes effect after a restart": "Tira as opções do IOMMU da linha do kernel (GRUB); vale depois de reiniciar",
+ "Turns the IOMMU on in the kernel line (GRUB); takes effect after a restart": "Liga o IOMMU na linha do kernel (GRUB); vale depois de reiniciar",
+ "invalid PCI address": "endereço PCI inválido",
+ "its IOMMU group also has {a}, which is not part of the GPU": "o grupo IOMMU dela também tem {a}, que não faz parte da GPU",
+ "the IOMMU is off": "o IOMMU está desligado",
+ "there is no GPU at {a}": "não há GPU em {a}",
+ "this GPU shows this computer's screen: giving it to a machine would turn the screen off": "esta GPU mostra a tela deste computador: entregá-la a uma máquina apagaria a tela",
+ "{n} GPUs": "{n} GPUs",
+ "its IOMMU group also has the GPU {a}, which would go along": "o grupo IOMMU dela também tem a GPU {a}, que iria junto",
+ "update-grub failed: {e}": "o update-grub falhou: {e}"
 }
