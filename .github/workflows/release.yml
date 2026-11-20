@@ -4,7 +4,10 @@ name: Release
 # one tarball with checksums and a build provenance attestation, and opens a DRAFT release for a `v*` tag: a
 # maintainer reads it and publishes it by hand. A weekly dry run on main finds release-only breakage early.
 #
-# The disk image / ISO job is ready but switched off until the image builder exists (ROADMAP.md, step 1).
+# The installable ISO (imagem/construir.sh) is built and tested in a VM on every run: the live session comes up with the
+# installer, the installer really installs onto an empty virtual disk, and the installed system boots into its
+# session. A tag attaches the tested ISO to the draft. The kernel is built in its own job and cached by its
+# configuration (kernel/config-*), so most runs reuse it.
 on:
   push:
     tags: ["v*"]
@@ -92,25 +95,126 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  imagem:
-    name: Imagem de disco e ISO
-    # Switched off until the image builder exists (ROADMAP.md step 1: a qcow2 built by script, then the ISO): it runs
-    # only when the repository variable KALANGO_IMAGEM is "true". When the builder lands: build on a larger runner,
-    # upload the image, and add it to `publicar` below.
-    if: vars.KALANGO_IMAGEM == 'true'
-    needs: binarios
+  kernel:
+    name: Kernel do KalangoOS
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    # a full build with debug info (BTF, for the eBPF rules) takes 2-3 h on a standard runner; the cache makes it rare
+    timeout-minutes: 330
+    outputs:
+      chave: ${{ steps.chave.outputs.chave }}
     steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Montar a imagem
-        run: echo "o construtor da imagem ainda não existe (ROADMAP.md, passo 1)" && exit 1
+      - name: Chave do cache
+        id: chave
+        run: echo "chave=kernel-${{ hashFiles('kernel/config-*', 'kernel/kalango.config', 'kernel/build.sh') }}" >> "$GITHUB_OUTPUT"
+      - name: Cache do kernel
+        id: cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: kernel/out/*.deb
+          key: ${{ steps.chave.outputs.chave }}
+      - name: Compilar
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 update -q
+          sudo apt-get -o Acquire::Retries=3 install -y -q --no-install-recommends \
+            gawk flex bison bc dwarves dpkg-dev debhelper libelf-dev libssl-dev libdw-dev rsync zstd cpio kmod
+          # the build tree with debug info needs tens of GB: the runner's second disk
+          sudo mkdir -p /mnt/kernel-src && sudo chown "$USER" /mnt/kernel-src
+          ln -s /mnt/kernel-src kernel/src
+          v=$(find kernel -maxdepth 1 -name 'config-*' -printf '%f\n' | sed 's/^config-//' | sort -V | tail -1)
+          KALANGO_KERNEL_SEM_DBG=1 kernel/build.sh "$v" || { tail -80 "kernel/out/build-$v.log"; exit 1; }
+          rm -f kernel/out/linux-headers-*.deb kernel/out/linux-libc-dev_*.deb
+
+  imagem:
+    name: ISO (montar e instalar numa VM)
+    needs: [binarios, kernel]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Espaço em disco
+        run: |
+          # the image, its squashfs, the ISO and the test VM's disk need ~15 GB beside the cargo build
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo mkdir -p /mnt/kalango && sudo chown "$USER" /mnt/kalango
+          df -h / /mnt
+      - name: Kernel (do cache)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: kernel/out/*.deb
+          key: ${{ needs.kernel.outputs.chave }}
+          fail-on-cache-miss: true
+      - uses: ./.github/actions/preparar
+        with:
+          cache-key: imagem
+      - name: Ferramentas da imagem
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 install -y -q --no-install-recommends \
+            mmdebstrap squashfs-tools fakeroot e2fsprogs xorriso mtools grub-pc-bin grub-efi-amd64-bin \
+            qemu-system-x86 qemu-utils ovmf cmake libvulkan-dev \
+            libudev-dev libgbm-dev libxkbcommon-dev libegl1-mesa-dev libinput-dev libseat-dev libpipewire-0.3-dev \
+            libpango1.0-dev libdisplay-info-dev libdbus-1-dev libsystemd-dev
+          # the VM test: KVM for this user (the runner has the device, not the permission)
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Peças da imagem (niri, llama.cpp, Moli)
+        run: imagem/dependencias.sh
+      - name: Binários
+        run: >-
+          cargo build --release --locked
+          -p kalango-shell -p kalangod -p kalango-agente -p kalango-aprovacao -p kalango-entrada -p kalango-instalador
+      - name: Montar a ISO
+        env:
+          KALANGO_IMAGEM_ISO: "1"
+          KALANGO_IMAGEM_TMP: /mnt/kalango/build
+          # no local model in the ISO the CI publishes (its licence is being reviewed): the agent gets it later
+          KALANGO_MODELOS: /nenhum
+        run: imagem/construir.sh
+      - name: Testar a ISO (ao vivo, instalar, ligar o sistema instalado)
+        run: imagem/testar-iso.sh instalar
+      - name: Registros do teste
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: teste-da-iso
+          path: |
+            target/iso/teste-*/console.log
+            target/iso/teste-*/qemu-*.log
+          retention-days: 7
+      - name: ISO e somas
+        env:
+          VERSAO: ${{ needs.binarios.outputs.versao }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-iso
+          mv target/iso/kalangoos.iso "dist-iso/kalangoos-${VERSAO}-amd64.iso"
+          (cd dist-iso && sha256sum ./*.iso > SHA256SUMS-iso.txt && cat SHA256SUMS-iso.txt)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-iso
+          path: dist-iso/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
 
   publicar:
     name: Rascunho da versão
-    needs: binarios
+    needs: [binarios, imagem]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -127,10 +231,16 @@ jobs:
         with:
           name: release-binarios
           path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-iso
+          path: dist
       - name: Atestado de origem do build
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/*.tar.gz
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.iso
       - name: Rascunho no GitHub
         env:
           GH_TOKEN: ${{ github.token }}
@@ -143,4 +253,4 @@ jobs:
           case "$VERSAO" in 0.*|*-*) prerelease="--prerelease" ;; esac
           gh release create "$TAG" dist/* --draft $prerelease --verify-tag \
             --title "KalangoOS $VERSAO" \
-            --notes "Binários do KalangoOS $VERSAO para Linux x86_64 (Ubuntu 24.04). Ainda não é uma imagem instalável: veja o README."
+            --notes "KalangoOS $VERSAO: a ISO para instalar (x86_64, UEFI; testada numa VM: sessão ao vivo, instalação e o primeiro boot do sistema instalado) e os binários. Em desenvolvimento: veja o README."
