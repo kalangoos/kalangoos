@@ -30,6 +30,20 @@ button.inst-escolha:focus-visible, button.inst-disco:focus-visible { outline-col
 .inst-escolha-icone { background: #2A2B35; border-radius: 6px; color: #B9BAC4; }
 .inst-escolha-titulo { font-size: 14px; font-weight: 600; color: #E2E2E6; }
 dropdown.inst-seletor > button { background: #1A1B21; border: 1px solid #26272F; border-radius: 4px; box-shadow: none; padding: 0 10px; min-height: 30px; font-size: 12px; color: #E2E2E6; }
+dropdown.inst-seletor arrow { color: #8E8F99; -gtk-icon-size: 16px; }
+/* the list that opens (the default GTK one was light and unstyled: the same as the Settings' choices) */
+dropdown.inst-seletor popover contents { background: #1C1D23; border: 1px solid #26272F; border-radius: 6px; padding: 4px; box-shadow: none; color: #E2E2E6; }
+dropdown.inst-seletor popover listview { background: transparent; }
+dropdown.inst-seletor popover listview > row { min-height: 30px; padding: 0 10px; border-radius: 4px; color: #E2E2E6; font-size: 12px; }
+dropdown.inst-seletor popover listview > row:hover, dropdown.inst-seletor popover listview > row:selected { background: #2A2B35; }
+dropdown.inst-seletor popover listview > row image { color: @k_accent; }
+dropdown.inst-seletor popover entry, dropdown.inst-seletor popover searchentry { background: #1A1B21; border: 1px solid #26272F; border-radius: 4px; box-shadow: none; outline: none; min-height: 30px; margin: 2px 2px 6px; padding: 0 8px; color: #E2E2E6; caret-color: #E2E2E6; }
+dropdown.inst-seletor popover entry:focus-within, dropdown.inst-seletor popover searchentry:focus-within { border-color: @k_accent; outline: none; box-shadow: none; }
+dropdown.inst-seletor popover entry > text, dropdown.inst-seletor popover searchentry > text { background: transparent; color: #E2E2E6; }
+dropdown.inst-seletor popover entry > text > placeholder, dropdown.inst-seletor popover searchentry > text > placeholder { color: #6E6F7A; }
+dropdown.inst-seletor popover entry image, dropdown.inst-seletor popover searchentry image { color: #8E8F99; }
+dropdown.inst-seletor popover separator { background: #26272F; min-height: 1px; margin: 0 2px; }
+dropdown.inst-seletor popover scrollbar slider { background: #3A3B46; border-radius: 4px; min-width: 4px; }
 button.inst-pilula { all: unset; border: 1px solid #2E2F3A; border-radius: 4px; padding: 0 10px; min-height: 26px; font-size: 12px; color: #B9BAC4; outline: 1.5px solid transparent; outline-offset: 1px; }
 button.inst-pilula:hover { background: alpha(#FFFFFF, 0.04); }
 button.inst-pilula:checked { background: alpha(@k_accent, 0.14); border-color: alpha(@k_accent, 0.6); color: #E2E2E6; }
@@ -44,7 +58,7 @@ entry.inst-campo, passwordentry.inst-campo { outline: none; }
 .inst-divisao { border-radius: 4px; }
 switch.inst-switch { background: #2E2F3A; border: none; border-radius: 999px; min-width: 36px; min-height: 20px; }
 switch.inst-switch:checked { background: @k_accent; }
-switch.inst-switch slider { background: #E2E2E6; border-radius: 999px; min-width: 16px; min-height: 16px; margin: 2px; border: none; box-shadow: none; }
+switch.inst-switch slider { background: @k_knob; border-radius: 999px; min-width: 16px; min-height: 16px; margin: 2px; border: 1px solid @k_knob_borda; box-shadow: none; }
 entry.inst-campo, passwordentry.inst-campo { background: #1A1B21; border: 1px solid #26272F; border-radius: 4px; padding: 0 10px; min-height: 34px; font-size: 13px; color: #E2E2E6; box-shadow: none; }
 entry.inst-campo:focus-within, passwordentry.inst-campo:focus-within { border-color: @k_accent; }
 entry.inst-campo.erro { border-color: #EFA2A6; }

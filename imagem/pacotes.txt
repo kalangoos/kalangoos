@@ -14,14 +14,14 @@ libwayland-client0 libwayland-egl1 libwebp7 libx11-6 libxau6 libxcb1 libxcb-rend
 libxdamage1 libxdmcp6 libxext6 libxfixes3 libxi6 libxinerama1 libxkbcommon0 libxrandr2 libxrender1 libzstd1 zlib1g 
 libpoppler-glib8t64
 # O início, o hardware e a sessão
-systemd-sysv udev dbus kmod initramfs-tools locales iproute2 ca-certificates seatd greetd
+systemd-sysv udev dbus apt ubuntu-keyring kmod initramfs-tools locales iproute2 ca-certificates seatd greetd
 libgl1-mesa-dri libegl-mesa0 mesa-vulkan-drivers libgtk4-layer-shell0 libseat1 libvte-2.91-gtk4-0 rtkit libwayland-server0 libwayland-client0 libwayland-cursor0 libwayland-egl1
 # Os serviços que as telas do KalangoOS controlam
 network-manager bluez polkitd upower udisks2 pipewire pipewire-pulse wireplumber
 xdg-desktop-portal xdg-desktop-portal-gtk gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-pipewire flatpak
 # O que o shell chama (fundo, luz noturna, captura) e as fontes do Design System
-swaybg wlsunset grim fonts-inter fonts-jetbrains-mono
+swaybg wlsunset grim openssh-client mosh fonts-inter fonts-jetbrains-mono
 # O que o instalador usa (particionar, criptografar, copiar, carregador de boot)
-cryptsetup gdisk dosfstools e2fsprogs ntfs-3g rsync squashfs-tools grub-efi-amd64 efibootmgr parted pciutils cryptsetup-initramfs pkexec
+cryptsetup gdisk dosfstools e2fsprogs ntfs-3g rsync squashfs-tools zstd language-pack-gnome-pt-base language-pack-pt-base grub-efi-amd64 efibootmgr parted pciutils cryptsetup-initramfs pkexec
 # Rust onde já é maduro: coreutils (uutils), sudo e a hora
 coreutils-from-uutils sudo-rs ntpd-rs

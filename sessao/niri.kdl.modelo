@@ -217,7 +217,9 @@ binds {
     Mod+G repeat=false hotkey-overlay-title="Agente" { spawn "@SHELL@" "lateral" "agente"; }
     Mod+W repeat=false hotkey-overlay-title="Hoje" { spawn "@SHELL@" "hoje"; }
     Mod+Z repeat=false hotkey-overlay-title="Layouts de janela" { spawn "@SHELL@" "encaixe"; }
-    Mod+T hotkey-overlay-title="Terminal" { spawn "@TERMINAL@"; }
+    Mod+T hotkey-overlay-title="Terminal" { spawn "@SHELL@" "terminal"; }
+    F12 repeat=false hotkey-overlay-title="Terminal suspenso" { spawn "@SHELL@" "terminal-suspenso"; }
+    Shift+F12 repeat=false hotkey-overlay-title="Terminal suspenso: expandir" { spawn "@SHELL@" "terminal-suspenso" "expandir"; }
 
     Mod+Q repeat=false { close-window; }
     // minimize (KalangoOS's niri: out of sight until focused again — the dock, Alt+Tab)

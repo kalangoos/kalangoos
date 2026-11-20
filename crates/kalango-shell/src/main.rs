@@ -9,6 +9,7 @@
 //!   kalango-shell energia         abre/fecha o menu de energia
 //!   kalango-shell lateral avisos|controles|agente   barra lateral direita (Super+N, Super+C)
 //!   kalango-shell hoje            barra lateral esquerda "Hoje" (Super+W)
+//!   kalango-shell terminal-suspenso [expandir]   o Terminal suspenso (F12; Shift+F12 expande)
 //!   kalango-shell pedir TEXTO     dá um pedido ao agente da barra lateral
 //!   kalango-shell conversar TEXTO uma conversa nova na Central de agentes, com esse pedido
 //!   kalango-shell sair            encerra o shell
@@ -95,6 +96,8 @@ mod video_player;
 mod monitor_dados;
 mod monitor_paginas;
 mod terminal;
+mod terminal_dropdown;
+mod terminal_prefs;
 mod edges;
 mod window_prefs;
 mod portal;
@@ -475,6 +478,8 @@ impl Shell {
                 let p = args.get(1).map(gtk::gio::File::for_commandline_arg).and_then(|f| f.path());
                 terminal::open(self, p);
             }
+            // the drop-down Terminal (F12; "expandir": Shift+F12)
+            Some("terminal-suspenso") => terminal_dropdown::command(self, args),
             Some("arquivos") => {
                 let p = args.get(1).map(gtk::gio::File::for_commandline_arg).and_then(|f| f.path());
                 self.abrir_arquivos(p.as_deref());
@@ -877,6 +882,8 @@ fn iniciar(app: &gtk::Application) -> Rc<Shell> {
     });
     // routines: at their time, on a USB device, on entering a space
     *shell.agendador.borrow_mut() = Some(rotinas::Agendador::new(&shell));
+    // the drop-down Terminal, ready and hidden when the person asked for it
+    terminal_dropdown::at_start(&shell);
     // "learn from what I do": habits from the apps opened, a minute after start and then every 6 hours
     let weak = Rc::downgrade(&shell);
     glib::timeout_add_seconds_local_once(60, move || {

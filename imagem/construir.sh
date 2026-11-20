@@ -267,6 +267,7 @@ env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME="$HOME" TMPDIR="$W" /usr/bin/mmde
   --customize-hook='chroot "$1" systemctl mask getty@tty1.service autovt@tty1.service' \
   --customize-hook='chroot "$1" update-initramfs -u -k all' \
   --customize-hook='ln -sf ../usr/lib/os-release "$1/etc/os-release"; rm -f "$1"/etc/update-motd.d/*; rm -f "$1"/etc/legal; : > "$1/etc/motd"' \
+  --customize-hook="rm -f \"\$1/etc/apt/sources.list\" && printf 'Types: deb\\nURIs: http://archive.ubuntu.com/ubuntu\\nSuites: $SUITE $SUITE-updates $SUITE-backports\\nComponents: main restricted universe multiverse\\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\\n\\nTypes: deb\\nURIs: http://security.ubuntu.com/ubuntu\\nSuites: $SUITE-security\\nComponents: main restricted universe multiverse\\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\\n' > \"\$1/etc/apt/sources.list.d/ubuntu.sources\"" \
   --customize-hook='rm -rf "$1"/var/cache/apt/archives/*.deb "$1"/var/lib/apt/lists/*' \
   "$SUITE" "$OUT/kalangoos.tar" "$MIRROR"
 

@@ -1274,13 +1274,13 @@ mod tests {
 
     #[test]
     fn networks_one_card_each_in_use_and_saved_first() {
-        let lista = " :Vizinho:40:WPA2:130 Mbit/s:2437 MHz\n*:Lunar:70:WPA3:866 Mbit/s:5180 MHz\n :Café:55::54 Mbit/s:2412 MHz\n :Vizinho:60:WPA2:130 Mbit/s:2462 MHz\n :Escritório:20:WPA2:65 Mbit/s:2412 MHz\n";
+        let lista = " :Vizinho:40:WPA2:130 Mbit/s:2437 MHz\n*:MGP:70:WPA3:866 Mbit/s:5180 MHz\n :Café:55::54 Mbit/s:2412 MHz\n :Vizinho:60:WPA2:130 Mbit/s:2462 MHz\n :Escritório:20:WPA2:65 Mbit/s:2412 MHz\n";
         let mut salvas = HashMap::new();
         salvas.insert("Escritório".to_string(), "Escritório".to_string());
-        salvas.insert("Lunar".to_string(), "Lunar".to_string());
+        salvas.insert("MGP".to_string(), "MGP".to_string());
         let v = ler_redes(lista, &salvas);
         let nomes: Vec<&str> = v.iter().map(|w| w.ssid.as_str()).collect();
-        assert_eq!(nomes, vec!["Lunar", "Escritório", "Vizinho", "Café"]);
+        assert_eq!(nomes, vec!["MGP", "Escritório", "Vizinho", "Café"]);
         assert_eq!(v[0].taxa, "866 Mb/s");
         assert_eq!(v[2].sinal, 60, "the strongest of a name");
         assert_eq!(banda(v[0].freq), "5 GHz");
