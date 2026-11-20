@@ -145,10 +145,11 @@ Categories=Network;RemoteAccess;
 Keywords=remoto;compartilhar;tela;ssh;mosh;suporte;
 StartupWMClass=os.kalango.Remote
 DESK
-  for s in 128 256 512; do
-    d usr/share/icons/hicolor/${s}x${s}/apps
-    python3 -c "from PIL import Image; Image.open('$REMOTO/kalangoos/icone.png').convert('RGBA').resize(($s,$s), Image.LANCZOS).save('$C/usr/share/icons/hicolor/${s}x${s}/apps/os.kalango.Remote.png')"
-  done
+  # (os tamanhos que o repositório do Remote traz, copiados como estão: nada de PIL na máquina que monta)
+  d usr/share/icons/hicolor/128x128/apps
+  d usr/share/icons/hicolor/256x256/apps
+  install -m 644 "$REMOTO/kalangoos/app/icons/app-128.png" "$C/usr/share/icons/hicolor/128x128/apps/os.kalango.Remote.png"
+  install -m 644 "$REMOTO/kalangoos/icone.png" "$C/usr/share/icons/hicolor/256x256/apps/os.kalango.Remote.png"
   # Kalango Audio: o binário, o atalho e os ícones do próprio repositório
   install -m 755 "$AUDIO/target/release/kalango-audio" "$C/usr/bin/kalango-audio"
   sed "s|^Exec=.*|Exec=kalango-audio|" "$AUDIO/dist/os.kalango.Audio.desktop" > "$C/usr/share/applications/os.kalango.Audio.desktop"
@@ -163,6 +164,12 @@ d etc/systemd/system.conf.d
 d etc/systemd/user.conf.d
 printf '[Manager]\nDefaultTimeoutStopSec=15s\n' > "$C/etc/systemd/system.conf.d/90-kalangoos.conf"
 printf '[Manager]\nDefaultTimeoutStopSec=15s\n' > "$C/etc/systemd/user.conf.d/90-kalangoos.conf"
+# os serviços do GRUB que gravam o boot bem-sucedido (grub2-common, grub-initrd-fallback) às vezes falham no começo do
+# boot ("não foi possível ler /boot/grub/grubenv: Argumento inválido") e passam rodados depois: tentam de novo
+for u in grub2-common grub-initrd-fallback; do
+  d "etc/systemd/system/$u.service.d"
+  printf '[Unit]\nStartLimitIntervalSec=60\nStartLimitBurst=5\n[Service]\nRestart=on-failure\nRestartSec=5s\n' > "$C/etc/systemd/system/$u.service.d/90-kalangoos.conf"
+done
 # a rede toda pelo NetworkManager: sem um netplan que diga isso, a regra do Ubuntu (10-globally-managed-devices)
 # deixa a placa com fio sem gerência — o cabo ligado, "sem conexão" no instalador e no sistema (visto no VirtualBox)
 d etc/netplan
