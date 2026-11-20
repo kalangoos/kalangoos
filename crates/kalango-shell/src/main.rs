@@ -20,6 +20,7 @@ mod app_store;
 mod app_store_data;
 mod apps;
 mod arquivos;
+mod desktop_files;
 mod bloqueio;
 mod limite;
 mod central;
@@ -98,10 +99,16 @@ mod monitor_paginas;
 mod terminal;
 mod terminal_dropdown;
 mod terminal_prefs;
+mod ssh_hosts;
 mod edges;
 mod window_prefs;
 mod portal;
 mod removable_media;
+mod unresponsive;
+mod snap_divider;
+mod resize_measure;
+mod magnifier;
+mod html_canvas;
 mod wifi_password;
 mod legendas;
 mod input_settings;
@@ -289,6 +296,14 @@ impl Shell {
         a.abrir_em(pasta);
     }
 
+    /// Files' "Open with" dialog for a file (the desktop's "Abrir com › Outro app…").
+    pub fn abrir_com(self: &Rc<Self>, arquivo: &std::path::Path) {
+        self.abrir_arquivos(Some(arquivo));
+        if let Some(a) = self.arquivos.borrow().clone() {
+            a.open_with(arquivo);
+        }
+    }
+
     /// KalangoOS's settings, on a section (or the home page).
     pub fn abrir_configuracoes(self: &Rc<Self>, secao: Option<&str>) {
         self.fechar_sobreposicoes();
@@ -376,6 +391,8 @@ impl Shell {
             Some("area-de-trabalho") => edges::show_desktop(),
             // the shortcuts sheet (Super+/)
             Some("atalhos") => shortcuts_sheet::toggle(),
+            // the magnifier (Super =, Super −, Super 0): "lupa mais|menos|sair|modo lente|tela|metade"
+            Some("lupa") => magnifier::command(args.get(1).map(String::as_str), args.get(2).map(String::as_str)),
             // the screenshot tool (Print); while a video records, it stops it
             Some("captura") => screenshot_tool::open(args.get(1).map(String::as_str) == Some("video")),
             // focus mode: "foco" starts or pauses the timer (the Today ring's click), "foco painel" opens the session's panel
@@ -478,6 +495,12 @@ impl Shell {
                 let p = args.get(1).map(gtk::gio::File::for_commandline_arg).and_then(|f| f.path());
                 terminal::open(self, p);
             }
+            // an SSH or Mosh host of Kalango Remote in a tab of the Terminal (or its tab to the front)
+            // (`--arquivos`: with the SFTP panel open)
+            Some("terminal-ssh") => match args.get(1) {
+                Some(id) => terminal::open_host(self, id, args.iter().any(|a| a == "--arquivos")),
+                None => eprintln!("kalango-shell: terminal-ssh HOST-ID"),
+            },
             // the drop-down Terminal (F12; "expandir": Shift+F12)
             Some("terminal-suspenso") => terminal_dropdown::command(self, args),
             Some("arquivos") => {
@@ -831,6 +854,10 @@ fn iniciar(app: &gtk::Application) -> Rc<Shell> {
     // polkit asks the shell for the admin password (its authentication agent; not in the development session)
     polkit_agent::start();
     privacy_now::start();
+    // apps that stop reading the compositor's events: their windows dimmed and "App não está respondendo"
+    unresponsive::start(&shell);
+    // the divider between windows snapped side by side (design "Janelas lado a lado")
+    snap_divider::start();
     // the edges and corners that act (Settings › Appearance › Dock and multitasking) and niri's window rules
     edges::apply();
     window_prefs::write_kdl();

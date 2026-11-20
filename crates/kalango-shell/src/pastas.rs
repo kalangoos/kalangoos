@@ -18,6 +18,11 @@ pub fn documentos() -> PathBuf {
     especial(glib::UserDirectory::Documents, "Documentos")
 }
 
+/// The Desktop folder: what is in it shows on the desktop (`desktop_files`).
+pub fn desktop() -> PathBuf {
+    especial(glib::UserDirectory::Desktop, "Área de trabalho")
+}
+
 pub fn downloads() -> PathBuf {
     especial(glib::UserDirectory::Downloads, "Downloads")
 }
@@ -39,7 +44,7 @@ pub fn resolver(caminho: &str) -> PathBuf {
         "imagens" | "pictures" | "fotos" => especial(glib::UserDirectory::Pictures, "Imagens"),
         "músicas" | "musicas" | "música" | "musica" | "music" => especial(glib::UserDirectory::Music, "Músicas"),
         "vídeos" | "videos" => especial(glib::UserDirectory::Videos, "Vídeos"),
-        "área de trabalho" | "area de trabalho" | "desktop" => especial(glib::UserDirectory::Desktop, "Área de trabalho"),
+        "área de trabalho" | "area de trabalho" | "desktop" => desktop(),
         "" => return pessoal(),
         _ => pessoal().join(primeira),
     };
@@ -55,6 +60,7 @@ mod tests {
         std::env::set_var("KALANGO_AREA_TESTE", "/tmp/area-de-teste");
         assert_eq!(documentos(), PathBuf::from("/tmp/area-de-teste/Documentos"));
         assert_eq!(downloads(), PathBuf::from("/tmp/area-de-teste/Downloads"));
+        assert_eq!(desktop(), PathBuf::from("/tmp/area-de-teste/Área de trabalho"));
         assert_eq!(resolver("~/Downloads"), PathBuf::from("/tmp/area-de-teste/Downloads"));
         assert_eq!(resolver("~/Downloads/instaladores"), PathBuf::from("/tmp/area-de-teste/Downloads/instaladores"));
         assert_eq!(resolver("~/projetos"), PathBuf::from("/tmp/area-de-teste/projetos"));

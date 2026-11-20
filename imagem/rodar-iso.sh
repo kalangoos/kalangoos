@@ -7,12 +7,13 @@
 #   imagem/rodar-iso.sh novo             apaga o disco virtual antes (uma instalação do zero)
 #   imagem/rodar-iso.sh instalado        só o disco virtual, sem a ISO
 #   RES=1920x1080 MEM=8192 CPUS=6 DISCO=40G (opcionais) · VM_TELA=none: sem janela
+#   KALANGO_ISO=arquivo   outra ISO (padrão: target/iso/kalangoos.iso)
 #   VM_DIR=pasta    o disco, o firmware e os sockets desta VM (padrão: target/iso; o teste usa a sua, para rodar ao
 #                   lado de uma VM aberta)
 #   socat - UNIX-CONNECT:target/iso/serial.sock    o console serial (a conta ao vivo "kalango" não tem senha)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-ISO=$PWD/target/iso/kalangoos.iso
+ISO=${KALANGO_ISO:-$PWD/target/iso/kalangoos.iso}
 [ -f "$ISO" ] || { echo "falta $ISO: KALANGO_IMAGEM_ISO=1 imagem/construir.sh"; exit 1; }
 OUT=${VM_DIR:-$PWD/target/iso}
 mkdir -p "$OUT"

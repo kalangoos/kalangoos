@@ -186,6 +186,7 @@ window.dock-fixa { background: alpha(@k_base, 0.96); border: 1px solid @k_border
 .lateral { background: alpha(@k_sunken, 0.97); border: 1px solid @k_divider; border-radius: 6px; padding: 14px 16px 16px 16px; }
 .lateral.inteira { border-width: 0 0 0 1px; border-radius: 0; }
 .lateral.inteira.esquerda { border-width: 0 1px 0 0; }
+window.lateral-reserva { background: transparent; }
 .lateral-titulo-linha { min-height: 20px; }
 .lateral-titulo { font-size: 15px; font-weight: 600; color: @k_text; }
 .lateral-base { border-top: 1px solid @k_divider; padding-top: 14px; }
@@ -371,13 +372,36 @@ button.midia-imagem { background: @k_surface; border: 2px solid transparent; box
 button.midia-imagem.ativo { border-color: @k_accent; }
 button.midia-acao { background: @k_surface; border: 1px solid @k_border; box-shadow: none; min-height: 30px; padding: 0 12px; border-radius: 6px; font-size: 12px; color: @k_text; }
 button.midia-acao:hover { background: @k_surface2; }
-.midia-audio, button.midia-video { background: @k_surface; border: 1px solid @k_border; border-radius: 8px; padding: 12px 14px; box-shadow: none; }
-button.midia-video:hover { background: @k_surface2; }
+.midia-audio, .midia-video { background: @k_surface; border: 1px solid @k_border; border-radius: 8px; box-shadow: none; }
+.midia-audio-topo { padding: 12px 14px; }
+.midia-video { padding: 12px; }
+button.midia-video-abrir { background: none; border: none; box-shadow: none; padding: 0; border-radius: 6px; }
+.midia-video-duracao { background: alpha(#000000, 0.6); border-radius: 4px; padding: 1px 6px; font-family: "JetBrains Mono", monospace; font-size: 11px; color: #E2E2E6; }
+button.midia-velocidade { background: none; border: 1px solid @k_border; box-shadow: none; border-radius: 4px; min-height: 24px; min-width: 0; padding: 0 8px; font-size: 12px; color: @k_text; }
+button.midia-velocidade:hover, button.midia-baixar:hover { background: @k_surface2; }
+button.midia-baixar { background: none; border: none; box-shadow: none; border-radius: 4px; min-height: 28px; min-width: 28px; padding: 0; }
+button.midia-linha-botao { background: none; border: none; box-shadow: none; border-radius: 4px; padding: 6px 8px; min-height: 0; }
+button.midia-linha-botao:hover { background: alpha(@k_text, 0.04); }
+button.midia-linha-botao.atual { background: @k_surface2; }
+.midia-linha-tempo { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @k_muted; margin-top: 2px; }
+.midia-capitulos { margin-top: 6px; }
+button.midia-capitulo { background: none; border: none; box-shadow: none; border-radius: 4px; padding: 3px 0; min-height: 0; }
+.midia-capitulo-tempo { background: @k_surface2; border-radius: 4px; padding: 1px 6px; font-family: "JetBrains Mono", monospace; font-size: 11px; color: @k_muted; }
+.midia-capitulo-nome { font-size: 13px; color: @k_text2; }
+button.midia-capitulo.ativo .midia-capitulo-nome { color: @k_text; font-weight: 600; }
+button.midia-capitulo.ativo .midia-capitulo-tempo { color: @k_accent; }
+button.midia-capitulo:hover .midia-capitulo-nome { color: @k_text; }
+.midia-video-acoes { margin-top: 6px; }
+button.midia-video-ir { background: alpha(@k_accent, 0.14); border: none; box-shadow: none; border-radius: 4px; min-height: 28px; padding: 0 10px; font-size: 12px; color: @k_accent; }
+button.midia-video-ir:hover { background: alpha(@k_accent, 0.22); }
+button.midia-video-ir label { color: @k_accent; }
+button.midia-video-cortar { background: @k_surface2; border: none; box-shadow: none; border-radius: 4px; min-height: 28px; padding: 0 10px; font-size: 12px; color: @k_text; }
+button.midia-video-cortar:hover { background: alpha(@k_text, 0.1); }
 button.midia-tocar { background: @k_accent; border: none; box-shadow: none; min-width: 36px; min-height: 36px; padding: 0; border-radius: 18px; }
 .midia-nome { font-size: 13px; color: @k_text; }
 .midia-sub { font-size: 12px; color: @k_muted; }
 .midia-tempo { font-size: 12px; color: @k_muted; font-feature-settings: "tnum"; }
-.midia-transcricao { border-top: 1px solid @k_border; padding-top: 8px; }
+.midia-transcricao { border-top: 1px solid @k_border; padding: 6px 6px 8px 6px; }
 .midia-linha { font-size: 13px; color: @k_text2; }
 .midia-video-quadro { border-radius: 6px; background: @k_panel; }
 .midia-video-tocar { background: alpha(#000000, 0.45); border-radius: 18px; min-width: 36px; min-height: 36px; }
@@ -575,6 +599,25 @@ filechooser pathbar button:checked { background: @k_raised; }
 /* a widget whose wallpaper gives the text under 4.5:1 of contrast gets a base of the theme's colour at 60% */
 .widget.com-base { background: alpha(@k_base, 0.6); border-radius: 8px; }
 .desk-rotulo { font-size: 12px; font-weight: 600; letter-spacing: 1px; color: @k_muted; }
+/* the Desktop folder's files (design "Área de trabalho · arquivos"): 96×104 tiles, the name on two lines */
+/* (5 + the 1 px border: the art 6 px from the top, as the design's inside stroke) */
+.desk-icone { border-radius: 6px; padding: 5px 3px 3px 3px; border: 1px solid transparent; }
+.desk-icone:hover { background: alpha(@k_text, 0.08); }
+.desk-icone.escolhido { background: alpha(@k_accent, 0.22); border-color: alpha(@k_accent, 0.55); }
+.desk-icone.alvo { background: alpha(@k_accent, 0.32); border-color: @k_accent; }
+.desk-icone.arrastando { opacity: 0.4; }
+/* (GTK's own drop highlight, an inset ring in its green, is not the design's: the folder's "alvo" is) */
+window.area-de-trabalho :drop(active) { box-shadow: none; outline: none; }
+.desk-icone-nome { font-size: 12px; font-weight: 500; color: @k_text; padding: 1px 4px; border-radius: 4px; }
+.desk-icone-nome.com-base { background: alpha(@k_base, 0.6); }
+.desk-icone.escolhido .desk-icone-nome { background: @k_accent; color: @k_accent_fg; }
+.desk-miniatura { border-radius: 4px; }
+.arq-ext.desk-selo { font-size: 9px; padding: 0 4px; border-radius: 2px; }
+.arq-ext.desk-selo.tom-cinza { background: #8E8F99; color: #1C1D24; }
+.arq-ext.desk-selo.tom-roxo { background: #A5A1E2; color: #1C1D24; }
+.desk-mais { background: alpha(@k_base, 0.6); border-radius: 6px; }
+.desk-banda { background: alpha(@k_accent, 0.12); border: 1px solid alpha(@k_accent, 0.6); border-radius: 4px; }
+entry.desk-renomear { background: @k_field; border: 1px solid @k_accent; border-radius: 4px; color: @k_text; font-size: 12px; padding: 2px 6px; min-height: 22px; }
 .desk-ola { font-family: "URW Gothic", sans-serif; font-weight: 600; font-size: 26px; color: @k_text; }
 .desk-item { font-size: 13px; color: @k_text; }
 .desk-item-fraco { font-size: 13px; color: @k_muted; }
@@ -1797,6 +1840,70 @@ button.wifi-botao:focus-visible { outline-color: @k_accent; }
 button.wifi-botao.principal { background: @k_accent; color: #1C1D24; }
 button.wifi-botao.principal:hover { background: #B4B0EA; }
 button.wifi-botao.principal:disabled { background: alpha(@k_accent, 0.35); color: alpha(#1C1D24, 0.7); }
+/* "App não está respondendo" (design 54053): the app's icon and what is stuck, the agent's diagnosis in an accent card
+   with the system's memory, the least destructive way out, then Esperar and Forçar encerramento */
+.travado-titulo { font-size: 16px; font-weight: 700; color: #E2E2E6; }
+.travado-texto { font-size: 13px; color: #8E8F99; }
+.travado-diagnostico { background: alpha(#A5A1E2, 0.08); border: 1px solid alpha(#A5A1E2, 0.3); border-radius: 6px; padding: 12px; }
+.travado-rotulo { font-size: 12px; font-weight: 600; letter-spacing: 1px; color: #8E8F99; }
+.travado-diag-texto { font-size: 13px; color: #E2E2E6; }
+.travado-memoria { font-family: "JetBrains Mono", monospace; font-size: 11px; color: #8E8F99; }
+levelbar.travado-barra trough { min-height: 4px; border-radius: 2px; background: alpha(#FFFFFF, 0.10); border: none; padding: 0; box-shadow: none; }
+levelbar.travado-barra block.filled { background: @k_accent; border-radius: 2px; border: none; min-height: 4px; }
+levelbar.travado-barra.cheio block.filled { background: #EFA2A6; }
+levelbar.travado-barra block.empty { background: transparent; border: none; }
+button.travado-primeiro { background: alpha(#A5A1E2, 0.16); border: none; box-shadow: none; border-radius: 4px; min-height: 32px; padding: 0 14px; outline: 1.5px solid transparent; outline-offset: 2px; }
+button.travado-primeiro:hover { background: alpha(#A5A1E2, 0.24); }
+button.travado-primeiro:focus-visible { outline-color: @k_accent; }
+button.travado-primeiro:disabled { background: alpha(#A5A1E2, 0.08); }
+button.travado-primeiro label { font-size: 12px; font-weight: 600; color: #A5A1E2; }
+button.travado-forcar { background: alpha(#EFA2A6, 0.16); border: none; box-shadow: none; border-radius: 4px; min-height: 36px; padding: 0 16px; font-size: 12px; font-weight: 600; color: #EFA2A6; outline: 1.5px solid transparent; outline-offset: 2px; }
+button.travado-forcar:hover { background: alpha(#EFA2A6, 0.24); }
+button.travado-forcar:focus-visible { outline-color: #EFA2A6; }
+button.travado-forcar label { color: #EFA2A6; }
+/* "Janelas lado a lado" (design 39375): the divider between snapped windows, a 6 × 60 accent pill (a transparent
+   surface would not get the pointer: the room around it is at 1%) */
+window.divisoria-janela { background: alpha(#000000, 0.01); }
+window.area-util { background: transparent; }
+.divisoria { background: @k_accent; border-radius: 3px; transition: background-color 120ms ease-out; }
+window.divisoria-janela:hover .divisoria, .divisoria.arrastando { background: shade(@k_accent, 1.12); }
+/* the measure while a window is resized (design "Estados de janela", "Redimensionando"): the outline in the accent,
+   a handle on each corner and the size under it */
+window.medida-janela { background: transparent; }
+.medida-contorno { border: 2px solid @k_accent; border-radius: 6px; }
+.medida-alca { background: @k_accent; border-radius: 2px; }
+.medida-chip { background: @k_accent; color: @k_accent_fg; border-radius: 4px; padding: 3px 8px; font-family: "JetBrains Mono", monospace; font-size: 11px; font-weight: 600; }
+/* the magnifier (design "Lupa", 60426): the keys at the top and how much bigger */
+window.lupa-janela { background: transparent; }
+.lupa-atalhos { background: alpha(#18191E, 0.97); border: 1px solid #2E2F3A; border-radius: 6px; padding: 10px 11px; }
+.lupa-tecla { background: #24252D; border: 1px solid alpha(#FFFFFF, 0.08); border-radius: 4px; padding: 2px 6px; font-size: 12px; font-weight: 600; color: #8E8F99; }
+.lupa-acao { font-size: 12px; color: #8E8F99; }
+.lupa-zoom { background: alpha(#18191E, 0.94); border: 1px solid #2E2F3A; border-radius: 13px; padding: 4px 10px; }
+.lupa-zoom-pct { font-size: 12px; font-weight: 600; color: #E2E2E6; }
+.lupa-zoom-modo { font-size: 12px; color: #8E8F99; }
+/* the canvas with live HTML (design "Chat · canvas com HTML ao vivo", 75452): the files, Prévia/Código/Dividido, the
+   widths, the page with the element picked and the request next to it, the versions */
+.canvas-arquivo { background: alpha(@k_text, 0.04); border: 1px solid @k_border; border-radius: 4px; padding: 4px 10px; font-size: 12px; color: @k_text; }
+.canvas-arquivo.ativo { background: @k_accent; border-color: @k_accent; color: @k_accent_fg; }
+.canvas-arquivo.ativo label { color: @k_accent_fg; }
+.canvas-segmento { background: alpha(@k_text, 0.04); border: 1px solid @k_border; border-radius: 6px; padding: 2px; }
+button.canvas-modo { background: none; border: none; box-shadow: none; border-radius: 4px; min-height: 28px; padding: 0 14px; font-size: 12px; color: @k_muted; }
+button.canvas-modo:checked { background: #24252D; color: @k_text; font-weight: 600; }
+button.canvas-dispositivo { background: none; border: none; box-shadow: none; border-radius: 4px; min-height: 30px; min-width: 32px; padding: 0; }
+button.canvas-dispositivo:checked { background: alpha(@k_accent, 0.16); }
+button.canvas-abrir, button.canvas-acao { background: #24252D; border: none; box-shadow: none; border-radius: 4px; min-height: 30px; padding: 0 12px; font-size: 12px; font-weight: 600; color: @k_text; }
+button.canvas-abrir:hover, button.canvas-acao:hover { background: @k_raised; }
+button.canvas-acao-texto { background: none; border: none; box-shadow: none; border-radius: 4px; min-height: 30px; padding: 0 10px; font-size: 12px; color: @k_muted; }
+button.canvas-acao-texto:hover { background: alpha(@k_text, 0.05); }
+.canvas-previa { background: @k_bg; border: 1px solid @k_border; border-radius: 6px; padding: 20px 30px; }
+.canvas-pedir { background: #1C1D23; border: 1px solid #2E2F3A; border-radius: 6px; padding: 4px 4px 4px 14px; }
+entry.canvas-pedir-campo { background: none; border: none; box-shadow: none; min-height: 32px; font-size: 13px; color: @k_text; }
+entry.canvas-pedir-campo:focus-within { outline: none; border: none; box-shadow: none; }
+button.canvas-pedir-enviar { background: @k_accent; border: none; box-shadow: none; border-radius: 4px; min-width: 32px; min-height: 32px; padding: 0; }
+.canvas-codigo { font-size: 12px; background: none; }
+.canvas-codigo text { background: none; color: @k_text2; }
+button.canvas-versao { background: alpha(@k_text, 0.04); border: 1px solid @k_border; box-shadow: none; border-radius: 4px; min-height: 26px; padding: 0 10px; font-size: 12px; color: @k_muted; }
+button.canvas-versao.ativo { background: alpha(@k_accent, 0.18); border-color: alpha(@k_accent, 0.45); color: @k_text; }
 /* Bluetooth pairing (designs "Parear Bluetooth" and "· confirmar código"): the code's six boxes */
 .bt-cartao { padding: 20px 20px 20px 20px; }
 .bt-cartao .wifi-titulo, .bt-cartao .wifi-subtitulo { margin: 0; }
@@ -2236,6 +2343,76 @@ button.term-suspenso-botao:checked { background: alpha(@k_accent, 0.16); }
 .term-suspenso-alca { background: @k_muted; border-radius: 2px; min-height: 4px; min-width: 56px; }
 .term-suspenso-dica { background: #101114; border: 1px solid @k_border; border-radius: 8px; padding: 5px 6px 5px 12px; min-height: 16px; }
 .term-suspenso-dica-texto { font-size: 12px; font-weight: 500; color: @k_text2; }
+/* the Terminal's SSH and Mosh tabs (design "Kalango Remote · SSH abre no Terminal do sistema") */
+.term-ponto { border-radius: 99px; min-width: 6px; min-height: 6px; background: @k_dim; }
+.term-ponto.conectado { background: @k_teal; }
+.term-ponto.conectando { background: @k_gold; }
+.term-ponto.caiu { background: @k_coral; }
+.term-selo-producao { background: alpha(@k_coral, 0.16); color: @k_coral; border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 600; }
+.term-selo-mosh { background: alpha(@k_teal, 0.16); color: @k_teal; border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 600; }
+.ed-aba.pisca { background: alpha(@k_accent, 0.22); transition: background 120ms ease-out; }
+.term-producao { background: alpha(@k_coral, 0.08); border-bottom: 1px solid alpha(@k_coral, 0.22); min-height: 28px; padding: 0 20px; }
+.term-producao-texto { font-size: 12px; color: @k_coral; }
+.term-divisao > separator { min-width: 1px; background: @k_border; }
+.term-sessao-aviso { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 5px 10px; }
+.term-sessao-aviso-texto { font-size: 12px; color: @k_text2; }
+button.term-sessao-aviso-botao { all: unset; color: @k_accent_text; font-size: 12px; font-weight: 600; padding: 0 4px; border-radius: 4px; }
+button.term-sessao-aviso-botao:hover { background: alpha(@k_realce, 0.06); }
+.term-busca { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 3px 6px 3px 10px; }
+entry.term-busca-campo { all: unset; font-family: "JetBrains Mono", monospace; font-size: 12px; color: @k_text; min-height: 24px; }
+.term-busca-conta { font-size: 11px; color: @k_muted; }
+button.term-busca-botao { all: unset; min-width: 24px; min-height: 24px; border-radius: 4px; }
+button.term-busca-botao:hover { background: alpha(@k_realce, 0.06); }
+popover.term-selecao > contents { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 4px; box-shadow: none; }
+button.term-selecao-item { all: unset; padding: 5px 10px; border-radius: 4px; font-size: 12px; color: @k_text2; }
+button.term-selecao-item:hover { background: alpha(@k_realce, 0.06); color: @k_text; }
+.term-agente { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 6px 8px 6px 12px; }
+.term-agente-texto { font-size: 12px; color: @k_text; }
+.term-agente-tecla { background: @k_control; color: @k_muted; border-radius: 4px; padding: 2px 6px; font-size: 11px; }
+button.term-agente-explicar { all: unset; background: @k_control; color: @k_text2; border-radius: 4px; padding: 2px 8px; font-size: 11px; }
+button.term-agente-explicar:hover { background: @k_raised; }
+.term-dialogo-comando { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @k_text; }
+.term-dialogo-agente { background: alpha(@k_accent, 0.14); border-radius: 8px; }
+.term-dialogo-perigo { background: alpha(@k_coral, 0.14); border-radius: 8px; }
+.arq-dialogo.term-digital.mudou { border-color: @k_coral; }
+.term-digital-texto { font-size: 13px; color: @k_text2; }
+.term-digital-tabela { background: alpha(@k_realce, 0.025); border-radius: 6px; padding: 12px 14px; }
+.term-digital-rotulo { font-size: 12px; color: @k_muted; }
+.term-digital-valor { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @k_text; }
+.term-digital-valor.realce { color: @k_accent_text; }
+.term-digital-valor.perigo { color: @k_coral; }
+.term-digital-como { background: alpha(@k_coral, 0.06); border-radius: 6px; padding: 10px 12px; }
+.term-digital-como-titulo { font-size: 12px; font-weight: 600; color: @k_text; }
+.term-digital-como-texto { font-size: 12px; color: @k_text2; }
+.term-sftp { background: @k_base; border-left: 1px solid @k_border; padding: 16px 14px 14px 14px; }
+.term-sftp-titulo { font-size: 13px; font-weight: 600; color: @k_text; }
+button.term-sftp-caminho { all: unset; background: @k_field; border-radius: 4px; padding: 6px 10px; }
+button.term-sftp-caminho:hover { background: @k_control2; }
+.term-sftp-caminho-texto { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @k_text2; }
+.term-sftp-seguir { font-size: 12px; color: @k_text2; }
+list.term-sftp-lista { background: transparent; }
+list.term-sftp-lista > row { padding: 0; border-radius: 4px; }
+list.term-sftp-lista > row:selected { background: alpha(@k_realce, 0.07); }
+list.term-sftp-lista > row:hover:not(:selected) { background: alpha(@k_realce, 0.035); }
+.term-sftp-item { padding: 0 8px; min-height: 38px; }
+.term-sftp-nome { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @k_text; }
+.term-sftp-tamanho { font-size: 11px; color: @k_muted; }
+.term-sftp-nota { font-size: 12px; color: @k_muted; padding: 8px; }
+.term-sftp-mudou { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 12px; }
+.term-sftp-mudou-titulo { font-size: 12px; font-weight: 600; color: @k_text; }
+.term-sftp-mudou-texto { font-size: 12px; color: @k_text2; }
+.term-sftp-mudou button.arq-acao-texto, .term-sftp-mudou button.arq-acao-principal { min-height: 28px; font-size: 12px; padding: 0 10px; }
+.term-sftp-soltar { border: 1px dashed @k_divider; border-radius: 6px; padding: 14px; }
+.term-sftp-soltar.sobre { border-color: @k_accent; background: alpha(@k_accent, 0.06); }
+.term-sftp-soltar-texto { font-size: 12px; color: @k_muted; }
+.term-sftp-transferencia { border: 1px solid @k_border; border-radius: 6px; padding: 10px 12px; }
+.term-sftp-transferencia-texto { font-size: 12px; color: @k_text; }
+.term-sftp-pct { font-size: 11px; color: @k_muted; }
+progressbar.term-sftp-barra > trough { min-height: 3px; background: @k_divider; border-radius: 2px; }
+progressbar.term-sftp-barra > trough > progress { min-height: 3px; background: @k_accent; border-radius: 2px; }
+button.term-sftp-de-novo { all: unset; color: @k_accent_text; font-size: 12px; font-weight: 600; padding: 2px 4px; border-radius: 4px; }
+button.term-sftp-de-novo:hover { background: alpha(@k_realce, 0.06); }
+textview.term-sftp-diff, textview.term-sftp-diff > text { background: @k_panel; color: @k_text2; font-size: 12px; }
 /* the Terminal's preferences (design "Terminal · suspenso · ajustes"): a card over the dimmed screen, the sections on
    the left */
 window.wifi-fundo.termp-fundo.aberto { background: alpha(#0B0C10, 0.45); }

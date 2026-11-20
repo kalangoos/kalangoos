@@ -21,6 +21,7 @@ mod limits;
 mod peer;
 mod policy;
 mod redes;
+mod remote_control;
 mod restore;
 mod sandbox;
 mod server;

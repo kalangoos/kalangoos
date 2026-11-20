@@ -264,18 +264,37 @@ fn minutes(key: &str, default_min: u64) -> u64 {
     ajustes()[key].as_u64().unwrap_or(default_min)
 }
 
+/// Whether this is the live session of the install media (the kernel line has casper's `boot=casper`).
+pub(crate) fn live_session() -> bool {
+    is_live_cmdline(&std::fs::read_to_string("/proc/cmdline").unwrap_or_default())
+}
+
+fn is_live_cmdline(cmdline: &str) -> bool {
+    cmdline.split_whitespace().any(|w| w == "boot=casper")
+}
+
 /// Watches the idle times chosen (again when they change).
 pub fn watch_idle() {
+    let live = live_session();
     let (screen_off, suspend_after) = (minutes("screen_off_min", 10), minutes("suspend_min", 30));
     // Privacy › automatic lock (0: never); 5 minutes unless chosen — but not in the development and test sessions,
-    // whose minutes are seconds and whose screen is someone's desktop
-    let lock_after = minutes("bloqueio_apos_min", if std::env::var_os("KALANGO_SHELL_DEV").is_some() { 0 } else { 5 });
+    // whose minutes are seconds and whose screen is someone's desktop, nor in the live session of the install media:
+    // its account has no password (the lock screen could not be opened again) and an install would go on behind it
+    let lock_after = if live {
+        0
+    } else {
+        minutes("bloqueio_apos_min", if std::env::var_os("KALANGO_SHELL_DEV").is_some() { 0 } else { 5 })
+    };
     let generation = (lock_after << 32) | (screen_off << 16) | suspend_after;
     if IDLE_WATCH.with(|o| o.borrow().as_ref().map(|(_, g)| *g)) == Some(generation) {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut times = vec![(1, (screen_off * minute_ms()) as u32), (2, (suspend_after * minute_ms()) as u32)];
+    let mut times = vec![(1, (screen_off * minute_ms()) as u32)];
+    // (live, never suspend: an install copying to the disk would stop halfway)
+    if !live {
+        times.push((2, (suspend_after * minute_ms()) as u32));
+    }
     if lock_after > 0 {
         times.push((3, (lock_after * minute_ms()) as u32));
     }
@@ -1009,5 +1028,17 @@ mod tests {
         let m = top_apps(&a);
         assert_eq!(m[0].0, "Modelo local");
         assert!((m[0].1 - 59.0 * 0.5 / 1000.0).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::is_live_cmdline;
+
+    #[test]
+    fn the_install_media_is_the_live_session() {
+        assert!(is_live_cmdline("BOOT_IMAGE=/casper/vmlinuz boot=casper quiet splash ---"));
+        assert!(!is_live_cmdline("BOOT_IMAGE=/boot/vmlinuz root=UUID=1234 ro quiet splash"));
+        assert!(!is_live_cmdline("boot=casperx"));
     }
 }

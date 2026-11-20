@@ -30,6 +30,9 @@ class Console:
                 out += self.s.recv(1 << 16)
             except socket.timeout:
                 pass
+            except (ConnectionResetError, BrokenPipeError):
+                # (a VM desligou e fechou o console: o que veio até ali vale)
+                break
         return ESC.sub("", out.decode(errors="replace"))
 
     def until(self, pattern, seconds):
@@ -106,6 +109,9 @@ def main():
         good &= check("niri.bin --session" in procs and "kalango-shell.bin" in procs, "a sessão continua de pé 1 min depois", procs)
         failed, _ = c.run("systemctl --failed --no-legend --plain")
         good &= check(failed.strip() == "", "nenhum serviço falhou", failed)
+        # (a placa com fio da VM ligada pelo NetworkManager: com a regra do Ubuntu sem netplan, ela ficava sem gerência)
+        net, _ = c.run("nmcli -t -f TYPE,STATE device | grep ^ethernet")
+        good &= check("ethernet:connected" in net, "a rede com fio conecta sozinha", net)
     elif mode == "instalar":
         plan = sys.argv[3]
         password = sys.argv[4]
@@ -134,12 +140,32 @@ def main():
         # (o gerenciador de pacotes e as fontes do Ubuntu: sem eles nada se instala nem se atualiza)
         apt, _ = c.run("command -v apt-get; grep -h '^Suites:' /etc/apt/sources.list.d/*.sources | tr '\\n' ' '; ls /usr/share/keyrings/ubuntu-archive-keyring.gpg")
         good &= check("/usr/bin/apt-get" in apt and "-security" in apt and "ubuntu-archive-keyring" in apt, "o apt e as fontes do Ubuntu (com as de segurança) estão lá", apt)
+        # (os apps nativos de repositório próprio: o atalho no menu e nenhuma biblioteca faltando)
+        apps, _ = c.run("ls /usr/share/applications/os.kalango.Remote.desktop /usr/share/applications/os.kalango.Audio.desktop; "
+                        "LD_LIBRARY_PATH=/usr/lib/kalango/remote ldd /usr/lib/kalango/remote/kalango-remote /usr/lib/kalango/remote/kalango-remote-core /usr/bin/kalango-audio | grep -c 'not found'")
+        good &= check("os.kalango.Remote.desktop" in apps and "os.kalango.Audio.desktop" in apps and apps.strip().endswith("0"),
+                      "o Kalango Remote e o Kalango Audio estão no sistema, sem biblioteca faltando", apps)
+        # (a / do root e 755: senão o systemd-tmpfiles recusa caminhos e qualquer conta mexe na raiz)
+        top, _ = c.run("stat -c '%U:%G %a' /")
+        good &= check(top.strip() == "root:root 755", "a raiz / é do root, com 755", top)
         root, _ = c.run("findmnt -no FSTYPE,SOURCE /")
         good &= check(root.startswith("ext4"), "a raiz é o disco instalado (ext4)", root)
+        # (o carregador reserva, que qualquer UEFI acha sem a entrada na memória do firmware)
+        # (a tela de entrada, que a entrada automática pula: o programa que o niri dela abre existe — com o caminho errado
+        # ela fechava na hora e o greetd desistia, deixando a tela preta para quem tem senha)
+        greeter, _ = c.run("p=$(sed -n 's/^spawn-sh-at-startup \"\\([^; ]*\\).*/\\1/p' /usr/share/kalango/entrada.kdl); echo $p; test -x \"$p\" && echo existe")
+        good &= check(greeter.strip().endswith("existe"), "a tela de entrada abre o programa dela", greeter)
+        # (a partição EFI é só do root: o ls com sudo)
+        fb, _ = c.run("sudo -S -p '' ls /boot/efi/EFI/BOOT/BOOTX64.EFI /boot/efi/EFI/KalangoOS/", 30, stdin=password)
+        good &= check("BOOTX64.EFI" in fb and "grubx64.efi" in fb, "o disco liga sozinho (EFI/BOOT/BOOTX64.EFI e a entrada KalangoOS)", fb)
         efi, _ = c.run("findmnt -no FSTYPE /boot/efi")
         good &= check(efi.strip() == "vfat", "a partição EFI está montada", efi)
         failed, _ = c.run("systemctl --failed --no-legend --plain")
         good &= check(failed.strip() == "", "nenhum serviço falhou", failed)
+        if failed.strip():
+            units = " ".join(l.split()[0] for l in failed.splitlines() if l.strip())
+            why, _ = c.run(f"sudo -S -p '' journalctl -b --no-pager -o cat -u {units.replace(' ', ' -u ')} | tail -30", 30, stdin=sys.argv[4])
+            print("---- o registro dos serviços que falharam\n" + why)
     if not good and mode != "instalar":
         log, _ = c.run("sudo -S -p '' journalctl -b --no-pager -p warning | tail -60", 30, stdin=sys.argv[4] if mode == "instalado" else "")
         print("---- o registro do sistema (avisos e erros)\n" + log)

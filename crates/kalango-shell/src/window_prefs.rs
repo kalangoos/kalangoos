@@ -26,12 +26,54 @@ pub fn kdl(follows: bool) -> String {
     out
 }
 
+thread_local! {
+    /// The apps whose windows do not answer now (design "App não está respondendo"): at 60 % until they do.
+    static DIMMED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// niri's rule for the windows of apps that do not answer (their app ids, as niri's regex, escaped).
+pub fn dim_rules(app_ids: &[String]) -> String {
+    let mut out = String::new();
+    for id in app_ids {
+        let mut re = String::new();
+        for c in id.chars() {
+            if "\\.+*?()[]{}^$|".contains(c) {
+                // a backslash for the regex, escaped for KDL's string
+                re.extend(['\\', '\\']);
+            }
+            re.push(c);
+        }
+        out += &format!("window-rule {{\n    match app-id=\"^{re}$\"\n    opacity 0.6\n}}\n");
+    }
+    out
+}
+
+/// An app stops (or starts again) answering: its windows dim (or come back).
+pub fn set_dimmed(app_id: &str, on: bool) {
+    if app_id.is_empty() {
+        return;
+    }
+    let changed = DIMMED.with(|d| {
+        let mut d = d.borrow_mut();
+        let had = d.iter().any(|x| x == app_id);
+        if on && !had {
+            d.push(app_id.to_string());
+        } else if !on && had {
+            d.retain(|x| x != app_id);
+        }
+        on != had
+    });
+    if changed {
+        write_kdl();
+    }
+}
+
 pub fn write_kdl() {
     let p = kdl_path();
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    let novo = kdl(focus_follows());
+    let novo = kdl(focus_follows()) + &DIMMED.with(|d| dim_rules(&d.borrow()));
     if std::fs::read_to_string(&p).ok().as_deref() != Some(novo.as_str()) {
         let _ = std::fs::write(&p, novo);
     }
@@ -98,5 +140,11 @@ mod tests {
         assert!(super::kdl(true).contains("focus-follows-mouse"));
         assert!(!super::kdl(false).contains("focus-follows-mouse"));
         assert_eq!(super::button_layout(true), "close,maximize,minimize:appmenu");
+    }
+
+    #[test]
+    fn a_window_that_does_not_answer_dims_by_its_app_id() {
+        let r = super::dim_rules(&["org.exemplo.Planilha".to_string()]);
+        assert_eq!(r, "window-rule {\n    match app-id=\"^org\\\\.exemplo\\\\.Planilha$\"\n    opacity 0.6\n}\n");
     }
 }

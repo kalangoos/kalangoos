@@ -87,7 +87,30 @@ pub struct Config {
     /// `~/.local/share/Trash`. Tests point it at a temporary folder so they never touch a real trash.
     #[serde(default)]
     pub trash_dir: Option<PathBuf>,
+    /// The file KalangoOS's niri reads to know who may capture the screen and inject input (patch 0008); its
+    /// session runs niri with `KALANGO_NIRI_CONTROLE` pointing here.
+    #[serde(default = "controle_remoto_padrao")]
+    pub controle_remoto: PathBuf,
+    /// System programs that always have a capability: "path capabilities" (the shell's on-screen keyboard types).
+    #[serde(default = "controle_remoto_sempre_padrao")]
+    pub controle_remoto_sempre: Vec<String>,
+    /// The Kalango Remote apps that may ask for a session's permission (for their own core, after the person's
+    /// approval).
+    #[serde(default = "controle_remoto_apps_padrao")]
+    pub controle_remoto_apps: Vec<String>,
     pub callers: Vec<CallerRule>,
+}
+
+fn controle_remoto_padrao() -> PathBuf {
+    "/run/kalango/controle-remoto".into()
+}
+
+fn controle_remoto_sempre_padrao() -> Vec<String> {
+    vec!["/usr/bin/kalango-shell teclado".into()]
+}
+
+fn controle_remoto_apps_padrao() -> Vec<String> {
+    vec!["/usr/bin/kalango-remote".into()]
 }
 
 fn raiz_padrao() -> PathBuf {
@@ -119,6 +142,9 @@ impl Config {
             pontos_max: pontos_padrao(),
             web_local: false,
             trash_dir: None,
+            controle_remoto: controle_remoto_padrao(),
+            controle_remoto_sempre: controle_remoto_sempre_padrao(),
+            controle_remoto_apps: controle_remoto_apps_padrao(),
             aprovadores_graficos: aprovadores_padrao(),
             callers: vec![
                 CallerRule {

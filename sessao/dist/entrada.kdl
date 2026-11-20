@@ -20,6 +20,6 @@ cursor {
     xcursor-theme "Adwaita"
     xcursor-size 24
 }
-spawn-sh-at-startup "/usr/bin/kalango-entrada; niri msg action quit --skip-confirmation"
+spawn-sh-at-startup "/usr/libexec/kalango/kalango-entrada; niri msg action quit --skip-confirmation"
 binds {
 }

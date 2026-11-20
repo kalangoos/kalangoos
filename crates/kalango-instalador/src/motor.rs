@@ -259,8 +259,16 @@ fn finish(c: &Ctx, p: &Plan, esp: &str, boot: Option<&str>, root: &str) -> Resul
     // console stays one)
     write_file(c, "/etc/default/grub.d/90-kalangoos.cfg", &grub_defaults(&std::fs::read_to_string("/proc/cmdline").unwrap_or_default()))?;
     c.chroot(&["grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi", "--bootloader-id=KalangoOS", "--recheck"], None)?;
+    // and the fallback loader (EFI/BOOT/BOOTX64.EFI), which any UEFI finds on its own: without it the disk only boots
+    // while the firmware keeps the entry above — lost with a firmware reset, another computer or a VM's new NVRAM
+    // (the installed system then fell back to the install media and asked to install again)
+    c.chroot(&["grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi", "--removable", "--no-nvram"], None)?;
     c.chroot(&["update-initramfs", "-u", "-k", "all"], None)?;
     c.chroot(&["update-grub"], None)?;
+    // a fresh grubenv (the image's /boot/grub/grubenv is not a valid one: grub-editenv refused it, and the boot-success
+    // services grub2-common and grub-initrd-fallback failed on every boot of the installed system)
+    c.chroot(&["rm", "-f", "/boot/grub/grubenv"], None)?;
+    c.chroot(&["grub-editenv", "/boot/grub/grubenv", "create"], None)?;
     // (anything still holding a mount under /target lets go when it ends: the disk is already written and synced)
     c.run("sync", &[], None)?;
     if c.run("umount", &["-R", TARGET], None).is_err() {

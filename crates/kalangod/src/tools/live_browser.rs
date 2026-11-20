@@ -369,11 +369,32 @@ fn local_rule(all_local: bool) -> Local {
     }
 }
 
-/// `kalango/navegador`: {acao: abrir (url) | ver | clicar (x, y) | rolar (dy) | digitar (texto) | tecla (tecla) | voltar |
-/// avancar | recarregar | destacar (palavras) | fechar, largura?, altura?} → the page's address, title and picture.
+/// The canvas's page (design "Chat · canvas com HTML ao vivo"): what an agent wrote, as a page — a data: address, so
+/// nothing of the person's files is reachable from it, and its own resources go through the same proxy.
+pub fn html_address(html: &str) -> String {
+    use base64::Engine;
+    format!("data:text/html;charset=utf-8;base64,{}", base64::engine::general_purpose::STANDARD.encode(html))
+}
+
+/// What is under a point of the page: a selector for it (its tag, id and first classes) and its box.
+const ELEMENT_AT: &str = r##"((x, y) => {
+  const el = document.elementFromPoint(x, y);
+  if (!el || el === document.documentElement || el === document.body) return null;
+  let sel = el.tagName.toLowerCase();
+  if (el.id) sel += "#" + el.id;
+  else if (el.classList.length) sel += "." + [...el.classList].slice(0, 2).join(".");
+  const b = el.getBoundingClientRect(), d = document.documentElement.getBoundingClientRect();
+  return {seletor: sel, texto: (el.innerText || "").trim().slice(0, 120), x: b.left - d.left - scrollX, y: b.top - d.top - scrollY, w: b.width, h: b.height};
+})"##;
+
+/// `kalango/navegador`: {acao: abrir (url) | html (conteudo) | elemento (x, y) | ver | clicar (x, y) | rolar (dy) | digitar
+/// (texto) | tecla (tecla) | voltar | avancar | recarregar | destacar (palavras) | fechar, largura?, altura?, sessao?} → the
+/// page's address, title and picture. `sessao: "canvas"` is a second browser of the person's, the canvas's, apart from
+/// the one the agents read the web with.
 pub fn act(uid: u32, gid: u32, all_local: bool, p: &Value) -> Result<Value, String> {
     let acao = p["acao"].as_str().unwrap_or("ver");
-    let slot = sessions().lock().map_err(|_| "browser state")?.entry(uid).or_insert_with(|| Arc::new(Mutex::new(None))).clone();
+    let key = if p["sessao"] == "canvas" { uid | 0x8000_0000 } else { uid };
+    let slot = sessions().lock().map_err(|_| "browser state")?.entry(key).or_insert_with(|| Arc::new(Mutex::new(None))).clone();
     let mut g = slot.lock().map_err(|_| "browser state")?;
     if acao == "fechar" {
         *g = None;
@@ -384,7 +405,7 @@ pub fn act(uid: u32, gid: u32, all_local: bool, p: &Value) -> Result<Value, Stri
         *g = None;
     }
     if g.is_none() {
-        if acao != "abrir" {
+        if acao != "abrir" && acao != "html" {
             return Err("the browser is closed".into());
         }
         *g = Some(Session::start(uid, gid, local_rule(all_local))?);
@@ -412,6 +433,17 @@ pub fn act(uid: u32, gid: u32, all_local: bool, p: &Value) -> Result<Value, Stri
                     return Err(format!("{url}: {e}"));
                 }
                 s.settle();
+            }
+            "html" => {
+                let html = p["conteudo"].as_str().ok_or("no page")?;
+                let url = html_address(html);
+                s.requested = String::new();
+                s.call("Page.navigate", json!({"url": url}), true, 30)?;
+                s.settle();
+            }
+            "elemento" => {
+                let (x, y) = (p["x"].as_f64().ok_or("no x")?, p["y"].as_f64().ok_or("no y")?);
+                extra = json!({"elemento": s.eval(&format!("{ELEMENT_AT}({x}, {y})"))?});
             }
             "ver" => {}
             "clicar" => s.click(p["x"].as_f64().ok_or("no x")?, p["y"].as_f64().ok_or("no y")?)?,
@@ -455,6 +487,13 @@ pub fn act(uid: u32, gid: u32, all_local: bool, p: &Value) -> Result<Value, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_canvas_page_is_a_data_address() {
+        let a = html_address("<h1>Oi</h1>");
+        assert!(a.starts_with("data:text/html;charset=utf-8;base64,"));
+        assert!(a.ends_with("PGgxPk9pPC9oMT4="));
+    }
 
     #[test]
     fn the_childs_pipe_ends_close_on_exec() {

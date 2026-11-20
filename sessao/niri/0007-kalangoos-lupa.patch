@@ -1,0 +1,477 @@
+diff --git a/niri-config/src/binds.rs b/niri-config/src/binds.rs
+index e639b84..11800f0 100644
+--- a/niri-config/src/binds.rs
++++ b/niri-config/src/binds.rs
+@@ -298,6 +298,8 @@ pub enum Action {
+     #[knuffel(skip)]
+     SetEdgeSnap(bool),
+     #[knuffel(skip)]
++    SetZoom { factor: f64, mode: String },
++    #[knuffel(skip)]
+     ThumbnailWindow {
+         id: u64,
+         path: String,
+@@ -608,6 +610,7 @@ impl From<niri_ipc::Action> for Action {
+             niri_ipc::Action::SnapWindow { id: None, region } => Self::SnapWindow(region),
+             niri_ipc::Action::SetSnapTargets { targets } => Self::SetSnapTargets(targets),
+             niri_ipc::Action::SetEdgeSnap { on } => Self::SetEdgeSnap(on),
++            niri_ipc::Action::SetZoom { factor, mode } => Self::SetZoom { factor, mode },
+             niri_ipc::Action::ThumbnailWindow { id, path, max_size } => Self::ThumbnailWindow { id, path, max_size },
+             niri_ipc::Action::SnapWindow {
+                 id: Some(id),
+diff --git a/niri-ipc/src/lib.rs b/niri-ipc/src/lib.rs
+index 09a5d9c..f8c3e3e 100644
+--- a/niri-ipc/src/lib.rs
++++ b/niri-ipc/src/lib.rs
+@@ -700,6 +700,16 @@ pub enum Action {
+         /// An empty list removes them; they are removed when the drag ends.
+         targets: String,
+     },
++    /// The magnifier (KalangoOS "Lupa"): the part of the screen around the pointer scaled up.
++    #[cfg_attr(feature = "clap", clap(about = "Turn the magnifier on (factor above 1) or off"))]
++    SetZoom {
++        /// How much bigger: 1 (or less) turns it off.
++        #[cfg_attr(feature = "clap", arg())]
++        factor: f64,
++        /// "lens" (a rectangle around the pointer), "full" (the whole screen) or "half".
++        #[cfg_attr(feature = "clap", arg(long, default_value = "lens"))]
++        mode: String,
++    },
+     /// Whether dragging a window to a screen edge or corner snaps it (KalangoOS; on by default).
+     #[cfg_attr(feature = "clap", clap(about = "Turn snapping by dragging to the screen edges on or off"))]
+     SetEdgeSnap {
+diff --git a/src/input/mod.rs b/src/input/mod.rs
+index 9fea11e..ae2df48 100644
+--- a/src/input/mod.rs
++++ b/src/input/mod.rs
+@@ -2091,6 +2091,10 @@ impl State {
+             Action::SetEdgeSnap(on) => {
+                 self.niri.layout.set_edge_snap(on);
+             }
++            Action::SetZoom { factor, mode } => {
++                self.niri.set_zoom(factor, &mode);
++                self.niri.queue_redraw_all();
++            }
+             Action::SnapWindow(region) => {
+                 self.niri.layout.snap_window(None, &region);
+                 self.maybe_warp_cursor_to_focus();
+diff --git a/src/niri.rs b/src/niri.rs
+index 5d7c291..b3be1d5 100644
+--- a/src/niri.rs
++++ b/src/niri.rs
+@@ -197,6 +197,28 @@ pub struct KalangoMod {
+     pub timer: Option<RegistrationToken>,
+ }
+ 
++/// KalangoOS magnifier: how much bigger, how it shows, and the ids its elements keep between frames.
++pub struct KalangoZoom {
++    pub factor: f64,
++    pub mode: KalangoZoomMode,
++    id: smithay::backend::renderer::element::Id,
++    border: [smithay::backend::renderer::element::Id; 4],
++    commit: std::cell::Cell<smithay::backend::renderer::utils::CommitCounter>,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum KalangoZoomMode {
++    /// a rectangle around the pointer (design: 620 × 380)
++    Lens,
++    /// the whole screen
++    Full,
++    /// the half of the screen away from the pointer
++    Half,
++}
++
++/// The lens's size (design "Lupa (Super e +)").
++const KALANGO_LENS: (f64, f64) = (620., 380.);
++
+ pub struct Niri {
+     pub config: Rc<RefCell<Config>>,
+ 
+@@ -364,6 +386,8 @@ pub struct Niri {
+     /// which passes it down through grabs, which decide what to do with it as they see fit.
+     pub pointer_contents: PointContents,
+     pub pointer_visibility: PointerVisibility,
++    /// KalangoOS magnifier ("Lupa"): on when set.
++    pub kalango_zoom: Option<KalangoZoom>,
+     pub pointer_inactivity_timer: Option<RegistrationToken>,
+     /// Whether the pointer inactivity timer got reset this event loop iteration.
+     ///
+@@ -2617,6 +2641,7 @@ impl Niri {
+             dnd_icon: None,
+             pointer_contents: PointContents::default(),
+             pointer_visibility: PointerVisibility::Visible,
++            kalango_zoom: None,
+             pointer_inactivity_timer: None,
+             pointer_inactivity_timer_got_reset: false,
+             notified_activity_this_iteration: false,
+@@ -4188,6 +4213,86 @@ impl Niri {
+         }
+     }
+ 
++    /// KalangoOS magnifier: on with a factor above 1, off otherwise.
++    pub fn set_zoom(&mut self, factor: f64, mode: &str) {
++        if !(factor > 1.0) {
++            self.kalango_zoom = None;
++            return;
++        }
++        let mode = match mode {
++            "full" | "tela" => KalangoZoomMode::Full,
++            "half" | "metade" => KalangoZoomMode::Half,
++            _ => KalangoZoomMode::Lens,
++        };
++        let factor = factor.min(16.);
++        match &mut self.kalango_zoom {
++            Some(z) => {
++                z.factor = factor;
++                z.mode = mode;
++            }
++            None => {
++                use smithay::backend::renderer::element::Id;
++                self.kalango_zoom = Some(KalangoZoom {
++                    factor,
++                    mode,
++                    id: Id::new(),
++                    border: [Id::new(), Id::new(), Id::new(), Id::new()],
++                    commit: std::cell::Cell::new(smithay::backend::renderer::utils::CommitCounter::default()),
++                });
++            }
++        }
++    }
++
++    /// KalangoOS magnifier: its border and lens, in front of everything but the pointer.
++    fn render_kalango_zoom<R: NiriRenderer>(
++        &self,
++        output: &Output,
++        push: &mut dyn FnMut(OutputRenderElements<R>),
++    ) {
++        let Some(z) = &self.kalango_zoom else { return };
++        let Some(geo) = self.global_space.output_geometry(output) else { return };
++        let pointer = self.seat.get_pointer().unwrap().current_location() - geo.loc.to_f64();
++        let size = geo.size.to_f64();
++        // (only on the output with the pointer)
++        if pointer.x < 0. || pointer.y < 0. || pointer.x >= size.w || pointer.y >= size.h {
++            return;
++        }
++        let lens = match z.mode {
++            KalangoZoomMode::Full => Rectangle::from_size(size),
++            KalangoZoomMode::Half => {
++                let h = (size.h / 2.).floor();
++                let y = if pointer.y > size.h / 2. { 0. } else { size.h - h };
++                Rectangle::new(Point::from((0., y)), Size::from((size.w, h)))
++            }
++            KalangoZoomMode::Lens => {
++                let (w, h) = (KALANGO_LENS.0.min(size.w), KALANGO_LENS.1.min(size.h));
++                let x = (pointer.x - w / 2.).clamp(0., size.w - w);
++                let y = (pointer.y - h / 2.).clamp(0., size.h - h);
++                Rectangle::new(Point::from((x, y)), Size::from((w, h)))
++            }
++        };
++        let source = crate::render_helpers::magnifier::source_rect(pointer, lens.size, z.factor, size);
++        let mut commit = z.commit.get();
++        commit.increment();
++        z.commit.set(commit);
++        // the border: 2 px in the accent, inside the lens (not in full screen)
++        if z.mode == KalangoZoomMode::Lens {
++            let b = 2.;
++            let accent = Color32F::new(0.647, 0.631, 0.886, 1.);
++            let sides = [
++                Rectangle::new(lens.loc, Size::from((lens.size.w, b))),
++                Rectangle::new(Point::from((lens.loc.x, lens.loc.y + lens.size.h - b)), Size::from((lens.size.w, b))),
++                Rectangle::new(lens.loc, Size::from((b, lens.size.h))),
++                Rectangle::new(Point::from((lens.loc.x + lens.size.w - b, lens.loc.y)), Size::from((b, lens.size.h))),
++            ];
++            for (id, r) in z.border.iter().zip(sides) {
++                push(SolidColorRenderElement::new(id.clone(), r, smithay::backend::renderer::utils::CommitCounter::default(), accent, Kind::Unspecified).into());
++            }
++        }
++        let scale = output.current_scale().fractional_scale();
++        push(crate::render_helpers::magnifier::MagnifierElement::new(z.id.clone(), commit, lens, source, scale).into());
++    }
++
+     pub fn render_to_vec<R: NiriRenderer>(
+         &self,
+         ctx: RenderCtx<R>,
+@@ -4255,6 +4360,11 @@ impl Niri {
+             self.render_pointer(ctx.renderer, output, &mut |elem| push(elem.into()));
+         }
+ 
++        // KalangoOS magnifier: right under the pointer (not on the lock screen, not in screen captures).
++        if !self.is_locked() && ctx.target == RenderTarget::Output {
++            self.render_kalango_zoom(output, push);
++        }
++
+         // Next, the screen transition texture.
+         {
+             if let Some(transition) = &state.screen_transition {
+@@ -6617,5 +6727,7 @@ niri_render_elements! {
+         Texture = PrimaryGpuTextureRenderElement,
+         // Used for the CPU-rendered panels.
+         RelocatedMemoryBuffer = RelocateRenderElement<MemoryRenderBufferRenderElement<R>>,
++        // KalangoOS magnifier.
++        Magnifier = crate::render_helpers::magnifier::MagnifierElement,
+     }
+ }
+diff --git a/src/render_helpers/magnifier.rs b/src/render_helpers/magnifier.rs
+new file mode 100644
+index 0000000..69f132f
+--- /dev/null
++++ b/src/render_helpers/magnifier.rs
+@@ -0,0 +1,245 @@
++//! KalangoOS magnifier (design "Lupa", Super and +): a framebuffer effect that copies the part of the screen around
++//! the pointer — what is already drawn behind it — scaled up into its own rectangle. Everything in front of it (the
++//! pointer, the lens border) is drawn after, at its normal size.
++
++use std::cell::RefCell;
++
++use smithay::backend::allocator::Fourcc;
++use smithay::backend::renderer::element::{Element, Id, RenderElement};
++use smithay::backend::renderer::gles::{ffi, GlesError, GlesFrame, GlesRenderer, GlesTexture};
++use smithay::backend::renderer::utils::CommitCounter;
++use smithay::backend::renderer::{Frame as _, FrameContext, Offscreen, Texture as _};
++use smithay::utils::user_data::UserDataMap;
++use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform};
++
++use crate::backend::tty::{TtyFrame, TtyRenderer, TtyRendererError};
++use crate::render_helpers::renderer::AsGlesFrame as _;
++
++#[derive(Debug)]
++pub struct MagnifierElement {
++    id: Id,
++    commit: CommitCounter,
++    /// where the lens is drawn (output logical coordinates)
++    geometry: Rectangle<f64, Logical>,
++    /// the part of the screen it shows, scaled up to `geometry` (output logical coordinates)
++    source: Rectangle<f64, Logical>,
++    scale: f64,
++}
++
++#[derive(Debug, Default)]
++struct Inner {
++    texture: Option<GlesTexture>,
++}
++
++/// The part of an output of `size` shown by a lens of `lens` size at `factor`, centred on `pointer` and kept inside
++/// the output.
++pub fn source_rect(
++    pointer: Point<f64, Logical>,
++    lens: Size<f64, Logical>,
++    factor: f64,
++    size: Size<f64, Logical>,
++) -> Rectangle<f64, Logical> {
++    let w = (lens.w / factor).min(size.w);
++    let h = (lens.h / factor).min(size.h);
++    let x = (pointer.x - w / 2.).clamp(0., (size.w - w).max(0.));
++    let y = (pointer.y - h / 2.).clamp(0., (size.h - h).max(0.));
++    Rectangle::new(Point::from((x, y)), Size::from((w, h)))
++}
++
++impl MagnifierElement {
++    pub fn new(
++        id: Id,
++        commit: CommitCounter,
++        geometry: Rectangle<f64, Logical>,
++        source: Rectangle<f64, Logical>,
++        scale: f64,
++    ) -> Self {
++        Self {
++            id,
++            commit,
++            geometry,
++            source,
++            scale,
++        }
++    }
++}
++
++impl Element for MagnifierElement {
++    fn id(&self) -> &Id {
++        &self.id
++    }
++
++    fn current_commit(&self) -> CommitCounter {
++        self.commit
++    }
++
++    fn src(&self) -> Rectangle<f64, Buffer> {
++        Rectangle::from_size(self.geometry.size.to_buffer(1., Transform::Normal))
++    }
++
++    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
++        self.geometry.to_physical_precise_round(scale)
++    }
++
++    fn is_framebuffer_effect(&self) -> bool {
++        true
++    }
++}
++
++impl RenderElement<GlesRenderer> for MagnifierElement {
++    fn capture_framebuffer(
++        &self,
++        frame: &mut GlesFrame<'_, '_>,
++        _src: Rectangle<f64, Buffer>,
++        dst: Rectangle<i32, Physical>,
++        cache: &UserDataMap,
++    ) -> Result<(), GlesError> {
++        let output_rect = Rectangle::from_size(frame.output_size());
++        let transform = frame.transformation();
++        let source: Rectangle<i32, Physical> =
++            self.source.to_physical_precise_round(Scale::from(self.scale));
++        let Some(source) = source.intersection(output_rect) else {
++            return Ok(());
++        };
++        let source = transform.transform_rect_in(source, &output_rect.size);
++        let size: Size<i32, Buffer> = transform
++            .transform_size(dst.size)
++            .to_logical(1)
++            .to_buffer(1, Transform::Normal);
++
++        let mut guard = frame.renderer();
++        let inner = cache.get_or_insert::<RefCell<Inner>, _>(|| RefCell::new(Inner::default()));
++        let mut inner = inner.borrow_mut();
++        if inner.texture.as_ref().is_some_and(|t| t.size() != size) {
++            inner.texture = None;
++        }
++        if inner.texture.is_none() {
++            let t = guard.as_mut().create_buffer(Fourcc::Abgr8888, size)?;
++            inner.texture = Some(t);
++        }
++        let tex_id = inner.texture.as_ref().unwrap().tex_id();
++        drop(guard);
++
++        // Copy the part of the screen around the pointer into the texture, scaled up (linear filtering).
++        frame.with_context(|gl| unsafe {
++            while gl.GetError() != ffi::NO_ERROR {}
++            let mut current_fbo = 0i32;
++            gl.GetIntegerv(ffi::DRAW_FRAMEBUFFER_BINDING, &mut current_fbo as *mut _);
++            gl.Disable(ffi::SCISSOR_TEST);
++            let mut fbo = 0;
++            gl.GenFramebuffers(1, &mut fbo as *mut _);
++            gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, fbo);
++            gl.FramebufferTexture2D(
++                ffi::DRAW_FRAMEBUFFER,
++                ffi::COLOR_ATTACHMENT0,
++                ffi::TEXTURE_2D,
++                tex_id,
++                0,
++            );
++            gl.BlitFramebuffer(
++                source.loc.x,
++                source.loc.y,
++                source.loc.x + source.size.w,
++                source.loc.y + source.size.h,
++                0,
++                0,
++                size.w,
++                size.h,
++                ffi::COLOR_BUFFER_BIT,
++                ffi::LINEAR,
++            );
++            gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, current_fbo as u32);
++            gl.Enable(ffi::SCISSOR_TEST);
++            gl.DeleteFramebuffers(1, &mut fbo as *mut _);
++            if gl.GetError() != ffi::NO_ERROR {
++                Err(GlesError::BlitError)
++            } else {
++                Ok(())
++            }
++        })??;
++        Ok(())
++    }
++
++    fn draw(
++        &self,
++        frame: &mut GlesFrame<'_, '_>,
++        _src: Rectangle<f64, Buffer>,
++        dst: Rectangle<i32, Physical>,
++        damage: &[Rectangle<i32, Physical>],
++        _opaque_regions: &[Rectangle<i32, Physical>],
++        cache: Option<&UserDataMap>,
++    ) -> Result<(), GlesError> {
++        let Some(inner) = cache.and_then(|c| c.get::<RefCell<Inner>>()) else {
++            return Ok(());
++        };
++        let inner = inner.borrow();
++        let Some(texture) = &inner.texture else {
++            return Ok(());
++        };
++        frame.render_texture_from_to(
++            texture,
++            Rectangle::from_size(texture.size().to_f64()),
++            dst,
++            damage,
++            &[],
++            // the texture is in the frame's orientation
++            frame.transformation().invert(),
++            1.,
++            None,
++            &[],
++        )
++    }
++}
++
++impl<'render> RenderElement<TtyRenderer<'render>> for MagnifierElement {
++    fn capture_framebuffer(
++        &self,
++        frame: &mut TtyFrame<'_, '_, '_>,
++        src: Rectangle<f64, Buffer>,
++        dst: Rectangle<i32, Physical>,
++        cache: &UserDataMap,
++    ) -> Result<(), TtyRendererError<'render>> {
++        let gles_frame = frame.as_gles_frame();
++        RenderElement::<GlesRenderer>::capture_framebuffer(self, gles_frame, src, dst, cache)?;
++        Ok(())
++    }
++
++    fn draw(
++        &self,
++        frame: &mut TtyFrame<'_, '_, '_>,
++        src: Rectangle<f64, Buffer>,
++        dst: Rectangle<i32, Physical>,
++        damage: &[Rectangle<i32, Physical>],
++        opaque_regions: &[Rectangle<i32, Physical>],
++        cache: Option<&UserDataMap>,
++    ) -> Result<(), TtyRendererError<'render>> {
++        let gles_frame = frame.as_gles_frame();
++        RenderElement::<GlesRenderer>::draw(
++            self,
++            gles_frame,
++            src,
++            dst,
++            damage,
++            opaque_regions,
++            cache,
++        )?;
++        Ok(())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn the_lens_shows_the_part_around_the_pointer_inside_the_screen() {
++        let screen = Size::from((1920., 1080.));
++        let lens = Size::from((620., 380.));
++        let r = source_rect(Point::from((870., 490.)), lens, 2.5, screen);
++        assert_eq!((r.size.w, r.size.h), (248., 152.));
++        assert_eq!((r.loc.x, r.loc.y), (746., 414.));
++        // at a corner it stays inside
++        let r = source_rect(Point::from((5., 5.)), lens, 2.5, screen);
++        assert_eq!((r.loc.x, r.loc.y), (0., 0.));
++    }
++}
+diff --git a/src/render_helpers/mod.rs b/src/render_helpers/mod.rs
+index 474437a..53928e3 100644
+--- a/src/render_helpers/mod.rs
++++ b/src/render_helpers/mod.rs
+@@ -35,6 +35,7 @@ pub mod debug;
+ pub mod effect_buffer;
+ pub mod framebuffer_effect;
+ pub mod gradient_fade_texture;
++pub mod magnifier;
+ pub mod memory;
+ pub mod offscreen;
+ pub mod primary_gpu_texture;

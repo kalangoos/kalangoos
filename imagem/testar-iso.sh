@@ -11,7 +11,11 @@ cd "$(dirname "$0")/.."
 D=$(mktemp -d "$PWD/target/iso/teste-XXXX")
 echo "teste da ISO em $D (o console: $D/console.log)"
 VM=
-parar() { [ -n "$VM" ] && kill "$VM" 2>/dev/null; wait 2>/dev/null || true; }
+# (o QEMU é filho do rodar-iso.sh: sai junto, pelo monitor, para não ficar uma VM para trás quando o teste falha)
+parar() {
+  [ -S "$D/monitor.sock" ] && python3 -I -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.settimeout(5); s.recv(4096); s.send(b"quit\n")' "$D/monitor.sock" 2>/dev/null
+  [ -n "$VM" ] && kill "$VM" 2>/dev/null; wait 2>/dev/null || true
+}
 trap parar EXIT
 ligar() {  # ligar iso|instalado
   rm -f "$D/serial.sock"
@@ -24,7 +28,14 @@ esperar_desligar() {
   for _ in $(seq 45); do kill -0 "$VM" 2>/dev/null || { VM=; return; }; sleep 2; done
   # (ao vivo, o casper espera "tire a mídia e aperte ENTER" ao desligar; o disco já foi gravado e desmontado: a VM sai
   # pelo monitor do QEMU, que grava o que tiver em cache no disco)
-  python3 -I -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.send(b"quit\n")' "$D/monitor.sock" 2>/dev/null || true
+  # (o monitor descarta o que chega antes do "(qemu)" do começo: espera por ele antes de mandar o quit)
+  python3 -I -c '
+import socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.settimeout(10)
+buf = b""
+while b"(qemu)" not in buf:
+    buf += s.recv(4096)
+s.send(b"quit\n"); s.recv(4096)' "$D/monitor.sock" 2>/dev/null || true
   for _ in $(seq 30); do kill -0 "$VM" 2>/dev/null || { VM=; return; }; sleep 2; done
   echo "a VM não desligou"; exit 1
 }

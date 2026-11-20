@@ -173,6 +173,8 @@ pub struct Conversas {
     marca: Cell<(u64, u64)>,
     /// the Canvas tab (the latest diagram: its source, a change to ask, how it looks, export)
     canvas_box: gtk::Box,
+    /// the canvas with live HTML (design "Chat · canvas com HTML ao vivo"): a page the agent wrote
+    html: Rc<crate::html_canvas::HtmlCanvas>,
     /// the agent's browser (the Browser tab) and the context's usual width
     navegador: Rc<crate::agent_browser::AgentBrowser>,
     painel_base: i32,
@@ -646,9 +648,16 @@ impl Conversas {
             faixa: Cell::new(Faixa::de(largura_janela)), largura: Cell::new(largura_janela), na_pagina: Cell::new(false), painel_aberto: Cell::new(Faixa::de(largura_janela) == Faixa::Larga), arrumando: Cell::new(false),
             folhas: RefCell::default(), veu, casa_lateral: RefCell::default(), casa_painel: RefCell::default(), faixa_abas, faixa_botoes: botoes_faixa.clone(), controles_painel, abrir_lista_b, faisca, subtitulo, nomes_chips, ja_mostrou: Cell::new(false), busca, lista, rodape_tokens,
             titulo, chip_agente, fixar, apagar: apagar.clone(), painel_b: painel_b.clone(), vista, conv, controles_meio, saudacao, nova_texto, nova_grupos, sugestoes, painel, abas, painel_stack, contexto, ferramentas,
-            memoria, arquivos, tokens_v, tokens_barra, modelo_v, marca: Cell::new((0, 0)), canvas_box, alteracoes_box, terminal_box, navegador, painel_base, uso: uso.clone(), repo: RefCell::default(), commit_feito: RefCell::default(), previa: RefCell::default(), preenchendo: Cell::new(false),
+            memoria, arquivos, tokens_v, tokens_barra, modelo_v, marca: Cell::new((0, 0)), canvas_box, html: crate::html_canvas::HtmlCanvas::new(), alteracoes_box, terminal_box, navegador, painel_base, uso: uso.clone(), repo: RefCell::default(), commit_feito: RefCell::default(), previa: RefCell::default(), preenchendo: Cell::new(false),
         });
         c.abas[0].set_active(true);
+        // a request about an element of the canvas's page goes to this conversation's agent
+        let w = Rc::downgrade(&c.conv);
+        *c.html.on_ask.borrow_mut() = Some(Box::new(move |msg| {
+            if let Some(cv) = w.upgrade() {
+                cv.ask(&msg);
+            }
+        }));
         // a page from the conversation (a source, a login): the Browser tab, open, with that page
         let w = Rc::downgrade(&c);
         *c.conv.on_page.borrow_mut() = Some(Box::new(move |url, control| {
@@ -680,7 +689,8 @@ impl Conversas {
                 if let Some(c) = w.upgrade().filter(|_| b.is_active()) {
                     c.painel_stack.set_visible_child_name(["contexto", "arquivos", "canvas", "alteracoes", "terminal", "navegador"][i]);
                     c.ajustar_painel();
-                    c.uso.set_visible(i < 3);
+                    // (the canvas with a page needs the height: no usage under it)
+                    c.uso.set_visible(i < 2 || (i == 2 && c.html.file().is_none()));
                     if i == 2 {
                         c.canvas_render();
                     }
@@ -1024,6 +1034,14 @@ impl Conversas {
     fn canvas_render(self: &Rc<Self>) {
         while let Some(x) = self.canvas_box.first_child() {
             self.canvas_box.remove(&x);
+        }
+        // a page the agent wrote: the live HTML canvas
+        if self.html.file().is_some() {
+            if let Some(p) = self.html.raiz.parent().and_downcast::<gtk::Box>() {
+                p.remove(&self.html.raiz);
+            }
+            self.canvas_box.append(&self.html.raiz);
+            return;
         }
         let Some(d) = crate::diagram_block::current() else {
             let v = rotulo(tr("No diagram in this conversation yet."), "central-agente-sub");
@@ -1664,7 +1682,12 @@ impl Conversas {
     /// needs room to be read — design "Chat · navegador do agente").
     fn ajustar_painel(&self) {
         let nav = self.abas[5].is_active() && self.abas[5].get_visible();
-        let w = if nav && self.faixa.get() == Faixa::Larga {
+        // (the canvas with a page: as wide as the conversation leaves, the page needs the room)
+        let pagina = self.abas[2].is_active() && self.html.file().is_some();
+        let w = if pagina && self.faixa.get() == Faixa::Larga {
+            let lista = if self.recolhida.get() { 64 } else { 300 };
+            (self.largura.get() - lista - 460).clamp(self.painel_base, 1000)
+        } else if nav && self.faixa.get() == Faixa::Larga {
             let lista = if self.recolhida.get() { 64 } else { 300 };
             (self.largura.get() - lista - 520).clamp(self.painel_base, 680)
         } else {
@@ -2187,6 +2210,38 @@ impl Conversas {
                     }
                 }
             }
+        }
+        // a page the agent wrote (HTML): open on the canvas, the side bar folded to its rail (design "Chat · canvas com
+        // HTML ao vivo")
+        let pagina = tocados.iter().rev().map(|p| std::path::PathBuf::from(p.strip_prefix("~/").map(|r| glib::home_dir().join(r).display().to_string()).unwrap_or_else(|| p.clone())))
+            .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm")) && p.is_file());
+        if let Some(p) = pagina {
+            let nova = self.html.file().as_deref() != Some(p.as_path());
+            self.html.open(&p);
+            if nova {
+                self.abas[2].set_sensitive(true);
+                self.abas[2].set_visible(true);
+                self.abas[2].set_active(true);
+                self.uso.set_visible(false);
+                if self.faixa.get() == Faixa::Larga && !self.recolhida.get() {
+                    self.recolhida.set(true);
+                    self.arrumar();
+                }
+                self.abrir_painel(true);
+                self.canvas_render();
+                self.ajustar_painel();
+                if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+                    eprintln!("debug conversas: canvas com {}", p.display());
+                }
+            }
+        } else if self.html.file().is_some() {
+            // (another conversation: its own canvas, not the page of the one before)
+            self.html.clear();
+            if self.abas[2].is_active() {
+                self.abas[0].set_active(true);
+            }
+            self.canvas_render();
+            self.ajustar_painel();
         }
         for (g, l, d) in itens.iter().rev().take(8) {
             let r = caixa(Orientation::Horizontal, 10, "conversas-ctx");

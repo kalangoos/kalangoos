@@ -21,7 +21,7 @@ pub use comum::quadro;
 use crate::superficies::{camada, papel_de_parede, BARRA_ALTURA};
 use crate::Shell;
 use gtk::prelude::*;
-use gtk::{gdk, gio, glib};
+use gtk::{gdk, glib};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use kalango_i18n::n_;
 use kalango_movimento::{self as mv, Animavel, Canal};
@@ -114,6 +114,22 @@ pub fn padrao() -> Vec<Colocado> {
     ]
 }
 
+/// A portrait screen's desktop (design "Monitor 2 · vertical", 1080×1920): one column at the right — the day summary,
+/// the active agents, "Agora" and the network —, no clock (it is in the top bar).
+pub fn padrao_vertical() -> Vec<Colocado> {
+    vec![
+        Colocado::novo("resumo", Tam::G, 48, 80, true),
+        Colocado::novo("agentes-ativos", Tam::M, 48, 452, true),
+        Colocado::novo("agora", Tam::M, 48, 636, true),
+        Colocado::novo("rede", Tam::M, 48, 820, true),
+    ]
+}
+
+/// The design's layout for a screen of this shape.
+pub fn padrao_para(largura: i32, altura: i32) -> Vec<Colocado> {
+    if altura > largura { padrao_vertical() } else { padrao() }
+}
+
 fn arquivo() -> PathBuf {
     glib::user_config_dir().join("kalango/widgets.json")
 }
@@ -122,7 +138,7 @@ fn arquivo() -> PathBuf {
 pub fn carregar() -> Vec<Colocado> {
     std::fs::read(arquivo()).ok().and_then(|b| serde_json::from_slice::<Vec<Colocado>>(&b).ok())
         .map(|v| v.into_iter().filter(|c| TIPOS.iter().any(|t| t.id == c.tipo && t.tamanhos.contains(&c.tam))).collect())
-        .unwrap_or_else(padrao)
+        .unwrap_or_else(|| crate::superficies::tamanho_da_saida().map(|(w, h)| padrao_para(w, h)).unwrap_or_else(padrao))
 }
 
 pub fn salvar(v: &[Colocado]) -> std::io::Result<()> {
@@ -318,6 +334,8 @@ pub struct Area {
     /// while editing, the room the gallery takes at the right: the right column moves left by it, so no widget is
     /// under the gallery (each keeps its distance to the right edge when saved)
     gallery_room: Cell<i32>,
+    /// the files of the Desktop folder, as icons among the widgets
+    files: RefCell<Option<Rc<crate::desktop_files::DesktopFiles>>>,
 }
 
 impl Area {
@@ -347,7 +365,7 @@ impl Area {
         let a = Rc::new(Area {
             janela, fundo, fixo, guias, guia_v, guia_h, medida: medida_l, shell: RefCell::new(Rc::downgrade(shell)), itens: RefCell::default(),
             layout: RefCell::new(carregar()), tamanho: Cell::new((0, 0)), pergunta: RefCell::default(), editando: Cell::new(false),
-            galeria: RefCell::default(), gallery_room: Cell::new(0),
+            galeria: RefCell::default(), gallery_room: Cell::new(0), files: RefCell::default(),
         });
         // while editing: the wallpaper (the windows stay behind) and the scrim at 35%
         let w = Rc::downgrade(&a);
@@ -373,7 +391,8 @@ impl Area {
         let w = Rc::downgrade(&a);
         menu.connect_pressed(move |g, _, x, y| {
             let Some(a) = w.upgrade() else { return };
-            if a.editando.get() || a.fixo.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|p| p != a.fixo.clone().upcast::<gtk::Widget>()) {
+            if a.editando.get() || a.fixo.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|p| p != a.fixo.clone().upcast::<gtk::Widget>())
+                || a.desktop_files().is_some_and(|f| f.icon_at(x, y)) {
                 return;
             }
             g.set_state(gtk::EventSequenceState::Claimed);
@@ -400,8 +419,19 @@ impl Area {
             let mudou = move |s: &gdk::Surface| {
                 if let Some(a) = w2.upgrade() {
                     if s.width() > 0 && (s.width(), s.height()) != a.tamanho.get() {
-                        a.tamanho.set((s.width(), s.height()));
-                        a.posicionar();
+                        let (w0, h0) = a.tamanho.replace((s.width(), s.height()));
+                        // the screen turned (or is another shape now) and the layout is still the design's: the
+                        // design's for this shape (a person's own layout stays as it is)
+                        let em_pe = s.height() > s.width();
+                        if w0 > 0 && (h0 > w0) != em_pe && !arquivo().exists() {
+                            *a.layout.borrow_mut() = padrao_para(s.width(), s.height());
+                            if debug() {
+                                eprintln!("debug area: tela {}, a disposição do desenho para ela", if em_pe { "em pé" } else { "deitada" });
+                            }
+                            a.construir();
+                        } else {
+                            a.posicionar();
+                        }
                     }
                 }
             };
@@ -411,6 +441,7 @@ impl Area {
             s.connect_height_notify(move |s| m(s));
         });
         a.construir();
+        *a.files.borrow_mut() = Some(crate::desktop_files::DesktopFiles::new(&a, shell));
         a.janela.present();
         // the monitor's size decides the compact desktop
         if let Some(d) = gdk::Display::default() {
@@ -450,6 +481,41 @@ impl Area {
 
     fn shell(&self) -> Option<Rc<Shell>> {
         self.shell.borrow().upgrade()
+    }
+
+    pub(crate) fn fixed(&self) -> gtk::Fixed {
+        self.fixo.clone()
+    }
+
+    pub(crate) fn window(&self) -> gtk::ApplicationWindow {
+        self.janela.clone()
+    }
+
+    pub(crate) fn desktop_files(&self) -> Option<Rc<crate::desktop_files::DesktopFiles>> {
+        self.files.borrow().clone()
+    }
+
+    /// The desktop's size (the surface, under the top bar).
+    pub(crate) fn surface_size(&self) -> (i32, i32) {
+        self.tamanho.get()
+    }
+
+    /// The widgets shown, where they are on the surface: the desktop's icons keep clear of them.
+    pub(crate) fn obstacles(&self) -> Vec<crate::desktop_files::Rect> {
+        let sw = self.tamanho.get().0 - self.gallery_room.get();
+        self.itens.borrow().iter().filter(|it| it.anim.get_visible()).map(|it| {
+            let (x, y, w, h) = retangulo(&it.c.borrow(), sw);
+            crate::desktop_files::Rect::new(x, y - BARRA_ALTURA, w, h)
+        }).collect()
+    }
+
+    /// Is the wallpaper under this rectangle of the surface too light for the desktop's text (under 4.5:1)?
+    pub(crate) fn wallpaper_too_light(&self, x: i32, y: i32, w: i32, h: i32) -> bool {
+        let (mw, mh) = self.monitor();
+        // the text as this theme draws it (dark on the light theme's wallpaper)
+        let (r, g, b) = crate::tema::rgb("#E2E2E6");
+        let texto = luminancia(r, g, b);
+        luminancia_do_papel(mw, mh, x, y + BARRA_ALTURA, w, h).is_some_and(|l| contraste(texto, l) < 4.5)
     }
 
     fn monitor(&self) -> (i32, i32) {
@@ -639,6 +705,10 @@ impl Area {
         if debug() {
             eprintln!("debug area: {} ({mw}x{mh}, {mostrados} widgets)", if compacta { "só o relógio" } else { "completa" });
         }
+        let files = self.files.borrow().clone();
+        if let Some(f) = files {
+            f.arrange();
+        }
     }
 
     /// The desktop's menu (design "Menus de contexto", ÁREA DE TRABALHO): a new folder or document in the Desktop
@@ -649,18 +719,13 @@ impl Area {
         let m = Menu::at(&self.fixo, x, y);
         let c = m.main.clone();
         let s = self.shell.borrow().clone();
-        let mesa = crate::pastas::especial(glib::UserDirectory::Desktop, "Área de Trabalho");
+        let mesa = crate::pastas::desktop();
+        let files = self.files.borrow().clone();
         {
-            let (s, mesa) = (s.clone(), mesa.clone());
+            let f = files.as_ref().map(Rc::downgrade);
             let b = m.item(&c, "pasta", tr("New folder"), "Ctrl+Shift+N", "", move || {
-                let p = nome_livre(&mesa, tr("New folder"), "");
-                if std::fs::create_dir_all(&p).is_ok() {
-                    if debug() {
-                        eprintln!("debug area: nova pasta {}", p.display());
-                    }
-                    if let Some(s) = s.upgrade() {
-                        s.abrir_arquivos(Some(&mesa));
-                    }
+                if let Some(f) = f.as_ref().and_then(|f| f.upgrade()) {
+                    f.new_folder(Some((x, y)));
                 }
             });
             crate::central::posicao_debug("area menu nova pasta", b.upcast_ref());
@@ -681,37 +746,25 @@ impl Area {
             });
         }
         {
-            let mesa = mesa.clone();
+            let f = files.as_ref().map(Rc::downgrade);
             let colar = m.item(&c, "colar", tr("Paste"), "Ctrl+V", "", move || {
-                let Some(d) = gdk::Display::default() else { return };
-                let mesa = mesa.clone();
-                d.clipboard().read_value_async(gdk::FileList::static_type(), glib::Priority::DEFAULT, gio::Cancellable::NONE, move |r| {
-                    let Ok(v) = r else { return };
-                    let Ok(l) = v.get::<gdk::FileList>() else { return };
-                    let _ = std::fs::create_dir_all(&mesa);
-                    for f in l.files() {
-                        let Some(o) = f.path() else { continue };
-                        let nome = o.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        let (base, ext) = match nome.rsplit_once('.') {
-                            Some((b, e)) if !b.is_empty() && o.is_file() => (b.to_string(), e.to_string()),
-                            _ => (nome.clone(), String::new()),
-                        };
-                        let destino = nome_livre(&mesa, &base, &ext);
-                        let feito = if o.is_dir() {
-                            std::process::Command::new("cp").arg("-r").arg(&o).arg(&destino).status().is_ok_and(|s| s.success())
-                        } else {
-                            std::fs::copy(&o, &destino).is_ok()
-                        };
-                        if debug() {
-                            eprintln!("debug area: colado {} ({})", destino.display(), if feito { "ok" } else { "falhou" });
-                        }
-                    }
-                });
+                if let Some(f) = f.as_ref().and_then(|f| f.upgrade()) {
+                    f.paste();
+                }
             });
             // (only when files were copied)
             if let Some(d) = gdk::Display::default() {
                 colar.set_sensitive(d.clipboard().formats().contains_type(gdk::FileList::static_type()));
             }
+        }
+        if let Some(f) = files.as_ref().filter(|f| f.has_icons()) {
+            let f = Rc::downgrade(f);
+            let b = m.item(&c, "agrupar", tr("Arrange icons"), "", "", move || {
+                if let Some(f) = f.upgrade() {
+                    f.auto_arrange();
+                }
+            });
+            crate::central::posicao_debug("area menu organizar", b.upcast_ref());
         }
         Menu::divider(&c);
         {
@@ -764,6 +817,9 @@ impl Area {
         }
         self.janela.set_layer(Layer::Overlay);
         crate::superficies::take_keyboard(&self.janela);
+        if let Some(f) = self.desktop_files() {
+            f.suspend(true);
+        }
         self.fundo.queue_draw();
         for it in self.itens.borrow().iter() {
             self.decorar(it);
@@ -824,6 +880,9 @@ impl Area {
         self.janela.set_layer(Layer::Bottom);
         self.janela.set_keyboard_mode(KeyboardMode::OnDemand);
         self.fundo.queue_draw();
+        if let Some(f) = self.desktop_files() {
+            f.suspend(false);
+        }
         self.posicionar();
         if debug() {
             eprintln!("debug widgets: concluído ({} widgets salvos)", self.layout.borrow().len());
@@ -1059,6 +1118,16 @@ mod tests {
         // a free cell is never on top of another widget
         let livre = lugar_livre("clima", Tam::P, &v, 1920, 1080).unwrap();
         assert!(cabe(&livre, &v, None, 1920, 1080));
+    }
+
+    #[test]
+    fn a_portrait_screen_has_one_column_at_the_right() {
+        let v = padrao_para(1080, 1920);
+        assert!(v.iter().all(|c| c.direita) && !v.iter().any(|c| c.tipo == "relogio"));
+        for (i, a) in v.iter().enumerate() {
+            assert!(cabe(a, &v, Some(i), 1080, 1920), "{a:?}");
+        }
+        assert_eq!(padrao_para(1920, 1080), padrao());
     }
 
     #[test]

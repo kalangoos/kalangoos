@@ -19,6 +19,7 @@ pub struct State {
     pub cfg: Config,
     pub timeline: Arc<Timeline>,
     pub approvals: Approvals,
+    pub remote_control: crate::remote_control::RemoteControl,
 }
 
 pub fn serve(cfg: Config) -> std::io::Result<()> {
@@ -32,7 +33,8 @@ pub fn serve(cfg: Config) -> std::io::Result<()> {
     // a pasta de estado guarda a linha do tempo e cópias do /etc (com /etc/shadow): só o kalangod lê
     std::fs::create_dir_all(&cfg.state_dir)?;
     std::fs::set_permissions(&cfg.state_dir, std::fs::Permissions::from_mode(0o700))?;
-    let state = Arc::new(State { timeline: Arc::new(Timeline::open(&cfg.state_dir)?), approvals: Approvals::open(&cfg.state_dir), cfg });
+    let remote_control = crate::remote_control::RemoteControl::new(cfg.controle_remoto.clone(), cfg.controle_remoto_sempre.clone());
+    let state = Arc::new(State { timeline: Arc::new(Timeline::open(&cfg.state_dir)?), approvals: Approvals::open(&cfg.state_dir), remote_control, cfg });
     if let Err(e) = crate::guard::start(state.cfg.protected_paths.clone(), state.timeline.clone()) {
         eprintln!("kalangod: {}", kalango_i18n::trf("eBPF guard {e}", &[("e", e.to_string())]));
     }
@@ -115,6 +117,33 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
                     "structuredContent": value, "isError": false, "_meta": {"os.kalango/resumo": summary}
                 })),
                 Err(e) => ok(id, json!({"content": [{"type": "text", "text": e}], "isError": true})),
+            }
+        }
+        // Kalango Remote: screen capture and input for its core, after the person approved an access ("permitir"),
+        // taken away when the session ends ("revogar"); recorded in the timeline
+        "kalango/controle_remoto" => {
+            let acao = params.get("acao").and_then(Value::as_str).unwrap_or("");
+            let pid = params.get("pid").and_then(Value::as_i64).unwrap_or(0) as i32;
+            let res = match acao {
+                "permitir" => {
+                    let caps: Vec<String> = params.get("capacidades").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                    st.remote_control.allow(peer, &st.cfg.controle_remoto_apps, pid, caps).map(|g| json!(g))
+                }
+                "revogar" => st.remote_control.revoke(peer, pid).map(|_| json!({"revogado": pid})),
+                "listar" => Ok(json!(st.remote_control.list(peer.uid))),
+                _ => Err(kalango_i18n::tr("unknown action").to_string()),
+            };
+            if acao != "listar" {
+                st.timeline.append(crate::timeline::Entry {
+                    id: 0, time: 0, caller: rule.name.clone(), uid: peer.uid, pid: peer.pid, tool: format!("controle_remoto.{acao}"),
+                    level: "sistema".into(), args: params.clone(), status: if res.is_ok() { "ok".into() } else { "negado".into() },
+                    summary: match &res { Ok(_) => kalango_i18n::trf("remote control {acao} for process {pid}", &[("acao", acao.to_string()), ("pid", pid.to_string())]), Err(e) => e.clone() },
+                    inverse: None, restore_point: None,
+                });
+            }
+            match res {
+                Ok(v) => ok(id, v),
+                Err(e) => err(id, -32003, &e),
             }
         }
         "kalango/quem" => ok(id, json!({

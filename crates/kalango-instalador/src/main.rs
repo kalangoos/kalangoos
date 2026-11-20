@@ -976,7 +976,9 @@ impl Instalador {
                 if debug() {
                     eprintln!("debug instalador: reiniciar");
                 } else {
-                    let _ = std::process::Command::new("systemctl").arg("reboot").spawn();
+                    // --force: the live session runs from the install media, and a normal reboot stopped forever on
+                    // "Failed unmounting cdrom.mount" (seen in VirtualBox); the disk is already written and synced
+                    let _ = std::process::Command::new("sudo").args(["-n", "systemctl", "reboot", "--force"]).spawn();
                 }
             }
             p => self.ir(p + 1),

@@ -12,6 +12,7 @@
 | Vazamento para a nuvem | Modelo de nuvem recebe arquivos sem o usuário saber | Local por padrão; nuvem com permissão, orçamento e relatório de saída de dados |
 | Pacote adulterado | Atualização com código malicioso | Pacotes e imagens assinados; Secure Boot |
 | Acesso físico | Notebook roubado | Disco criptografado (LUKS2, TPM opcional); bloqueio automático |
+| Programa capturando a tela ou digitando como a pessoa | Um app qualquer usa wlr-screencopy ou o teclado virtual do compositor | O niri do KalangoOS (patch 0008) só oferece captura, ponteiro e teclado virtuais a quem o kalangod permite: programas do sistema na configuração e o núcleo do Kalango Remote durante uma sessão aprovada pela pessoa (o arquivo de permissões é do root) |
 
 ## Camadas de defesa
 

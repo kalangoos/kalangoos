@@ -129,6 +129,10 @@ struct Painel {
     /// top bar to the bottom; else a floating card 8 px from the edges
     inteira: bool,
     borda: Edge,
+    /// Pinned on a wide screen (design 87844), the bar is flush with the edge from under the top bar to the bottom —
+    /// past the dock's zone, which a surface that reserves room of its own would respect. So the room for the
+    /// windows is reserved by this other, invisible surface, and the bar itself reserves nothing.
+    reserva: gtk::ApplicationWindow,
 }
 
 impl Painel {
@@ -151,7 +155,10 @@ impl Painel {
         janela.set_default_size(largura(), -1);
         let corpo = Animavel::new(filho);
         janela.set_child(Some(&corpo));
-        Painel { janela, corpo, aberta: Cell::new(false), lado: if direita { 24.0 } else { -24.0 }, inteira, borda }
+        let reserva = camada(app, &format!("{nome}-reserva"), Layer::Background, &[Edge::Top, Edge::Bottom, borda]);
+        reserva.add_css_class("lateral-reserva");
+        reserva.set_default_size(1, 1);
+        Painel { janela, corpo, aberta: Cell::new(false), lado: if direita { 24.0 } else { -24.0 }, inteira, borda, reserva }
     }
 
     /// As in the design, the bar runs from under the top bar to the bottom edge (a floating one: to 8 px from it),
@@ -164,8 +171,17 @@ impl Painel {
         let wide = gdk::Display::default().and_then(|d| d.monitors().item(0)).and_downcast::<gdk::Monitor>()
             .map(|m| m.geometry().width() >= 1600).unwrap_or(false);
         let taskbar = crate::superficies::modo_barra_de_tarefas();
-        let inteira = self.inteira || taskbar;
+        // pinned on a wide screen: flush with the edge, no margin nor corners (design 87844)
+        let flush = pinned && wide && !taskbar;
+        let inteira = self.inteira || taskbar || flush;
         let m = if inteira { 0 } else { 8 };
+        if flush {
+            self.reserva.set_exclusive_zone(largura());
+            self.reserva.present();
+        } else {
+            self.reserva.set_exclusive_zone(0);
+            self.reserva.set_visible(false);
+        }
         self.janela.set_margin(Edge::Bottom, m);
         self.janela.set_margin(self.borda, m);
         if let Some(f) = self.corpo.first_child() {
@@ -177,9 +193,12 @@ impl Painel {
             if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
                 eprintln!("debug lateral: {} inteira, do topo até a barra de tarefas", if self.borda == Edge::Right { "direita" } else { "esquerda" });
             }
-        } else if wide && !pinned {
+        } else if wide {
             self.janela.set_exclusive_zone(-1);
             self.janela.set_margin(Edge::Top, BARRA_ALTURA + m);
+            if flush && std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+                eprintln!("debug lateral: {} fixada rente à borda, da barra superior até embaixo", if self.borda == Edge::Right { "direita" } else { "esquerda" });
+            }
         } else {
             self.janela.set_exclusive_zone(if pinned { largura() + m } else { 0 });
             self.janela.set_margin(Edge::Top, m);

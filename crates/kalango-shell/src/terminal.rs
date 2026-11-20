@@ -13,6 +13,10 @@
 //! - **Status:** the shell, the encoding, the size in cells and the git branch of the folder.
 //! - **Two instances:** the window (`kalango-shell terminal`) and the drop-down one (terminal_dropdown.rs, F12), each
 //!   with its own tabs; both follow the Terminal's preferences (terminal_prefs.rs) live.
+//! - **SSH and Mosh** (design "Kalango Remote · SSH abre no Terminal do sistema"; `kalango-shell terminal-ssh HOST`):
+//!   a tab per host of Kalango Remote, with its state, auto-reconnect, the fingerprint question, production's guard and
+//!   the SFTP panel (terminal_ssh.rs, terminal_sftp.rs); any tab splits in two, searches, and explains a selection
+//!   (terminal_tools.rs).
 
 use crate::conversa::ui_icon;
 use crate::superficies::{caixa, rotulo};
@@ -27,6 +31,15 @@ use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::time::Instant;
 use vte4::prelude::*;
+
+#[path = "terminal_ssh.rs"]
+mod ssh;
+#[path = "terminal_sftp.rs"]
+mod sftp;
+#[path = "terminal_tools.rs"]
+mod tools;
+
+pub use ssh::open_host;
 
 extern "C" {
     fn gdk_wayland_toplevel_set_application_id(toplevel: *mut gdk::ffi::GdkToplevel, id: *const c_char);
@@ -201,6 +214,9 @@ pub fn apply_prefs() {
     for t in instances() {
         for x in t.tabs.borrow().iter() {
             style_terminal(&x.term, &p);
+            if let Some(s) = x.split.borrow().as_ref() {
+                style_terminal(s, &p);
+            }
         }
         t.update_status();
     }
@@ -219,13 +235,26 @@ pub enum Kind {
     Dropdown,
 }
 
-/// A shell in a tab.
+/// A shell in a tab (or an SSH or Mosh session: `remote`).
 struct Tab {
     term: vte4::Terminal,
-    /// the terminal, with the agent's hint over it
+    /// the terminal (and its split), with the agent's hint, the search and the session's notices over it
     page: gtk::Overlay,
+    /// what the tab shows: production's stripe, the page and the SFTP panel
+    root: gtk::Box,
+    /// the page's two panes (the second one when the tab is split)
+    panes: gtk::Paned,
+    split: RefCell<Option<vte4::Terminal>>,
+    /// the pane the keyboard was in last (copy, paste, search and "Pedir um comando" go there)
+    focused: RefCell<vte4::Terminal>,
     tab: gtk::Box,
     name: gtk::Label,
+    remote: Option<Rc<ssh::Remote>>,
+    /// the SFTP panel's place, at the right of the page
+    side: gtk::Box,
+    search: RefCell<Option<Rc<tools::Search>>>,
+    /// the agent's command is on the line, not run yet (its card is up)
+    agent_card: RefCell<Option<gtk::Box>>,
     /// what the shell's hooks write: each command's start, and how it ended
     record: PathBuf,
     read_at: Cell<u64>,
@@ -244,6 +273,9 @@ struct Tab {
 
 impl Tab {
     fn title(&self) -> String {
+        if let Some(r) = &self.remote {
+            return r.target.name.clone();
+        }
         match self.running.borrow().as_ref() {
             Some((cmd, _, _)) => {
                 let first = cmd.split_whitespace().find(|w| !w.contains('=') && *w != "sudo").unwrap_or(cmd);
@@ -261,7 +293,14 @@ impl Tab {
         if self.pid.get() > 0 {
             unsafe { kill(self.pid.get(), 1) };
         }
+        if let Some(s) = self.split.borrow().as_ref() {
+            tools::hang_up_pane(s);
+        }
         let _ = std::fs::remove_file(&self.record);
+    }
+    /// The pane in use.
+    fn active(&self) -> vte4::Terminal {
+        self.focused.borrow().clone()
     }
 }
 
@@ -276,12 +315,16 @@ pub struct Terminal {
     current: Cell<usize>,
     ask: gtk::Entry,
     st_shell: gtk::Label,
+    /// an SSH tab's host, jump, latency and key type
+    st_host: gtk::Label,
     st_size: gtk::Label,
     st_branch: gtk::Label,
     st_hint: gtk::Label,
     shell: Weak<Shell>,
     pub over: gtk::Overlay,
     asking: RefCell<Option<Rc<dyn Fn()>>>,
+    /// the toolbar's SFTP button (shown on an SSH tab)
+    files_button: gtk::Button,
     dir: PathBuf,
     count: Cell<u32>,
     /// (the drop-down: the content keeps its size while the height animates, and lays its lines out once at the end)
@@ -309,8 +352,8 @@ pub fn run(shell: &Rc<Shell>, folder: Option<PathBuf>, command: &str) {
     });
 }
 
-/// Opens the Terminal: a new tab in `folder`, or (none given) the window as it is — a first tab in the home.
-pub fn open(shell: &Rc<Shell>, folder: Option<PathBuf>) {
+/// The Terminal's window (made the first time; sized to the screen when it was closed).
+fn window(shell: &Rc<Shell>) -> Rc<Terminal> {
     let t = TERMINAL.with(|t| t.borrow().clone()).unwrap_or_else(|| {
         let app = gio::Application::default().and_downcast::<gtk::Application>().expect("app");
         let t = Terminal::new(&app, shell, Kind::Window);
@@ -322,6 +365,12 @@ pub fn open(shell: &Rc<Shell>, folder: Option<PathBuf>) {
         let (w, h) = crate::superficies::tamanho_de_janela(1400, 880);
         t.window.set_default_size(w, h);
     }
+    t
+}
+
+/// Opens the Terminal: a new tab in `folder`, or (none given) the window as it is — a first tab in the home.
+pub fn open(shell: &Rc<Shell>, folder: Option<PathBuf>) {
+    let t = window(shell);
     match folder {
         Some(f) => t.new_tab(Some(f)),
         None if t.tabs.borrow().is_empty() => t.new_tab(None),
@@ -392,6 +441,20 @@ impl Terminal {
         key.set_can_target(false);
         ask_box.add_overlay(&key);
         bar.append(&ask_box);
+        // split, and the SFTP panel (an SSH tab's)
+        let split_button = gtk::Button::new();
+        split_button.add_css_class("calc-menu");
+        split_button.set_child(Some(&ui_icon("colunas", "#8E8F99", 16)));
+        split_button.set_tooltip_text(Some(tr("Split (Ctrl+Shift+D)")));
+        split_button.set_valign(Align::Center);
+        bar.append(&split_button);
+        let files_button = gtk::Button::new();
+        files_button.add_css_class("calc-menu");
+        files_button.set_child(Some(&ui_icon("pasta", "#8E8F99", 16)));
+        files_button.set_tooltip_text(Some(tr("Files (SFTP)")));
+        files_button.set_valign(Align::Center);
+        files_button.set_visible(false);
+        bar.append(&files_button);
         let menu = gtk::MenuButton::new();
         menu.add_css_class("calc-menu");
         menu.set_child(Some(&ui_icon("menu", "#8E8F99", 16)));
@@ -439,6 +502,8 @@ impl Terminal {
         // the status line: the shell, the encoding, the size in cells, the branch; and a word from the agent
         let status = caixa(Orientation::Horizontal, 14, "term-status");
         let st_shell = rotulo("", "term-status-texto");
+        let st_host = rotulo("", "term-status-texto");
+        st_host.set_visible(false);
         let st_enc = rotulo("UTF-8", "term-status-texto");
         let st_size = rotulo("", "term-status-texto");
         let st_branch = rotulo("", "term-status-texto");
@@ -446,7 +511,7 @@ impl Terminal {
         st_hint.set_hexpand(true);
         st_hint.set_xalign(1.0);
         st_hint.set_ellipsize(pango::EllipsizeMode::End);
-        for l in [&st_shell, &st_enc, &st_size, &st_branch, &st_hint] {
+        for l in [&st_shell, &st_host, &st_enc, &st_size, &st_branch, &st_hint] {
             l.set_valign(Align::Center);
             status.append(l);
         }
@@ -465,7 +530,8 @@ impl Terminal {
         }
 
         let t = Rc::new(Terminal {
-            window, kind, bar_end, tabs_box, stack, tabs: RefCell::default(), current: Cell::new(0), ask, st_shell, st_size, st_branch, st_hint,
+            window, kind, bar_end, tabs_box, stack, tabs: RefCell::default(), current: Cell::new(0), ask, st_shell, st_host, st_size, st_branch, st_hint,
+            files_button: files_button.clone(),
             shell: Rc::downgrade(shell), over, asking: RefCell::default(), dir: integration_dir(), count: Cell::new(0),
             frozen: Cell::new(false), room: Cell::new((0, 0)),
         });
@@ -506,7 +572,21 @@ impl Terminal {
                 t.new_tab(None);
             }
         });
-        for (label, action) in [(tr("New tab"), "aba"), (tr("Copy"), "copiar"), (tr("Paste"), "colar"), (tr("Clear"), "limpar"), (tr("Preferences"), "preferencias")] {
+        let w = Rc::downgrade(&t);
+        split_button.connect_clicked(move |_| {
+            if let Some(t) = w.upgrade() {
+                t.action("dividir");
+            }
+        });
+        let w = Rc::downgrade(&t);
+        files_button.connect_clicked(move |_| {
+            if let Some(t) = w.upgrade() {
+                t.action("arquivos");
+            }
+        });
+        crate::central::posicao_debug(&format!("terminal dividir {}", if kind == Kind::Window { "janela" } else { "suspenso" }), split_button.upcast_ref());
+        crate::central::posicao_debug(&format!("terminal sftp {}", if kind == Kind::Window { "janela" } else { "suspenso" }), files_button.upcast_ref());
+        for (label, action) in [(tr("New tab"), "aba"), (tr("Copy"), "copiar"), (tr("Paste"), "colar"), (tr("Search"), "buscar"), (tr("Split"), "dividir"), (tr("Clear"), "limpar"), (tr("Preferences"), "preferencias")] {
             let b = gtk::Button::with_label(label);
             b.add_css_class("menu-item");
             let (w, p) = (Rc::downgrade(&t), pop.downgrade());
@@ -561,6 +641,8 @@ impl Terminal {
                 (true, gdk::Key::k) => {
                     t.ask.grab_focus();
                 }
+                (true, gdk::Key::f) => t.action("buscar"),
+                (true, gdk::Key::d) => t.action("dividir"),
                 (false, gdk::Key::Page_Down) => t.select((t.current.get() + 1) % t.tabs.borrow().len().max(1)),
                 (false, gdk::Key::Page_Up) => {
                     let n = t.tabs.borrow().len().max(1);
@@ -595,10 +677,12 @@ impl Terminal {
                 t.ask_to_close(i, true);
                 return glib::Propagation::Stop;
             }
-            for x in t.tabs.borrow_mut().drain(..) {
+            let gone: Vec<Rc<Tab>> = t.tabs.borrow_mut().drain(..).collect();
+            for x in gone {
                 x.hang_up();
-                t.tabs_box.remove(&x.tab);
-                t.stack.remove(&x.page);
+                t.remove_tab_widget(&x);
+                t.stack.remove(&x.root);
+                t.forget_remote(&x);
             }
             win.set_visible(false);
             if debug() {
@@ -643,43 +727,69 @@ impl Terminal {
     }
 
     fn new_tab(self: &Rc<Self>, folder: Option<PathBuf>) {
+        self.add_tab(folder, None);
+    }
+
+    /// A new tab: the person's shell in `folder`, or (`remote`) an SSH or Mosh session.
+    fn add_tab(self: &Rc<Self>, folder: Option<PathBuf>, remote: Option<Rc<ssh::Remote>>) -> Rc<Tab> {
         // (a new tab opens where the one in view is)
         let dir = folder.filter(|d| d.is_dir())
-            .or_else(|| self.tabs.borrow().get(self.current.get()).map(|x| x.cwd.borrow().clone()))
+            .or_else(|| self.tabs.borrow().get(self.current.get()).filter(|x| x.remote.is_none()).map(|x| x.cwd.borrow().clone()))
             .unwrap_or_else(glib::home_dir);
-        let term = vte4::Terminal::new();
-        term.add_css_class("term-vte");
-        // (rows 28 px apart, as drawn)
-        term.set_cell_height_scale(1.4);
-        term.set_bold_is_bright(false);
-        term.set_mouse_autohide(true);
-        style_terminal(&term, &crate::terminal_prefs::load());
-        term.set_vexpand(true);
-        term.set_hexpand(true);
+        let term = tools::new_vte();
         let page = gtk::Overlay::new();
-        let scroll = gtk::ScrolledWindow::new();
-        scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
-        scroll.set_child(Some(&term));
-        page.set_child(Some(&scroll));
+        let panes = gtk::Paned::new(Orientation::Horizontal);
+        panes.set_wide_handle(false);
+        panes.add_css_class("term-divisao");
+        panes.set_start_child(Some(&tools::scrolled(&term)));
+        panes.set_resize_start_child(true);
+        panes.set_shrink_start_child(false);
+        page.set_child(Some(&panes));
+        page.set_hexpand(true);
         let meter = gtk::DrawingArea::new();
         meter.set_can_target(false);
         page.add_overlay(&meter);
+        // production's stripe over the page and the panel; the SFTP panel at the right
+        let root = caixa(Orientation::Vertical, 0, "");
+        if let Some(r) = remote.as_ref().filter(|r| r.target.production) {
+            root.append(&ssh::production_stripe(&r.target));
+        }
+        let body = caixa(Orientation::Horizontal, 0, "");
+        body.set_vexpand(true);
+        body.append(&page);
+        let side = caixa(Orientation::Horizontal, 0, "");
+        side.set_hexpand(false);
+        body.append(&side);
+        root.append(&body);
         let n = self.count.get() + 1;
         self.count.set(n);
         let record = self.dir.join(format!("aba-{n}.tsv"));
         let _ = std::fs::write(&record, "");
         let shell = user_shell();
-        let shell_name = Path::new(&shell).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "sh".into());
+        let shell_name = match &remote {
+            Some(r) => if r.target.mosh { "mosh".to_string() } else { "ssh".to_string() },
+            None => Path::new(&shell).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "sh".into()),
+        };
         let tab = caixa(Orientation::Horizontal, 8, "ed-aba");
+        if let Some(r) = &remote {
+            tab.append(&r.dot);
+        }
         let name = rotulo("", "ed-aba-nome");
         tab.append(&name);
+        if let Some(r) = &remote {
+            for b in r.badges() {
+                tab.append(&b);
+            }
+        }
         let close = gtk::Button::new();
         close.add_css_class("ed-aba-fechar");
         close.set_child(Some(&ui_icon("fechar", "#7A7B88", 10)));
         close.set_tooltip_text(Some(tr("Close tab (Ctrl+Shift+W)")));
         tab.append(&close);
         let x = Rc::new(Tab {
-            term: term.clone(), page: page.clone(), tab: tab.clone(), name, record: record.clone(), read_at: Cell::new(0),
+            term: term.clone(), page: page.clone(), root: root.clone(), panes, split: RefCell::default(), focused: RefCell::new(term.clone()),
+            tab: tab.clone(), name, remote: remote.clone(), side, search: RefCell::default(), agent_card: RefCell::default(),
+            record: record.clone(), read_at: Cell::new(0),
             monitor: RefCell::default(), cwd: RefCell::new(dir.clone()), running: RefCell::default(), pid: Cell::new(0),
             shell_name: shell_name.clone(), hint: RefCell::default(), pending: RefCell::default(), generation: Cell::new(0),
         });
@@ -701,18 +811,22 @@ impl Terminal {
                 }
             }
         });
-        // what the hooks write
-        if let Ok(m) = gio::File::for_path(&record).monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
-            let (w, xw) = (Rc::downgrade(self), Rc::downgrade(&x));
-            m.connect_changed(move |_, _, _, ev| {
-                if matches!(ev, gio::FileMonitorEvent::Changed | gio::FileMonitorEvent::ChangesDoneHint) {
-                    if let (Some(t), Some(x)) = (w.upgrade(), xw.upgrade()) {
-                        t.read_record(&x);
+        // what the hooks write (a local shell's)
+        if remote.is_none() {
+            if let Ok(m) = gio::File::for_path(&record).monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
+                let (w, xw) = (Rc::downgrade(self), Rc::downgrade(&x));
+                m.connect_changed(move |_, _, _, ev| {
+                    if matches!(ev, gio::FileMonitorEvent::Changed | gio::FileMonitorEvent::ChangesDoneHint) {
+                        if let (Some(t), Some(x)) = (w.upgrade(), xw.upgrade()) {
+                            t.read_record(&x);
+                        }
                     }
-                }
-            });
-            *x.monitor.borrow_mut() = Some(m);
+                });
+                *x.monitor.borrow_mut() = Some(m);
+            }
         }
+        // the selection's menu, the keys of the agent's card and production's guard, the pane in use
+        self.wire_pane(&x, &term);
         // typing at the prompt: the hint has been read
         let xw = Rc::downgrade(&x);
         term.connect_commit(move |_, _, _| {
@@ -720,12 +834,14 @@ impl Terminal {
                 x.hide_hint();
             }
         });
-        // the shell ended ("exit"): its tab goes
+        // the shell ended ("exit"): its tab goes; a session that dropped reconnects
         let (w, xw) = (Rc::downgrade(self), Rc::downgrade(&x));
-        term.connect_child_exited(move |_, _| {
+        term.connect_child_exited(move |_, status| {
             if let (Some(t), Some(x)) = (w.upgrade(), xw.upgrade()) {
                 x.pid.set(0);
-                if let Some(i) = t.index_of(&x) {
+                if x.remote.is_some() {
+                    t.remote_exited(&x, status);
+                } else if let Some(i) = t.index_of(&x) {
                     t.close_tab_now(i);
                 }
             }
@@ -741,6 +857,22 @@ impl Terminal {
                 });
             }
         });
+        // (design: the new tab grows in from its left edge — the quick spring)
+        let grow = kalango_movimento::Animavel::new(&tab);
+        grow.origem(0.0, 0.5);
+        self.tabs_box.append(&grow);
+        if !kalango_movimento::reduzido() {
+            grow.definir(kalango_movimento::Canal::Escala, 0.2).definir(kalango_movimento::Canal::Opacidade, 0.0);
+            grow.ir(kalango_movimento::Canal::Escala, 1.0, kalango_movimento::RAPIDA).ir(kalango_movimento::Canal::Opacidade, 1.0, kalango_movimento::RAPIDA);
+        }
+        self.stack.add_child(&root);
+        self.tabs.borrow_mut().push(x.clone());
+        let i = self.tabs.borrow().len() - 1;
+        self.select(i);
+        if remote.is_some() {
+            self.spawn_remote(&x);
+            return x;
+        }
         let env: Vec<String> = vec![
             format!("KALANGO_TERMINAL_ESTADO={}", record.display()),
             format!("KALANGO_TERMINAL_DIR={}", self.dir.display()),
@@ -772,11 +904,16 @@ impl Terminal {
                     }
                 }
             });
-        self.tabs_box.append(&tab);
-        self.stack.add_child(&page);
-        self.tabs.borrow_mut().push(x);
-        let i = self.tabs.borrow().len() - 1;
-        self.select(i);
+        x
+    }
+
+    /// A tab's widget out of the bar (with the wrapper that animates it in).
+    fn remove_tab_widget(&self, x: &Rc<Tab>) {
+        if let Some(w) = x.tab.parent().filter(|p| p.parent().as_ref() == Some(self.tabs_box.upcast_ref())) {
+            self.tabs_box.remove(&w);
+        } else if x.tab.parent().as_ref() == Some(self.tabs_box.upcast_ref()) {
+            self.tabs_box.remove(&x.tab);
+        }
     }
 
     fn index_of(&self, x: &Rc<Tab>) -> Option<usize> {
@@ -786,13 +923,14 @@ impl Terminal {
     fn select(self: &Rc<Self>, i: usize) {
         let Some(x) = self.tabs.borrow().get(i).cloned() else { return };
         self.current.set(i);
-        self.stack.set_visible_child(&x.page);
+        self.stack.set_visible_child(&x.root);
         for (n, y) in self.tabs.borrow().iter().enumerate() {
             if n == i { y.tab.add_css_class("ativa") } else { y.tab.remove_css_class("ativa") }
         }
+        self.files_button.set_visible(x.remote.is_some());
         self.update_titles();
         self.update_status();
-        x.term.grab_focus();
+        x.active().grab_focus();
     }
 
     fn update_titles(&self) {
@@ -806,7 +944,22 @@ impl Terminal {
     fn update_status(&self) {
         let Some(x) = self.tabs.borrow().get(self.current.get()).cloned() else { return };
         self.st_shell.set_text(&x.shell_name);
-        self.st_size.set_text(&format!("{}×{}", x.term.column_count(), x.term.row_count()));
+        let term = x.active();
+        self.st_size.set_text(&format!("{}×{}", term.column_count(), term.row_count()));
+        if let Some(r) = &x.remote {
+            // "ssh  deploy@app-prod-01  via bastiao  23 ms  ED25519  UTF-8  96×34  1 porta encaminhada"
+            self.st_shell.set_text(if r.running_mosh() { "mosh" } else { "ssh" });
+            self.st_host.set_visible(true);
+            self.st_host.set_text(&r.status_text());
+            let forwards = r.target.forwards.len();
+            self.st_branch.set_visible(forwards > 0);
+            self.st_branch.set_text(&if forwards == 1 { tr("1 port forwarded").to_string() } else { trf("{n} ports forwarded", &[("n", forwards.to_string())]) });
+            if debug() {
+                eprintln!("debug terminal: status {} {} UTF-8 {} {}", self.st_shell.text(), self.st_host.text(), self.st_size.text(), self.st_branch.text());
+            }
+            return;
+        }
+        self.st_host.set_visible(false);
         let branch = git_branch(&x.cwd.borrow());
         self.st_branch.set_visible(branch.is_some());
         self.st_branch.set_text(&branch.as_deref().map(|b| trf("branch: {name}", &[("name", b.to_string())])).unwrap_or_default());
@@ -965,12 +1118,18 @@ impl Terminal {
     }
 
     /// "Pedir um comando": the local model writes the command line; it goes to the prompt, not run — the person reads
-    /// it and presses Enter.
+    /// it and presses Enter (Esc erases it). On a production host, or for a command that erases or restarts something,
+    /// the person approves it first (terminal_tools.rs). The model gets the request and where it runs, never what is on
+    /// the screen.
     fn ask_for_command(self: &Rc<Self>, request: &str) {
         let Some(x) = self.tabs.borrow().get(self.current.get()).cloned() else { return };
         self.st_hint.set_text(tr("The agent is writing the command…"));
         let bin = crate::voz::agent_binary();
-        let input = serde_json::json!({"pedido": request, "pasta": x.cwd.borrow().display().to_string(), "shell": x.shell_name}).to_string();
+        let (folder, shell) = match &x.remote {
+            Some(r) => (trf("{folder} on the server {host}", &[("folder", x.remote_dir().unwrap_or_else(|| "~".into())), ("host", r.target.label())]), format!("bash ({})", x.shell_name)),
+            None => (x.cwd.borrow().display().to_string(), x.shell_name.clone()),
+        };
+        let input = serde_json::json!({"pedido": request, "pasta": folder, "shell": shell}).to_string();
         let (w, xw, req) = (Rc::downgrade(self), Rc::downgrade(&x), request.to_string());
         crate::lateral::em_segundo_plano(move || {
             use std::io::Write;
@@ -985,16 +1144,36 @@ impl Terminal {
             let (Some(t), Some(x)) = (w.upgrade(), xw.upgrade()) else { return };
             match r {
                 Some((cmd, why)) => {
-                    // (the line as typed so far goes, the command comes as a paste: it waits for Enter)
-                    x.term.feed_child(b"\x15");
-                    x.term.paste_text(&cmd);
-                    x.term.grab_focus();
-                    t.st_hint.set_text(&if why.is_empty() { tr("Enter runs it").to_string() } else { trf("{what} — Enter runs it", &[("what", why)]) });
                     if debug() {
                         eprintln!("debug terminal: pedido «{req}» → «{cmd}»");
                     }
+                    let production = x.remote.as_ref().is_some_and(|r| r.target.production);
+                    if production || crate::ssh_hosts::is_destructive(&cmd) {
+                        t.st_hint.set_text("");
+                        t.approve_agent_command(&x, cmd, why);
+                    } else {
+                        t.put_agent_command(&x, &cmd, &why);
+                    }
                 }
                 None => t.st_hint.set_text(tr("The agent could not write that command.")),
+            }
+        });
+    }
+
+    /// The agent's command on the line, waiting for Enter, with its card under the prompt.
+    fn put_agent_command(self: &Rc<Self>, x: &Rc<Tab>, cmd: &str, why: &str) {
+        let term = x.active();
+        // (the line as typed so far goes, the command comes as a paste: it waits for Enter)
+        term.feed_child(b"\x15");
+        term.paste_text(cmd);
+        term.grab_focus();
+        self.st_hint.set_text(&if why.is_empty() { tr("Enter runs it").to_string() } else { trf("{what} — Enter runs it", &[("what", why.to_string())]) });
+        let (w, xw) = (Rc::downgrade(self), Rc::downgrade(x));
+        // (after the paste has reached the screen: the card goes under the prompt's row)
+        let cmd = cmd.to_string();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(120), move || {
+            if let (Some(t), Some(x)) = (w.upgrade(), xw.upgrade()) {
+                t.show_agent_card(&x, &cmd);
             }
         });
     }
@@ -1007,16 +1186,20 @@ impl Terminal {
             return;
         }
         let Some(x) = self.tabs.borrow().get(self.current.get()).cloned() else { return };
+        let term = x.active();
         match a {
             "aba" => self.new_tab(None),
-            "copiar" => x.term.copy_clipboard_format(vte4::Format::Text),
-            "colar" => x.term.paste_clipboard(),
+            "copiar" => term.copy_clipboard_format(vte4::Format::Text),
+            "colar" => term.paste_clipboard(),
             "limpar" => {
                 x.hide_hint();
-                x.term.reset(true, true);
+                term.reset(true, true);
                 // (a fresh prompt)
-                x.term.feed_child(b"\x0c");
+                term.feed_child(b"\x0c");
             }
+            "buscar" => self.open_search(&x, None),
+            "dividir" => self.toggle_split(&x),
+            "arquivos" => self.toggle_files(&x),
 
             _ => {}
         }
@@ -1024,7 +1207,11 @@ impl Terminal {
 
     fn zoom(&self, by: f64) {
         for x in self.tabs.borrow().iter() {
-            x.term.set_font_scale(if by == 0.0 { 1.0 } else { (x.term.font_scale() * by).clamp(0.5, 3.0) });
+            let scale = if by == 0.0 { 1.0 } else { (x.term.font_scale() * by).clamp(0.5, 3.0) };
+            x.term.set_font_scale(scale);
+            if let Some(s) = x.split.borrow().as_ref() {
+                s.set_font_scale(scale);
+            }
         }
     }
 
@@ -1047,8 +1234,9 @@ impl Terminal {
             tabs.remove(i)
         };
         x.hang_up();
-        self.tabs_box.remove(&x.tab);
-        self.stack.remove(&x.page);
+        self.remove_tab_widget(&x);
+        self.stack.remove(&x.root);
+        self.forget_remote(&x);
         if debug() {
             eprintln!("debug terminal: fechou a aba «{}»", x.title());
         }

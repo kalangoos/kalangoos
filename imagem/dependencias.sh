@@ -21,7 +21,7 @@ O_QUE=${1:-tudo}
 
 # as versões: mudar aqui muda a imagem (e a chave do cache da CI)
 NIRI_REPO=https://github.com/kalangoos/niri.git
-NIRI_COMMIT=57a304bbd8589600d3da188e3c4c066e4eed109f
+NIRI_COMMIT=d1b8b1adc7db7f5a6092f19154cab25043acd0f8
 LLAMA_REPO=https://github.com/ggml-org/llama.cpp.git
 LLAMA_COMMIT=b1b770d90d94cad9e9ea5b993bdbc383a522fb28
 # (a interface web do llama-server, que o agente não usa mas a compilação exige: a versão publicada para esse commit)
