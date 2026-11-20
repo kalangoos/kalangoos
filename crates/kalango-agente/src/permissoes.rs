@@ -41,7 +41,9 @@ impl Perm {
 }
 
 pub fn default_for(tool: &Tool) -> Perm {
-    if tool.read_only || matches!(tool.level.as_str(), "sistema" | "total") {
+    // kalangod asks before these itself (the levels; for vm.*, what the person chose in VirtualDesk): asking here
+    // too would be the same question twice
+    if tool.read_only || matches!(tool.level.as_str(), "sistema" | "total") || tool.name.starts_with("vm.") {
         Perm::Free
     } else {
         Perm::Ask
@@ -473,6 +475,12 @@ mod tests {
             tool("pacotes.remover", "sistema", false, true), tool("web.ler", "usuario", true, false), tool("web.buscar", "usuario", true, false), tool("sistema.executar", "total", false, true),
             tool("processos.listar", "observar", true, false),
         ]
+    }
+
+    #[test]
+    fn virtual_machine_tools_are_asked_by_kalangod_only() {
+        assert_eq!(default_for(&tool("vm.executar", "usuario", false, true)), Perm::Free);
+        assert_eq!(default_for(&tool("arquivos.mover", "usuario", false, false)), Perm::Ask);
     }
 
     #[test]

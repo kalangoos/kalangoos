@@ -3963,5 +3963,21 @@
  "process {pid} does not exist": "o processo {pid} não existe",
  "the permission belongs to another user": "a permissão é de outro usuário",
  "unknown action": "ação desconhecida",
- "remote control {acao} for process {pid}": "controle remoto: {acao} para o processo {pid}"
+ "remote control {acao} for process {pid}": "controle remoto: {acao} para o processo {pid}",
+ "A picture (PNG) of the screen of a running virtual machine": "Uma imagem (PNG) da tela de uma máquina virtual ligada",
+ "Continues a paused virtual machine": "Continua uma máquina virtual pausada",
+ "Copies a file of yours into a running virtual machine, or out of it into your folders (up to 64 MB)": "Copia um arquivo seu para dentro de uma máquina virtual ligada, ou de dentro dela para as suas pastas (até 64 MB)",
+ "Creates a virtual machine, optionally starting from an installation disc (ISO) of yours": "Cria uma máquina virtual, se quiser a partir de um disco de instalação (ISO) seu",
+ "Deletes a turned-off virtual machine and its disks": "Apaga uma máquina virtual desligada e os discos dela",
+ "Kalango VirtualDesk did not answer: {e}": "O Kalango VirtualDesk não respondeu: {e}",
+ "Kalango VirtualDesk is not installed": "O Kalango VirtualDesk não está instalado",
+ "Pauses a running virtual machine": "Pausa uma máquina virtual ligada",
+ "Reads or changes a virtual machine's processors, memory, network, sound, clipboard or CD; says what applies now and what at the next start": "Lê ou muda processadores, memória, rede, som, área de transferência ou CD de uma máquina virtual; diz o que vale na hora e o que vale ao religar",
+ "Runs a shell command inside a running virtual machine through its guest agent, and returns the code and the output": "Roda um comando de shell dentro de uma máquina virtual ligada pelo agente dela e devolve o código e a saída",
+ "Shares a folder of yours with a virtual machine (read only unless asked), stops sharing, or lists": "Compartilha uma pasta sua com uma máquina virtual (só leitura, a menos que peça), para de compartilhar ou lista",
+ "Snapshots of a virtual machine: list, take, go back (the current state is kept first) or delete": "Snapshots de uma máquina virtual: listar, tirar, voltar (o estado atual é guardado antes) ou apagar",
+ "Turns a virtual machine off (asks its system; at once with forcar)": "Desliga uma máquina virtual (pede ao sistema dela; na hora com forcar)",
+ "Turns a virtual machine on (or resumes its saved state)": "Liga uma máquina virtual (ou retoma o estado salvo)",
+ "Virtual machines of Kalango VirtualDesk and the state of each (on, paused, off), with processors, memory, folders and snapshots": "As máquinas virtuais do Kalango VirtualDesk e o estado de cada uma (ligada, pausada, desligada), com processadores, memória, pastas e snapshots",
+ "turning off or deleting a machine always asks": "desligar ou apagar uma máquina sempre pede"
 }

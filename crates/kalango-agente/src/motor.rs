@@ -112,6 +112,9 @@ const DOMAINS: &[(&str, &[&str])] = &[
         // questions about the world (a game, a price, the news): the web, not every tool of this computer
         "resultado do jogo", "jogo d", "placar", "gols", "campeonato", "partida", "quem ganhou", "quem venceu", "cotação", "cotacao", "preço d",
         "preco d", "eleição", "eleicao", "lançamento", "lancamento", "who won", "score", "match", "price of"]),
+    // the virtual machines of Kalango VirtualDesk (vm.*)
+    ("vm", &["máquina virtual", "maquina virtual", "máquinas virtuais", "maquinas virtuais", "virtualdesk", " vm", "vm ", "snapshot", "virtual machine",
+        "na máquina ", "na maquina ", "da máquina ", "da maquina "]),
     ("tela", &["tela", "screen", "estou vendo", "janela", "window", "na minha frente", "o que aparece"]),
 ];
 
@@ -1004,7 +1007,17 @@ fn screen_call(args: &Value, on_event: &dyn Fn(Event)) -> (bool, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{autonomy, multi_step, person_folders, person_relative, Escopo};
+    use super::{autonomy, multi_step, person_folders, person_relative, select_tools, Escopo};
+
+    #[test]
+    fn a_request_about_virtual_machines_brings_the_vm_tools() {
+        let t = |n: &str, ro: bool| crate::kalangod::Tool { name: n.into(), description: String::new(), schema: serde_json::json!({}), level: "usuario".into(), read_only: ro, destructive: false };
+        let all = vec![t("vm.ligar", false), t("vm.listar", true), t("arquivos.mover", false)];
+        let names = |r: &str| select_tools(&all, r, false).iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+        assert!(names("ligue a máquina virtual Oficina").contains(&"vm.ligar".to_string()));
+        assert!(names("tire um snapshot da Oficina").contains(&"vm.ligar".to_string()));
+        assert!(!names("mova o arquivo").contains(&"vm.ligar".to_string()));
+    }
 
     #[test]
     fn an_installed_agent_stays_in_its_scope() {
