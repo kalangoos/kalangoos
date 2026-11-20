@@ -157,6 +157,12 @@ DESK
     install -m 644 "$AUDIO/assets/icons/hicolor/${s}x${s}/apps/os.kalango.Audio.png" "$C/usr/share/icons/hicolor/${s}x${s}/apps/"
   done
 fi
+# desligar e reiniciar sem esperar 90 s por um processo que não fecha (uma sessão de terminal com um shell
+# interativo segurou um desligamento por 94 s): 15 s para cada serviço e sessão parar, no sistema e nas contas
+d etc/systemd/system.conf.d
+d etc/systemd/user.conf.d
+printf '[Manager]\nDefaultTimeoutStopSec=15s\n' > "$C/etc/systemd/system.conf.d/90-kalangoos.conf"
+printf '[Manager]\nDefaultTimeoutStopSec=15s\n' > "$C/etc/systemd/user.conf.d/90-kalangoos.conf"
 # a rede toda pelo NetworkManager: sem um netplan que diga isso, a regra do Ubuntu (10-globally-managed-devices)
 # deixa a placa com fio sem gerência — o cabo ligado, "sem conexão" no instalador e no sistema (visto no VirtualBox)
 d etc/netplan

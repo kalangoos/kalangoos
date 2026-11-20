@@ -162,6 +162,13 @@ def main():
         good &= check(efi.strip() == "vfat", "a partição EFI está montada", efi)
         failed, _ = c.run("systemctl --failed --no-legend --plain")
         good &= check(failed.strip() == "", "nenhum serviço falhou", failed)
+        # (desempenho: os números de cada ISO, para comparar uma com a outra — o boot, a memória e a CPU com a sessão
+        # parada, e quem mais pesa)
+        time.sleep(30)
+        perf, _ = c.run("systemd-analyze | head -1; free -m | sed -n 2p | awk '{print \"RAM usada: \" $3 \" MB de \" $2}'; "
+                        "cat /proc/loadavg | awk '{print \"carga (1 min): \" $1}'; "
+                        "ps -eo rss,pcpu,comm --sort=-rss | head -8 | awk 'NR>1 {printf \"  %6d MB %5s%% %s\\n\", $1/1024, $2, $3}'")
+        print("---- desempenho\n" + perf)
         if failed.strip():
             units = " ".join(l.split()[0] for l in failed.splitlines() if l.strip())
             why, _ = c.run(f"sudo -S -p '' journalctl -b --no-pager -o cat -u {units.replace(' ', ' -u ')} | tail -30", 30, stdin=sys.argv[4])

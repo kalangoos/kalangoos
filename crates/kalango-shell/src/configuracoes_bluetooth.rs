@@ -26,8 +26,19 @@ pub fn bluetoothctl() -> String {
     std::env::var("KALANGO_BLUETOOTHCTL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "bluetoothctl".into())
 }
 
+/// Whether this computer has a Bluetooth adapter (or the session test's stand-in): without one, `bluetoothctl`
+/// waits for a controller forever — every poll left another one running (seen in a VM: five of them, 23 MB each).
+pub fn adapter_present() -> bool {
+    std::env::var_os("KALANGO_BLUETOOTHCTL").is_some_and(|s| !s.is_empty())
+        || std::fs::read_dir("/sys/class/bluetooth").is_ok_and(|mut d| d.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().starts_with("hci"))))
+}
+
 fn bt(args: &[&str]) -> Result<String, String> {
-    let o = std::process::Command::new(bluetoothctl()).args(args).env("LC_ALL", "C").output().map_err(|e| e.to_string())?;
+    if !adapter_present() {
+        return Err("no Bluetooth adapter".into());
+    }
+    let o = crate::sistema::output_timeout(std::process::Command::new(bluetoothctl()).args(args).env("LC_ALL", "C"), crate::sistema::STATUS_LIMIT)
+        .map_err(|e| e.to_string())?;
     let saida = String::from_utf8_lossy(&o.stdout).into_owned();
     // bluetoothctl answers 0 even when it fails: its "Failed"/"not available" lines say so
     if !o.status.success() || saida.lines().any(|l| l.contains("Failed to") || l.contains("not available")) {

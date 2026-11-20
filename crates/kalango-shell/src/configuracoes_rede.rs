@@ -26,7 +26,8 @@ pub fn nmcli() -> String {
 }
 
 fn nm(args: &[&str]) -> Result<String, String> {
-    let o = std::process::Command::new(nmcli()).args(args).env("LC_ALL", "C").output().map_err(|e| e.to_string())?;
+    let o = crate::sistema::output_timeout(std::process::Command::new(nmcli()).args(args).env("LC_ALL", "C"), crate::sistema::STATUS_LIMIT)
+        .map_err(|e| e.to_string())?;
     if o.status.success() {
         Ok(String::from_utf8_lossy(&o.stdout).into_owned())
     } else {
