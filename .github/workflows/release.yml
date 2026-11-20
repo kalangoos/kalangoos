@@ -169,6 +169,11 @@ jobs:
             qemu-system-x86 qemu-utils ovmf cmake libvulkan-dev \
             libudev-dev libgbm-dev libxkbcommon-dev libegl1-mesa-dev libinput-dev libseat-dev libpipewire-0.3-dev \
             libpango1.0-dev libdisplay-info-dev libdbus-1-dev libsystemd-dev
+          # mmdebstrap --mode=unshare builds the image without root: it needs subordinate ids for this user and user
+          # namespaces, which Ubuntu 24.04 restricts through AppArmor
+          grep -q "^$USER:" /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
+          grep -q "^$USER:" /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           # the VM test: KVM for this user (the runner has the device, not the permission)
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
