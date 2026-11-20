@@ -129,7 +129,7 @@ jobs:
           # the build tree with debug info needs tens of GB: the runner's second disk
           sudo mkdir -p /mnt/kernel-src && sudo chown "$USER" /mnt/kernel-src
           ln -s /mnt/kernel-src kernel/src
-          v=$(ls kernel/config-* | sed 's#kernel/config-##' | sort -V | tail -1)
+          v=$(find kernel -maxdepth 1 -name 'config-*' -printf '%f\n' | sed 's/^config-//' | sort -V | tail -1)
           KALANGO_KERNEL_SEM_DBG=1 kernel/build.sh "$v" || { tail -80 "kernel/out/build-$v.log"; exit 1; }
           rm -f kernel/out/linux-headers-*.deb kernel/out/linux-libc-dev_*.deb
 
