@@ -234,8 +234,15 @@ binds {
     Mod+Shift+V { toggle-window-floating; }
     Mod+Tab repeat=false hotkey-overlay-title="Trocar de espaço" { spawn "@SHELL@" "espacos"; }
     Mod+R { switch-preset-column-width; }
-    Mod+Minus { set-column-width "-10%"; }
-    Mod+Equal { set-column-width "+10%"; }
+    Mod+Ctrl+Minus { set-column-width "-10%"; }
+    Mod+Ctrl+Equal { set-column-width "+10%"; }
+    // a lupa (design "Lupa (Super e +)"): Super = aproxima, Super − afasta, Super 0 sai; Super+Shift+roda ajusta aos
+    // poucos (Super+roda continua trocando de espaço)
+    Mod+Equal hotkey-overlay-title="Lupa: aproximar" { spawn "@SHELL@" "lupa" "mais"; }
+    Mod+Minus hotkey-overlay-title="Lupa: afastar" { spawn "@SHELL@" "lupa" "menos"; }
+    Mod+0 hotkey-overlay-title="Lupa: sair" { spawn "@SHELL@" "lupa" "sair"; }
+    Mod+Shift+WheelScrollUp cooldown-ms=60 { spawn "@SHELL@" "lupa" "roda-mais"; }
+    Mod+Shift+WheelScrollDown cooldown-ms=60 { spawn "@SHELL@" "lupa" "roda-menos"; }
 
     // encaixe de janelas (design "Layouts de janela"): Super+← / → metades, ↑ maximiza (ou o quarto de
     // cima a partir de uma metade), ↓ volta; arrastar até a borda ou o canto também encaixa

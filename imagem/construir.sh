@@ -46,7 +46,7 @@ d usr/share/wayland-sessions; d usr/lib/environment.d; d etc/kalango; d etc/syst
 # (o niri foi compilado no Ubuntu 24.04 e usa a libdisplay-info.so.1; o 26.04 tem a .so.3: vai junto, só para ele,
 # até os nossos binários serem compilados na própria base)
 d usr/lib/kalango
-DI=$(ls "$DEPS"/root/usr/lib/x86_64-linux-gnu/libdisplay-info.so.1 /usr/lib/x86_64-linux-gnu/libdisplay-info.so.1 2>/dev/null | head -1)
+DI=$(ls "$DEPS"/root/usr/lib/x86_64-linux-gnu/libdisplay-info.so.1 /usr/lib/x86_64-linux-gnu/libdisplay-info.so.1 2>/dev/null | head -1 || true)
 [ -n "$DI" ] || { echo "falta a libdisplay-info.so.1 (a do Ubuntu 24.04, com que o niri foi compilado)"; exit 1; }
 cp -L "$DI" "$C/usr/lib/kalango/"
 install -m 755 "$DEPS/src/niri/target/release/niri" "$C/usr/libexec/kalango/niri.bin"
@@ -106,6 +106,62 @@ chmod 755 "$C/usr/lib/kalango/llama-server"
 MODELOS=${KALANGO_MODELOS:-$HOME/.local/share/kalango/modelos}
 d usr/share/kalango/modelos
 [ -f "$MODELOS/LFM3-1.7B-Q4_K_M.gguf" ] && cp "$MODELOS/LFM3-1.7B-Q4_K_M.gguf" "$C/usr/share/kalango/modelos/"
+# ---- os apps nativos que têm repositório próprio (kalangoos/kalango-remote e kalangoos/kalango-audio), compilados ao
+# lado deste repositório (KALANGO_REMOTE_DIR / KALANGO_AUDIO_DIR mudam onde); KALANGO_IMAGEM_SEM_APPS=1 monta sem eles
+REMOTO=${KALANGO_REMOTE_DIR:-$ROOT/../kalango-remote}
+AUDIO=${KALANGO_AUDIO_DIR:-$ROOT/../kalango-audio}
+if [ "${KALANGO_IMAGEM_SEM_APPS:-0}" != 1 ]; then
+  for f in "$REMOTO/target/release/kalango-remote" "$REMOTO/target/release/kalango-remote-core" "$REMOTO/kalangoos/.deps/bin/cloudflared" \
+           "$AUDIO/target/release/kalango-audio"; do
+    [ -x "$f" ] || { echo "falta $f: compile o Kalango Remote (kalangoos/scripts/deps.sh, cloudflared.sh e cargo build --release" \
+                          "-p kalango-remote -p kalango-remote-core --features kalango-remote-core/linux-pkg-config) e o Kalango Audio" \
+                          "(cargo build --release), ou KALANGO_IMAGEM_SEM_APPS=1"; exit 1; }
+  done
+  # Kalango Remote: o app, o núcleo (o RustDesk, num processo à parte) e o cloudflared juntos — o app acha os outros
+  # dois na própria pasta. O núcleo foi compilado no Ubuntu 24.04 e usa a libvpx.so.9; o 26.04 tem a .so.12: vai
+  # junto, só para ele (BSD-3), até os binários serem compilados na própria base
+  d usr/lib/kalango/remote
+  for b in kalango-remote kalango-remote-core; do install -m 755 "$REMOTO/target/release/$b" "$C/usr/lib/kalango/remote/$b"; done
+  install -m 755 "$(readlink -f "$REMOTO/kalangoos/.deps/bin/cloudflared")" "$C/usr/lib/kalango/remote/cloudflared"
+  # (a do Ubuntu 24.04: nas dependências do próprio Remote — kalangoos/scripts/deps.sh, como na CI —, nas do KalangoOS ou
+  # no sistema de quem monta)
+  VPX=$(ls "$REMOTO"/kalangoos/.deps/root/usr/lib/x86_64-linux-gnu/libvpx.so.9 "$DEPS"/root/usr/lib/x86_64-linux-gnu/libvpx.so.9 \
+           /usr/lib/x86_64-linux-gnu/libvpx.so.9 2>/dev/null | head -1 || true)
+  [ -n "$VPX" ] || { echo "falta a libvpx.so.9 (a do Ubuntu 24.04, com que o núcleo do Kalango Remote foi compilado)"; exit 1; }
+  cp -L "$VPX" "$C/usr/lib/kalango/remote/"
+  printf '#!/bin/sh\nexec env LD_LIBRARY_PATH=/usr/lib/kalango/remote /usr/lib/kalango/remote/kalango-remote "$@"\n' > "$C/usr/bin/kalango-remote"
+  chmod 755 "$C/usr/bin/kalango-remote"
+  d usr/share/applications
+  cat > "$C/usr/share/applications/os.kalango.Remote.desktop" <<'DESK'
+[Desktop Entry]
+Type=Application
+Name=Kalango Remote
+GenericName=Acesso remoto
+Comment=Compartilhe a tela, controle outro computador e acesse servidores por SSH
+Exec=kalango-remote
+Icon=os.kalango.Remote
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=remoto;compartilhar;tela;ssh;mosh;suporte;
+StartupWMClass=os.kalango.Remote
+DESK
+  for s in 128 256 512; do
+    d usr/share/icons/hicolor/${s}x${s}/apps
+    python3 -c "from PIL import Image; Image.open('$REMOTO/kalangoos/icone.png').convert('RGBA').resize(($s,$s), Image.LANCZOS).save('$C/usr/share/icons/hicolor/${s}x${s}/apps/os.kalango.Remote.png')"
+  done
+  # Kalango Audio: o binário, o atalho e os ícones do próprio repositório
+  install -m 755 "$AUDIO/target/release/kalango-audio" "$C/usr/bin/kalango-audio"
+  sed "s|^Exec=.*|Exec=kalango-audio|" "$AUDIO/dist/os.kalango.Audio.desktop" > "$C/usr/share/applications/os.kalango.Audio.desktop"
+  for s in 128 256 512; do
+    d usr/share/icons/hicolor/${s}x${s}/apps
+    install -m 644 "$AUDIO/assets/icons/hicolor/${s}x${s}/apps/os.kalango.Audio.png" "$C/usr/share/icons/hicolor/${s}x${s}/apps/"
+  done
+fi
+# a rede toda pelo NetworkManager: sem um netplan que diga isso, a regra do Ubuntu (10-globally-managed-devices)
+# deixa a placa com fio sem gerência — o cabo ligado, "sem conexão" no instalador e no sistema (visto no VirtualBox)
+d etc/netplan
+printf 'network:\n  version: 2\n  renderer: NetworkManager\n' > "$C/etc/netplan/01-network-manager-all.yaml"
+chmod 600 "$C/etc/netplan/01-network-manager-all.yaml"
 # os arquivos do sistema que a sessão espera (portais, aplicativos, catálogos de agentes e da loja, manual)
 d usr/share; cp -r sessao/dist/share/. "$C/usr/share/"
 d etc/xdg; cp -r sessao/dist/etc/xdg/. "$C/etc/xdg/"
@@ -280,10 +336,11 @@ if [ -s "$W/donos.txt" ]; then echo "arquivos do sistema com dono errado: $(head
 # libseat, na primeira imagem)
 tar -tf "$OUT/kalangoos.tar" | grep -oE '[^/]+\.so(\.[0-9]+)*$' | sort -u > "$W/sonames.txt"
 # (as bibliotecas do llama.cpp vão na pasta dele: contam como presentes)
-ls "$C/usr/lib/kalango/llama" "$C/usr/lib/kalango" | grep -E '\.so' >> "$W/sonames.txt"; sort -u -o "$W/sonames.txt" "$W/sonames.txt"
+ls "$C/usr/lib/kalango/llama" "$C/usr/lib/kalango" "$C/usr/lib/kalango/remote" 2>/dev/null | grep -E '\.so' >> "$W/sonames.txt"; sort -u -o "$W/sonames.txt" "$W/sonames.txt"
 for b in "$C"/usr/libexec/kalango/*.bin "$C"/usr/libexec/kalango/kalangod "$C"/usr/libexec/kalango/kalango-agente \
          "$C"/usr/libexec/kalango/kalango-entrada "$C"/usr/libexec/kalango/kalango-instalador \
-         "$C"/usr/lib/kalango/llama/llama-server "$C"/usr/lib/kalango/llama/*.so "$C"/usr/lib/kalango/moli; do
+         "$C"/usr/lib/kalango/llama/llama-server "$C"/usr/lib/kalango/llama/*.so "$C"/usr/lib/kalango/moli \
+         "$C"/usr/lib/kalango/remote/kalango-remote "$C"/usr/lib/kalango/remote/kalango-remote-core "$C"/usr/bin/kalango-audio; do
   [ -f "$b" ] || continue
   readelf -d "$b" | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p'
   # (e as que eles carregam sozinhos, por nome: o niri abre a libwayland-server assim)
@@ -298,7 +355,9 @@ mv -f "$OUT/vmlinuz-$KVER" "$OUT/vmlinuz"; mv -f "$OUT/initrd.img-$KVER" "$OUT/i
 
 # ---- o squashfs (o instalador grava este) e o disco ext4 da VM (dono e permissões preservados pelo fakeroot)
 rm -f "$OUT/kalangoos.squashfs" "$OUT/kalangoos.img"
-sqfstar -quiet -comp zstd "$OUT/kalangoos.squashfs" < "$OUT/kalangoos.tar"
+# (o tar não tem a entrada "./": sem as opções, a raiz sairia de quem monta a imagem, com 777, e o sistema instalado
+# teria a / da primeira conta — o systemd-tmpfiles recusa "unsafe path transition" e o resto do sistema confia nela)
+sqfstar -quiet -comp zstd -root-uid 0 -root-gid 0 -root-mode 0755 "$OUT/kalangoos.squashfs" < "$OUT/kalangoos.tar"
 if [ "$ISO" = 1 ]; then
   # ---- a ISO: o layout do casper e o GRUB para BIOS e UEFI (grub-mkrescue, sem root)
   I=$W/iso; rm -rf "$I"; mkdir -p "$I/casper" "$I/boot/grub" "$I/.disk"

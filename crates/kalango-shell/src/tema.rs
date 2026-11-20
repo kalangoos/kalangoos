@@ -41,6 +41,8 @@ pub struct Tema {
     /// the corners of windows and cards, in px (the design's "Sutil" is 6)
     pub cantos: u32,
     pub widgets_transparentes: bool,
+    /// the files of the Desktop folder shown on the desktop
+    pub desktop_files: bool,
     /// a picture of the person's for the wallpaper (none: KalangoOS's scene, light or dark with the theme)
     pub papel: Option<String>,
     /// the pictures chosen before (the newest first)
@@ -53,7 +55,7 @@ pub struct Tema {
 
 impl Default for Tema {
     fn default() -> Tema {
-        Tema { estilo: "escuro".into(), destaque: "accent".into(), cantos: 6, widgets_transparentes: true, papel: None, papeis: Vec::new(), texto: 1.0, contraste: false }
+        Tema { estilo: "escuro".into(), destaque: "accent".into(), cantos: 6, widgets_transparentes: true, desktop_files: true, papel: None, papeis: Vec::new(), texto: 1.0, contraste: false }
     }
 }
 
@@ -69,6 +71,7 @@ pub fn ler() -> Tema {
         destaque: v["destaque"].as_str().filter(|s| DESTAQUES.iter().any(|(id, _, _)| id == s)).unwrap_or(&d.destaque).to_string(),
         cantos: v["cantos"].as_u64().map(|c| c.min(20) as u32).unwrap_or(d.cantos),
         widgets_transparentes: v["widgets_transparentes"].as_bool().unwrap_or(d.widgets_transparentes),
+        desktop_files: v["desktop_files"].as_bool().unwrap_or(d.desktop_files),
         papel: v["papel"].as_str().filter(|p| std::path::Path::new(p).is_file()).map(str::to_string),
         papeis: v["papeis"].as_array().map(|a| a.iter().filter_map(|p| p.as_str()).filter(|p| std::path::Path::new(p).is_file()).take(5).map(str::to_string).collect())
             .unwrap_or_default(),
@@ -83,7 +86,7 @@ pub fn salvar(t: &Tema) {
         let _ = std::fs::create_dir_all(d);
     }
     let v = json!({"estilo": t.estilo, "destaque": t.destaque, "cantos": t.cantos, "widgets_transparentes": t.widgets_transparentes,
-        "papel": t.papel, "papeis": t.papeis, "texto": t.texto, "contraste": t.contraste});
+        "desktop_files": t.desktop_files, "papel": t.papel, "papeis": t.papeis, "texto": t.texto, "contraste": t.contraste});
     let _ = std::fs::write(p, serde_json::to_string_pretty(&v).unwrap_or_default());
 }
 
@@ -150,7 +153,9 @@ pub fn mapa(t: &Tema, claro_agora: bool) -> HashMap<String, String> {
         let muted = do_claro("k_muted").unwrap_or_else(|| "#6C6C80".into());
         for (c, l) in [("#C9CAD1", texto2.as_str()), ("#B8B9C4", texto2.as_str()), ("#6E6F7A", muted.as_str()), ("#4A4B57", "#C9C9D6"), ("#4B4C55", "#C9C9D6"),
             ("#3A3B46", "#DCDCE6"), ("#33343F", "#E4E4EC"), ("#33343E", "#E4E4EC"), ("#2E2F38", "#E8E8EF"), ("#202128", "#F5F5F9"), ("#1E1F27", "#F5F5F9"),
-            ("#4A3F2A", "#F4EAD2"), ("#2A1416", "#F8E1E3")] {
+            ("#4A3F2A", "#F4EAD2"), ("#2A1416", "#F8E1E3"),
+            // (the calendar's today column and its chosen view, design "Calendário · claro r4")
+            ("#1E1F26", "#E3EDEA"), ("#2A2B33", "#E4E4EC")] {
             m.insert(c.to_string(), l.to_string());
         }
     }
@@ -282,6 +287,8 @@ fn fontes_claras(css: &str) -> String {
 /// would show through the text as stains. The dark theme keeps their 90–97 %.
 fn paineis_opacos(css: &str) -> String {
     let mut out = css.to_string();
+    // (the veil under the command bar: lighter on a light sheet, as the design "Busca universal · claro r3")
+    out = out.replace(".fundo { background: alpha(@k_scrim, 0.65); }", ".fundo { background: alpha(@k_scrim, 0.42); }");
     for fundo in ["@k_sunken", "#18191E"] {
         for a in ["0.97", "0.92", "0.9"] {
             out = out.replace(&format!("alpha({fundo}, {a})"), fundo);

@@ -2124,10 +2124,19 @@ impl Conversa {
             if let Some(b) = descendant_with_class(&card, "midia-tocar").and_downcast::<gtk::Button>() {
                 self.marcar_posicao("midia tocar", &b);
             }
+            if let Some(b) = descendant_with_class(&card, "midia-transcrever").and_downcast::<gtk::Button>() {
+                self.marcar_posicao("midia transcrever", &b);
+            }
             self.lista.append(&card);
         }
         for p in anexos.iter().filter(|p| crate::media_block::is_video(p)) {
-            self.lista.append(&crate::media_block::video(p));
+            let card = crate::media_block::video(p);
+            for (class, nome) in [("midia-video-ir", "midia ir"), ("midia-video-cortar", "midia cortar")] {
+                if let Some(b) = descendant_with_class(&card, class).and_downcast::<gtk::Button>() {
+                    self.marcar_posicao(nome, &b);
+                }
+            }
+            self.lista.append(&card);
         }
         let outros: Vec<&PathBuf> = anexos.iter().filter(|p| !crate::media_block::is_image(p) && !crate::media_block::is_audio(p) && !crate::media_block::is_video(p)).collect();
         if !outros.is_empty() {

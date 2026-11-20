@@ -198,6 +198,9 @@ impl PaginaRotinas {
             if let Some(p) = w.upgrade().filter(|_| f.is_child_revealed()) {
                 p.nome.grab_focus();
                 crate::central::posicao_debug("rotina nome", p.nome.upcast_ref());
+                // (for the session test: each field is clicked, the typing does not ride on Tab's order)
+                crate::central::posicao_debug("rotina pedido", p.pedido.upcast_ref());
+                crate::central::posicao_debug("rotina hora", p.hora.upcast_ref());
                 if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
                     eprintln!("debug rotinas: formulário aberto");
                 }

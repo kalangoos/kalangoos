@@ -59,25 +59,25 @@ fn depurando() -> bool {
 // ---------------------------------------------------------------- the folder's entries
 
 #[derive(Clone, Debug)]
-struct Item {
-    caminho: PathBuf,
-    nome: String,
-    pasta: bool,
-    tamanho: u64,
-    modificado: i64,
+pub(crate) struct Item {
+    pub(crate) caminho: PathBuf,
+    pub(crate) nome: String,
+    pub(crate) pasta: bool,
+    pub(crate) tamanho: u64,
+    pub(crate) modificado: i64,
     criado: i64,
-    tipo: String,
+    pub(crate) tipo: String,
     /// a folder: how many entries, and the emblem of what it holds mostly (doc, imagem, terminal)
     filhos: Option<usize>,
-    emblema: Option<&'static str>,
+    pub(crate) emblema: Option<&'static str>,
     etiquetas: Vec<String>,
 }
 
-fn extensao(p: &Path) -> String {
+pub(crate) fn extensao(p: &Path) -> String {
     p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
 }
 
-fn e_imagem(tipo: &str) -> bool {
+pub(crate) fn e_imagem(tipo: &str) -> bool {
     tipo.starts_with("image/")
 }
 
@@ -143,7 +143,7 @@ fn conteudo_da_pasta(p: &Path) -> (usize, Option<&'static str>) {
     (n, emblema)
 }
 
-fn ler_um(p: &Path) -> Item {
+pub(crate) fn ler_um(p: &Path) -> Item {
     let md = std::fs::metadata(p).ok();
     let pasta = md.as_ref().is_some_and(|m| m.is_dir());
     let (filhos, emblema) = if pasta { let (n, e) = conteudo_da_pasta(p); (Some(n), e) } else { (None, None) };
@@ -300,7 +300,7 @@ fn na_lixeira(p: &Path) -> bool {
 }
 
 /// Sends to the trash (as the spec says: the file in files/, where it came from in info/). Ok(where it is now).
-fn para_lixeira(p: &Path) -> Result<PathBuf, String> {
+pub(crate) fn para_lixeira(p: &Path) -> Result<PathBuf, String> {
     let t = lixeira();
     std::fs::create_dir_all(t.join("files")).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(t.join("info")).map_err(|e| e.to_string())?;
@@ -344,7 +344,7 @@ fn origem_na_lixeira(p: &Path) -> Option<PathBuf> {
 }
 
 /// Back where it came from (another name if that place is taken now). Ok(where).
-fn restaurar(p: &Path) -> Result<PathBuf, String> {
+pub(crate) fn restaurar(p: &Path) -> Result<PathBuf, String> {
     let orig = origem_na_lixeira(p).ok_or_else(|| tr("This file has no record of where it came from.").to_string())?;
     let mut destino = orig.clone();
     let mut n = 2;
@@ -370,7 +370,7 @@ fn apagar_de_vez(p: &Path) -> Result<(), String> {
 }
 
 /// A copy of a file or folder (with its contents).
-fn copiar(de: &Path, para: &Path) -> std::io::Result<()> {
+pub(crate) fn copiar(de: &Path, para: &Path) -> std::io::Result<()> {
     if de.is_dir() {
         std::fs::create_dir_all(para)?;
         for e in std::fs::read_dir(de)?.flatten() {
@@ -387,7 +387,7 @@ use crate::operacao::nome_livre;
 // ---------------------------------------------------------------- thumbnails (freedesktop thumbnail spec)
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-enum Alvo {
+pub(crate) enum Alvo {
     /// a picture filling a box of this size (cut to its proportion: its height for a width is the box's)
     Foto(i32, i32),
     /// a page of a document: this wide, cut to this high from the top
@@ -396,13 +396,13 @@ enum Alvo {
     Inteira(i32, i32),
 }
 
-type Rgba = (glib::Bytes, i32, i32, usize, bool);
+pub(crate) type Rgba = (glib::Bytes, i32, i32, usize, bool);
 
 fn rgba(pb: &gtk::gdk_pixbuf::Pixbuf) -> Rgba {
     (pb.read_pixel_bytes(), pb.width(), pb.height(), pb.rowstride() as usize, pb.has_alpha())
 }
 
-fn textura((b, w, h, s, a): Rgba) -> gdk::Texture {
+pub(crate) fn textura((b, w, h, s, a): Rgba) -> gdk::Texture {
     gdk::MemoryTexture::new(w, h, if a { gdk::MemoryFormat::R8g8b8a8 } else { gdk::MemoryFormat::R8g8b8 }, &b, s).upcast()
 }
 
@@ -489,7 +489,7 @@ fn miniatura_sistema(p: &Path, mime: &str, mtime: i64) -> Option<gtk::gdk_pixbuf
 }
 
 /// A preview, made off the interface thread.
-fn miniatura(p: &Path, mime: &str, mtime: i64, alvo: Alvo) -> Option<Rgba> {
+pub(crate) fn miniatura(p: &Path, mime: &str, mtime: i64, alvo: Alvo) -> Option<Rgba> {
     use gtk::gdk_pixbuf::{InterpType, Pixbuf};
     let pb = if e_imagem(mime) {
         let lado = match alvo { Alvo::Foto(w, h) | Alvo::Inteira(w, h) => w.max(h) * 2, Alvo::Pagina(w, _) => w * 2 };
@@ -747,7 +747,7 @@ fn emblema_de(p: &Path, conteudo: Option<&'static str>) -> Option<&'static str> 
 
 /// A page drawn for a file with no preview: lines of text and its extension's badge (design "Arquivos · nova
 /// (ícones)", the documents' cards).
-fn pagina_falsa(i: &Item, w: i32, h: i32, selo: bool) -> gtk::Box {
+pub(crate) fn pagina_falsa(i: &Item, w: i32, h: i32, selo: bool) -> gtk::Box {
     let p = caixa(Orientation::Vertical, (h / 24).max(3), "arq-pagina-falsa");
     p.set_size_request(w, h);
     let topo = caixa(Orientation::Vertical, 0, "");
@@ -780,12 +780,12 @@ fn pagina_falsa(i: &Item, w: i32, h: i32, selo: bool) -> gtk::Box {
 }
 
 /// A folder's art at a size (its emblem on it).
-fn arte_pasta(p: &Path, conteudo: Option<&'static str>, px: i32) -> gtk::Image {
+pub(crate) fn arte_pasta(p: &Path, conteudo: Option<&'static str>, px: i32) -> gtk::Image {
     arte(&emblema_de(p, conteudo).map(|e| format!("pasta-grande-{e}")).unwrap_or_else(|| "pasta-grande".into()), px)
 }
 
 /// A file's kind as the list shows it: a glyph, its tone and the tone's colour.
-fn glifo_do_tipo(i: &Item) -> (&'static str, &'static str, &'static str) {
+pub(crate) fn glifo_do_tipo(i: &Item) -> (&'static str, &'static str, &'static str) {
     let t = i.tipo.as_str();
     let ext = extensao(&i.caminho);
     if t.contains("pdf") {
@@ -2048,6 +2048,7 @@ impl Arquivos {
             return;
         }
         *self.area.borrow_mut() = (sel.clone(), mover);
+        remember_cut(&sel, mover);
         let files: Vec<gio::File> = sel.iter().map(gio::File::for_path).collect();
         self.janela.clipboard().set_content(Some(&gdk::ContentProvider::for_value(&gdk::FileList::from_array(&files).to_value()))).ok();
         if depurando() {
@@ -3489,6 +3490,8 @@ impl Arquivos {
         let destino = self.pasta.borrow().clone();
         // what was copied here (Ctrl+X moves); else what another app put on the clipboard
         let (ps, mover) = self.area.borrow().clone();
+        // (cut files another place already moved are not here anymore)
+        let ps: Vec<PathBuf> = ps.into_iter().filter(|p| p.exists()).collect();
         if !ps.is_empty() {
             if mover {
                 self.area.borrow_mut().0.clear();
@@ -3501,7 +3504,9 @@ impl Arquivos {
             let (Some(a), Ok(v)) = (w.upgrade(), r) else { return };
             if let Ok(fl) = v.get::<gdk::FileList>() {
                 let ps: Vec<PathBuf> = fl.files().iter().filter_map(|f| f.path()).collect();
-                a.colar_em(&ps, &destino, false);
+                // cut on the desktop: moved
+                let mover = was_cut(&ps);
+                a.colar_em(&ps, &destino, mover);
             }
         });
     }
@@ -3999,6 +4004,38 @@ impl Arquivos {
     }
 }
 
+thread_local! {
+    /// What was last put on the clipboard by Files or the desktop, and whether it was cut (Ctrl+X): the clipboard
+    /// only carries the files, so a paste elsewhere in the shell moves them only when they are the ones cut.
+    static CUT: RefCell<(Vec<PathBuf>, bool)> = RefCell::default();
+}
+
+pub(crate) fn remember_cut(ps: &[PathBuf], cut: bool) {
+    CUT.with(|c| *c.borrow_mut() = (ps.to_vec(), cut));
+}
+
+/// Were these files cut (and not pasted yet)? The answer is given once: a cut is pasted (moved) only once.
+pub(crate) fn was_cut(ps: &[PathBuf]) -> bool {
+    CUT.with(|c| {
+        let mut c = c.borrow_mut();
+        let sim = c.1 && !ps.is_empty() && c.0 == ps;
+        if sim {
+            *c = Default::default();
+        }
+        sim
+    })
+}
+
+pub(crate) use dialogos::apps_para;
+
+impl Arquivos {
+    /// "Abrir com › Outro app…" from outside (the desktop): this window on the file, with its Open with dialog.
+    pub fn open_with(self: &Rc<Self>, p: &Path) {
+        self.abrir_em(Some(p));
+        self.abrir_com(p);
+    }
+}
+
 /// A menu's row in the system's style (Files' menus), for other windows' menus.
 pub(crate) fn item_menu_publico(c: &gtk::Box, glifo: &str, cor: &str, t: &str) -> gtk::Button {
     Arquivos::item_menu(c, glifo, cor, t, "", "")
@@ -4062,7 +4099,7 @@ fn glifo_alinhado(glifo: &str, cor: &str) -> (gtk::Image, i32) {
 }
 
 /// Dropped files move when they stay on the same disk and copy to another one, as file managers do; Ctrl copies.
-fn mover_ao_soltar(t: &gtk::DropTarget, ps: &[PathBuf], destino: &Path) -> bool {
+pub(crate) fn mover_ao_soltar(t: &gtk::DropTarget, ps: &[PathBuf], destino: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     if t.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
         return false;

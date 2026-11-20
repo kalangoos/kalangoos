@@ -54,7 +54,7 @@ fn dono(uid: u32) -> String {
 }
 
 /// The apps that open a kind of file: the default one first.
-fn apps_para(tipo_mime: &str) -> (Vec<gio::AppInfo>, Option<gio::AppInfo>) {
+pub(crate) fn apps_para(tipo_mime: &str) -> (Vec<gio::AppInfo>, Option<gio::AppInfo>) {
     let ct = gio::content_type_from_mime_type(tipo_mime).unwrap_or_else(|| tipo_mime.into());
     let padrao = gio::AppInfo::default_for_type(&ct, false);
     let mut v: Vec<gio::AppInfo> = Vec::new();

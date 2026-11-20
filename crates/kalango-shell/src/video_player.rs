@@ -110,6 +110,8 @@ pub struct VideoPlayer {
     muted: Cell<bool>,
     dragging: Cell<bool>,
     chapters: RefCell<Vec<(f64, String)>>,
+    /// where to go once the video is open and its length known ("Ir para" from the conversation)
+    start_at: Cell<Option<f64>>,
     captions_on: Cell<bool>,
     sound: RefCell<Option<Arc<Vec<i16>>>>,
     sound_loading: Cell<bool>,
@@ -148,6 +150,76 @@ pub fn open(shell: &Rc<Shell>, file: Option<PathBuf>) {
         p.load(&f);
     } else if p.path.borrow().is_none() {
         p.empty.set_visible(true);
+    }
+}
+
+/// The chapters of a video, found now (off the interface's thread): frames taken across it, the scene changes between
+/// them, each scene named by the local vision model from its middle frame. The Video app and the conversation's video
+/// card use it.
+pub fn find_chapters_now(path: &Path, bin: &Path) -> Result<Vec<(f64, String)>, String> {
+    let (_, len) = media::frames(path, &[], 8, 8)?;
+    if len < 8.0 {
+        return Ok(Vec::new());
+    }
+    let step = (len / 120.0).clamp(1.0, 10.0);
+    let times: Vec<f64> = (0..).map(|i| f64::from(i) * step).take_while(|t| *t < len).collect();
+    let (fs, _) = media::frames(path, &times, 64, 36)?;
+    let mut starts = vec![0.0];
+    // (each change found between two frames a step apart, then its exact time)
+    starts.extend(media::scene_changes(&fs, (len / 20.0).max(4.0), 9).into_iter().map(|t| media::refine_change(path, (t - step).max(0.0), t)));
+    let mids: Vec<f64> = starts.iter().enumerate().map(|(i, s)| (s + starts.get(i + 1).copied().unwrap_or(len)) / 2.0).collect();
+    let (named, _) = media::frames(path, &mids, 320, 180)?;
+    let tmp = std::env::temp_dir().join(format!("kalango-video-{}.png", std::process::id()));
+    let pt = kalango_i18n::system_locale().is_none_or(|l| l.starts_with("pt"));
+    let question = if pt { "Diga em no máximo 5 palavras o que aparece nesta cena de vídeo. Só as palavras, sem ponto final." }
+        else { "Say in at most 5 words what this video scene shows. Just the words, no full stop." };
+    let mut out = Vec::new();
+    for (s, f) in starts.iter().zip(named.iter()) {
+        let mut title = String::new();
+        if media::png(f, &tmp).is_ok() {
+            // (the model's answer only — an error is no name; a model starting up gets one more try)
+            for attempt in 0..2 {
+                let out = std::process::Command::new(bin).args(["--json", "ver"]).arg(&tmp).arg(question).stderr(std::process::Stdio::null()).output();
+                let v = out.ok().and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok()).unwrap_or_default();
+                if v["tipo"] == "visao" {
+                    title = v["texto"].as_str().unwrap_or("").to_string();
+                    break;
+                }
+                if attempt == 0 {
+                    std::thread::sleep(Duration::from_secs(3));
+                }
+            }
+        }
+        let title = title.trim().trim_end_matches('.').lines().next().unwrap_or("").chars().take(48).collect::<String>();
+        out.push((*s, title));
+    }
+    let _ = std::fs::remove_file(&tmp);
+    Ok(out)
+}
+
+/// The chapters found before (kept by the Video app or the conversation), none when not yet.
+pub fn cached_chapters(path: &Path) -> Vec<(f64, String)> {
+    let v = std::fs::read_to_string(media::cache_file(path)).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).unwrap_or_default();
+    v["capitulos"].as_array().into_iter().flatten().map(|c| (c["t"].as_f64().unwrap_or(0.0), c["titulo"].as_str().unwrap_or("").to_string())).collect()
+}
+
+/// Keeps a video's chapters (what was heard in it stays).
+pub fn save_chapters(path: &Path, ch: &[(f64, String)]) {
+    let f = media::cache_file(path);
+    let mut v = std::fs::read_to_string(&f).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
+    v["capitulos"] = serde_json::json!(ch.iter().map(|(t, n)| serde_json::json!({"t": t, "titulo": n})).collect::<Vec<_>>());
+    if let Some(d) = f.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _ = std::fs::write(f, v.to_string());
+}
+
+/// Opens the app with a video, from `at` seconds ("Ir para 07:15" in the conversation).
+pub fn open_at(shell: &Rc<Shell>, file: PathBuf, at: f64) {
+    open(shell, Some(file));
+    if let Some(p) = PLAYER.with(|p| p.borrow().clone()) {
+        p.start_at.set(Some(at));
     }
 }
 
@@ -360,7 +432,7 @@ impl VideoPlayer {
             mini_b, full_b, caption, card, card_title, card_text, ask, empty, menu_items, menu_pop,
             pipeline: RefCell::default(), bus_watch: RefCell::default(), frame: Arc::default(), path: RefCell::default(), length: Cell::new(0.0),
             position: Cell::new(0.0), rate: Cell::new(1.0), playing: Cell::new(false), ended: Cell::new(false), volume: Cell::new(1.0),
-            muted: Cell::new(false), dragging: Cell::new(false), chapters: RefCell::default(), captions_on: Cell::new(false), sound: RefCell::default(),
+            muted: Cell::new(false), dragging: Cell::new(false), chapters: RefCell::default(), start_at: Cell::new(None), captions_on: Cell::new(false), sound: RefCell::default(),
             sound_loading: Cell::new(false), said: RefCell::default(), transcribing: Cell::new(false), heard: RefCell::default(),
             last_motion: Cell::new(glib::monotonic_time()), over_controls: Cell::new(false), compact: Cell::new(false), clicks: Cell::new(0), pointer: Cell::new((-1.0, -1.0)), announced: Cell::new(false),
             sound_waiters: RefCell::default(), generation: Cell::new(0),
@@ -814,6 +886,9 @@ impl VideoPlayer {
             let len = d.nseconds() as f64 / 1e9;
             if (len - self.length.get()).abs() > 0.01 {
                 self.length.set(len);
+                if let Some(t) = self.start_at.take() {
+                    self.seek_to(t, true);
+                }
                 self.announce();
                 self.timeline.queue_draw();
             }
@@ -1072,46 +1147,7 @@ impl VideoPlayer {
         let gen = self.generation.get();
         let bin = crate::voz::agent_binary();
         let w = Rc::downgrade(self);
-        crate::lateral::em_segundo_plano(move || -> Result<Vec<(f64, String)>, String> {
-            let (_, len) = media::frames(&path, &[], 8, 8)?;
-            if len < 8.0 {
-                return Ok(Vec::new());
-            }
-            let step = (len / 120.0).clamp(1.0, 10.0);
-            let times: Vec<f64> = (0..).map(|i| f64::from(i) * step).take_while(|t| *t < len).collect();
-            let (fs, _) = media::frames(&path, &times, 64, 36)?;
-            let mut starts = vec![0.0];
-            // (each change found between two frames a step apart, then its exact time)
-            starts.extend(media::scene_changes(&fs, (len / 20.0).max(4.0), 9).into_iter().map(|t| media::refine_change(&path, (t - step).max(0.0), t)));
-            let mids: Vec<f64> = starts.iter().enumerate().map(|(i, s)| (s + starts.get(i + 1).copied().unwrap_or(len)) / 2.0).collect();
-            let (named, _) = media::frames(&path, &mids, 320, 180)?;
-            let tmp = std::env::temp_dir().join(format!("kalango-video-{}.png", std::process::id()));
-            let pt = kalango_i18n::system_locale().is_none_or(|l| l.starts_with("pt"));
-            let question = if pt { "Diga em no máximo 5 palavras o que aparece nesta cena de vídeo. Só as palavras, sem ponto final." }
-                else { "Say in at most 5 words what this video scene shows. Just the words, no full stop." };
-            let mut out = Vec::new();
-            for (s, f) in starts.iter().zip(named.iter()) {
-                let mut title = String::new();
-                if media::png(f, &tmp).is_ok() {
-                    // (the model's answer only — an error is no name; a model starting up gets one more try)
-                    for attempt in 0..2 {
-                        let out = std::process::Command::new(&bin).args(["--json", "ver"]).arg(&tmp).arg(question).stderr(std::process::Stdio::null()).output();
-                        let v = out.ok().and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok()).unwrap_or_default();
-                        if v["tipo"] == "visao" {
-                            title = v["texto"].as_str().unwrap_or("").to_string();
-                            break;
-                        }
-                        if attempt == 0 {
-                            std::thread::sleep(Duration::from_secs(3));
-                        }
-                    }
-                }
-                let title = title.trim().trim_end_matches('.').lines().next().unwrap_or("").chars().take(48).collect::<String>();
-                out.push((*s, title));
-            }
-            let _ = std::fs::remove_file(&tmp);
-            Ok(out)
-        }, move |r| {
+        crate::lateral::em_segundo_plano(move || find_chapters_now(&path, &bin), move |r| {
             let Some(p) = w.upgrade() else { return };
             if p.generation.get() != gen {
                 return;

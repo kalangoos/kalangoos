@@ -8,6 +8,10 @@ else
 fi
 export XDG_CURRENT_DESKTOP=KalangoOS:niri
 export XDG_SESSION_DESKTOP=kalango
+# screen capture and input injection only for who kalangod allows (niri patch 0008; the file belongs to root)
+export KALANGO_NIRI_CONTROLE=/run/kalango/controle-remoto
+# Esc Esc encerra a sessão de controle remoto em qualquer janela (patch 0009 do niri)
+export KALANGO_ESC_DUPLO="/usr/bin/kalango-remote end-sessions"
 # o niri-session importa este ambiente para o systemd do usuário e sobe niri.service; ao chegar em
 # graphical-session.target, sobem kalango-shell.service e kalango-aprovacao.service
 exec niri-session -l

@@ -458,6 +458,13 @@ impl Energia {
             eprintln!("kalango-shell: [sessão de teste] '{id}'{extra} não foi executado de verdade");
             return;
         }
+        // the live session of the install media: restart and power off skip stopping the units (a normal one stopped
+        // forever on "Failed unmounting cdrom.mount" — the session runs from the media); nothing there is kept anyway
+        if matches!(id, "reiniciar" | "desligar") && crate::configuracoes_energia::live_session() {
+            let what = if id == "desligar" { "poweroff" } else { "reboot" };
+            let _ = std::process::Command::new("sudo").args(["-n", "systemctl", what, "--force"]).spawn();
+            return;
+        }
         let (metodo, args) = match id {
             "bloquear" => ("LockSessions", None),
             "suspender" => ("Suspend", Some(true)),

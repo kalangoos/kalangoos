@@ -127,6 +127,134 @@ pub fn audio(path: &Path) -> Result<Vec<i16>, String> {
     Ok(out)
 }
 
+/// Where speech is in a sound (16 kHz mono): pieces of 2 to 20 s cut at its pauses (300 ms or more under the
+/// threshold), as (start, end) in samples — each one is transcribed alone, so its words get the time it starts at.
+/// The pieces with no voice at all are left out.
+pub fn speech_chunks(samples: &[i16]) -> Vec<(usize, usize)> {
+    const FRAME: usize = RATE / 50; // 20 ms
+    let rms: Vec<f64> = samples.chunks(FRAME).map(|c| (c.iter().map(|x| f64::from(*x) * f64::from(*x)).sum::<f64>() / c.len().max(1) as f64).sqrt()).collect();
+    if rms.is_empty() {
+        return vec![];
+    }
+    // the floor: the quietest tenth of the sound
+    let mut sorted = rms.clone();
+    sorted.sort_by(f64::total_cmp);
+    let floor = sorted[sorted.len() / 10];
+    let threshold = (floor * 3.0).max(300.0);
+    let (min_len, max_len, pause) = (2 * 50, 20 * 50, 15);
+    let mut out = Vec::new();
+    let (mut start, mut quiet, mut voiced) = (0usize, 0usize, false);
+    for (i, r) in rms.iter().enumerate() {
+        if *r < threshold {
+            quiet += 1;
+        } else {
+            quiet = 0;
+            voiced = true;
+        }
+        let len = i + 1 - start;
+        if (quiet >= pause && len >= min_len) || len >= max_len {
+            if voiced {
+                out.push((start * FRAME, ((i + 1) * FRAME).min(samples.len())));
+            }
+            start = i + 1;
+            voiced = false;
+            quiet = 0;
+        }
+    }
+    if voiced && start < rms.len() {
+        match out.last_mut() {
+            // (a short end goes with the piece before it)
+            Some(last) if rms.len() - start < min_len && last.1 == start * FRAME => last.1 = samples.len(),
+            _ => out.push((start * FRAME, samples.len())),
+        }
+    }
+    out
+}
+
+/// A piece of a video (`start` to `end`, in seconds) as a new WebM file — VP8 and Vorbis, which the system's own
+/// GStreamer writes ("Cortar este trecho" in the conversation). The file is decoded from its start and what is
+/// outside the piece dropped (a muxer that has begun cannot take a seek), the piece's times moved to start at 0.
+pub fn cut(path: &Path, start: f64, end: f64, out: &Path) -> Result<(), String> {
+    if !init() {
+        return Err("GStreamer".into());
+    }
+    let pipe = gst::Pipeline::new();
+    let src = gst::ElementFactory::make("uridecodebin").property("uri", uri(path)).build().map_err(|e| e.to_string())?;
+    let mux = gst::ElementFactory::make("webmmux").build().map_err(|e| e.to_string())?;
+    let sink = gst::ElementFactory::make("filesink").property("location", out.to_string_lossy().to_string()).build().map_err(|e| e.to_string())?;
+    pipe.add_many([&src, &mux, &sink]).map_err(|e| e.to_string())?;
+    mux.link(&sink).map_err(|e| e.to_string())?;
+    let (from, to) = ((start.max(0.0) * 1e9) as u64, (end.max(start) * 1e9) as u64);
+    let (pw, mw) = (pipe.downgrade(), mux.downgrade());
+    src.connect_pad_added(move |_, pad| {
+        let (Some(pipe), Some(mux)) = (pw.upgrade(), mw.upgrade()) else { return };
+        let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+        let name = caps.structure(0).map(|s| s.name().to_string()).unwrap_or_default();
+        let chain: &[&str] = if name.starts_with("video/") {
+            &["queue", "videoconvert", "vp8enc"]
+        } else if name.starts_with("audio/") {
+            &["queue", "audioconvert", "audioresample", "vorbisenc"]
+        } else {
+            return;
+        };
+        let els: Vec<gst::Element> = chain.iter().filter_map(|n| gst::ElementFactory::make(n).build().ok()).collect();
+        if els.len() != chain.len() || pipe.add_many(&els).is_err() || gst::Element::link_many(&els).is_err() {
+            return;
+        }
+        if let Some(e) = els.iter().find(|e| e.factory().is_some_and(|f| f.name() == "vp8enc")) {
+            // (as fast as it can, good enough for a clip)
+            e.set_property("deadline", 1i64);
+        }
+        let last = els.last().unwrap();
+        if last.link(&mux).is_err() {
+            return;
+        }
+        for e in &els {
+            let _ = e.sync_state_with_parent();
+        }
+        let Some(sp) = els[0].static_pad("sink") else { return };
+        // only the piece: before it dropped, after it the end of this stream; its times from 0
+        let ended = std::sync::atomic::AtomicBool::new(false);
+        let peer = sp.clone();
+        pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+            let Some(pts) = info.buffer().and_then(|b| b.pts()).map(|t| t.nseconds()) else { return gst::PadProbeReturn::Ok };
+            if pts < from {
+                return gst::PadProbeReturn::Drop;
+            }
+            if pts >= to {
+                if !ended.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    peer.send_event(gst::event::Eos::new());
+                }
+                return gst::PadProbeReturn::Drop;
+            }
+            gst::PadProbeReturn::Ok
+        });
+        pad.set_offset(-(from as i64));
+        let _ = pad.link(&sp);
+    });
+    let bus = pipe.bus().ok_or("bus")?;
+    pipe.set_state(gst::State::Playing).map_err(|e| e.to_string())?;
+    let mut result = Err("tempo esgotado".to_string());
+    for msg in bus.iter_timed(gst::ClockTime::from_seconds(900)) {
+        match msg.view() {
+            gst::MessageView::Eos(_) => {
+                result = Ok(());
+                break;
+            }
+            gst::MessageView::Error(e) => {
+                result = Err(e.error().to_string());
+                break;
+            }
+            _ => {}
+        }
+    }
+    let _ = pipe.set_state(gst::State::Null);
+    if result.is_err() {
+        let _ = std::fs::remove_file(out);
+    }
+    result
+}
+
 /// A WAV file (16-bit mono) of samples.
 pub fn wav(samples: &[i16]) -> Vec<u8> {
     let data_len = (samples.len() * 2) as u32;
@@ -246,6 +374,44 @@ mod tests {
 
     fn solid(t: f64, rgb: [u8; 3]) -> Frame {
         Frame { t, width: 8, height: 8, data: (0..64).flat_map(|_| [rgb[0], rgb[1], rgb[2], 255]).collect() }
+    }
+
+    #[test]
+    fn a_piece_of_a_video_becomes_a_shorter_video() {
+        // (only where GStreamer has the encoders: the system's plugins-good)
+        if !init() || ["vp8enc", "webmmux", "vorbisenc", "videotestsrc"].iter().any(|e| gst::ElementFactory::find(e).is_none()) {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("kalango-cortar-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("fonte.webm");
+        let desc = format!("webmmux name=m ! filesink location={} videotestsrc num-buffers=300 ! video/x-raw,width=160,height=90,framerate=30/1 ! vp8enc deadline=1 ! m. \
+            audiotestsrc num-buffers=430 ! audioconvert ! vorbisenc ! m.", src.display());
+        let p = gst::parse::launch(&desc).unwrap();
+        p.set_state(gst::State::Playing).unwrap();
+        let bus = p.bus().unwrap();
+        let _ = bus.timed_pop_filtered(gst::ClockTime::from_seconds(60), &[gst::MessageType::Eos, gst::MessageType::Error]);
+        let _ = p.set_state(gst::State::Null);
+        let out = dir.join("trecho.webm");
+        cut(&src, 3.0, 6.0, &out).unwrap();
+        let (_, len) = frames(&out, &[], 8, 8).unwrap();
+        assert!((2.5..3.6).contains(&len), "{len}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn speech_is_cut_at_its_pauses() {
+        // 3 s of voice, 0.5 s of silence, 4 s of voice, 2 s of silence
+        let tone = |secs: f64| (0..(secs * RATE as f64) as usize).map(|i| ((i as f64 * 0.05).sin() * 8000.0) as i16).collect::<Vec<_>>();
+        let quiet = |secs: f64| vec![0i16; (secs * RATE as f64) as usize];
+        let s: Vec<i16> = [tone(3.0), quiet(0.5), tone(4.0), quiet(2.0)].concat();
+        let c = speech_chunks(&s);
+        assert_eq!(c.len(), 2, "{c:?}");
+        let secs = |x: usize| x as f64 / RATE as f64;
+        assert!(secs(c[0].0) < 0.01 && (3.2..3.6).contains(&secs(c[0].1)), "{c:?}");
+        assert!((3.2..3.6).contains(&secs(c[1].0)), "{c:?}");
+        // silence alone: nothing to transcribe
+        assert!(speech_chunks(&quiet(5.0)).is_empty());
     }
 
     #[test]

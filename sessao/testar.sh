@@ -618,6 +618,24 @@ for p in $(pgrep -f "[k]alango-agente --json"); do
 done
 sleep 1
 
+# 18b. the Desktop folder's files on the desktop: a folder made there by another app (here, mkdir) shows as an icon at
+#      once (gio FileMonitor), a rename keeps it on the desktop with its new name, and deleting it takes the icon away
+MESA="$X/area/Área de trabalho"
+mkdir -p "$MESA"
+L=$(wc -l < "$T/shell.log")
+mkdir "$MESA/Pasta do teste"
+for _ in $(seq 40); do tail -n +"$L" "$T/shell.log" | grep -aq "debug desktop: ícone Pasta do teste em" && break; sleep 0.25; done
+ok "uma pasta criada na pasta Área de trabalho aparece na área de trabalho" 'tail -n +"$L" "$T/shell.log" | grep -aq "debug desktop: ícone Pasta do teste em"'
+N0=$(tail -n +"$L" "$T/shell.log" | grep -ao "debug desktop: [0-9]* ícones" | tail -1 | awk '{print $3}')
+L=$(wc -l < "$T/shell.log")
+mv "$MESA/Pasta do teste" "$MESA/Pasta renomeada"
+for _ in $(seq 40); do tail -n +"$L" "$T/shell.log" | grep -aq "debug desktop: ícone Pasta renomeada em" && break; sleep 0.25; done
+ok "renomeada por outro app, a pasta continua na área de trabalho com o nome novo" 'tail -n +"$L" "$T/shell.log" | grep -aq "debug desktop: ícone Pasta renomeada em" && ! tail -n +"$L" "$T/shell.log" | grep -aq "debug desktop: ícone Pasta do teste em"'
+L=$(wc -l < "$T/shell.log")
+rmdir "$MESA/Pasta renomeada"
+for _ in $(seq 40); do tail -n +"$L" "$T/shell.log" | grep -aq "debug desktop: $((N0 - 1)) ícones" && break; sleep 0.25; done
+ok "apagada, a pasta sai da área de trabalho" 'tail -n +"$L" "$T/shell.log" | grep -aq "debug desktop: $((N0 - 1)) ícones"'
+
 # 19. Alt+Tab: holding Alt shows the windows (with pictures niri makes for us) and letting go goes to the previous
 #     one; a quick Alt+Tab switches straight away without showing the panel (two windows of its own: the earlier
 #     sections' "Desligar" closes every window)
@@ -876,9 +894,13 @@ sleep 0.3
 HORA=$(date -d "+$(( 10#$(date +%S) > 30 ? 2 : 1 )) min" +%H:%M)
 # (xdotool under the session's ABNT2 layout cannot type ":" or "ç": the time goes as 13h37, which the field accepts)
 xdotool type --window "$W" --delay 30 "Espaco livre"
-xdotool key --window "$W" Tab
+# (each field clicked: a Tab that lands on the frequency's drop-down turns the description's spaces into presses)
+read -r RX RY < <(lugar "rotina pedido")
+[ -n "$RX" ] && xdotool mousemove --window "$W" $((JX + RX)) $((JY + RY)) click 1 && sleep 0.3
 xdotool type --window "$W" --delay 30 "Quanto espaco livre tem no disco"
-xdotool key --window "$W" Tab Tab ctrl+a
+read -r RX RY < <(lugar "rotina hora")
+[ -n "$RX" ] && xdotool mousemove --window "$W" $((JX + RX)) $((JY + RY)) click 1 && sleep 0.3
+xdotool key --window "$W" ctrl+a
 xdotool type --window "$W" --delay 30 "${HORA/:/h}"
 xdotool key --window "$W" Return
 for _ in $(seq 20); do grep -aq "debug rotinas: criada Espaco livre" "$T/shell.log" && break; sleep 0.3; done
@@ -1142,7 +1164,8 @@ sem_avisos 2>/dev/null || sleep 4
 [ -n "$DAX" ] && apontar $((JX + DAX)) $((JY + DAY)) && sleep 0.3 && xdotool click 1
 # (what is written is what the diff showed — the small model may get the edit wrong: that is what the diff is for)
 CD=$(conversa_atual)
-gravou_o_diff() { python3 -c 'import json,sys; ev=[json.loads(l) for l in open(sys.argv[1])]; p=[e for e in ev if e.get("tipo")=="pedido" and e.get("nome")=="arquivos.escrever"]; sys.exit(not p or open(sys.argv[2]).read() != p[-1]["argumentos"]["conteudo"])' "$X/data/kalango/conversas/$CD/eventos.jsonl" "$REPO/notas.txt" 2>/dev/null; }
+# (the one accepted, not the newest: the small model sometimes asks for a second edit right after, still pending)
+gravou_o_diff() { python3 -c 'import json,sys; ev=[json.loads(l) for l in open(sys.argv[1])]; p=[e for e in ev if e.get("tipo")=="pedido" and e.get("nome")=="arquivos.escrever"]; t=open(sys.argv[2]).read(); sys.exit(not any(t == x["argumentos"]["conteudo"] for x in p))' "$X/data/kalango/conversas/$CD/eventos.jsonl" "$REPO/notas.txt" 2>/dev/null; }
 for _ in $(seq 60); do gravou_o_diff && break; sleep 0.5; done
 ok "Chat: Aceitar grava a mudança que o diff mostrou" 'gravou_o_diff && grep -q "\"nome\":\"arquivos.escrever\",\"ok\":true" "$X/data/kalango/conversas/$CD/eventos.jsonl"'
 # code mode: the tabs change (Changes in front) and Changes has the file and the local model's message
@@ -1240,6 +1263,8 @@ for _ in $(seq 150); do grep -aq "debug central: midia tocar final em" "$T/shell
 sleep 0.8
 sem_avisos 2>/dev/null || sleep 4
 read -r JX JY < <(janela_central)
+# (the side bar may show the same conversation and log its own "final" places: the central window's are the last)
+sleep 3
 read -r PX PY < <(lugar "midia tocar final")
 [ -n "$PX" ] && apontar $((JX + PX)) $((JY + PY)) && sleep 0.3 && xdotool click 1
 for _ in $(seq 10); do grep -aq "debug midia: áudio tocando" "$T/shell.log" && break; sleep 0.3; done
@@ -1923,8 +1948,12 @@ for _ in $(seq 20); do grep -q "wpctl set-volume @DEFAULT_AUDIO_SINK@" "$PWLOG" 
 ok "Som: um clique faz do alto-falante a saída padrão, e o controle muda o volume dela" \
   'grep -q "wpctl set-default 61" "$PWLOG" && grep -q "wpctl set-volume @DEFAULT_AUDIO_SINK@ " "$PWLOG" && python3 -c "import json,sys; sys.exit(json.load(open(sys.argv[1]))[\"saida\"]!=\"alsa_output.pci-analog-stereo\")" "$OUT/pipewire.json"'
 sleep 1.5
-clique_cfg "cfg som baixar"
-for _ in $(seq 20); do grep -aq "debug som: baixar_musica_em_chamadas false" "$T/shell.log" && break; sleep 0.3; done
+# (tried again when the click is lost — a loaded machine drops a press now and then; the setting is the check)
+for _ in 1 2 3; do
+  clique_cfg "cfg som baixar"
+  for _ in $(seq 20); do grep -aq "debug som: baixar_musica_em_chamadas false" "$T/shell.log" && break; sleep 0.3; done
+  grep -aq "debug som: baixar_musica_em_chamadas false" "$T/shell.log" && break
+done
 grep -aq "debug som: baixar_musica_em_chamadas false" "$T/shell.log" || { echo "  (baixar: clicado em $(lugar "cfg som baixar") + janela $(janela_cfg))"; tail -8 "$T/shell.log" | grep -av amostra | sed 's/^/    /'; }
 ok "Som: \"Baixar a música durante chamadas\" fica guardado" 'python3 -c "import json,sys; sys.exit(json.load(open(sys.argv[1])).get(\"baixar_musica_em_chamadas\") is not False)" "$X/config/kalango/configuracoes.json"'
 "$N" msg -j windows | python3 -c 'import json,sys; [print(w["id"]) for w in json.load(sys.stdin) if w["app_id"]=="os.kalango.Configuracoes"]' | while read -r id; do "$N" msg action close-window --id "$id"; done
@@ -3613,6 +3642,73 @@ ok "Vídeo: na sessão do KalangoOS os vídeos abrem nele" 'echo "$PADRAO" | gre
 "$N" msg action close-window --id "$(id_app kalango.video)"
 sleep 0.8
 
+# 107. Chat · mídia (design 77183): the video goes with a message — its card has the chapters the Video app found
+#      (kept), "Ir para" opens the video at the chapter chosen and "Cortar este trecho" saves that piece in Vídeos; a
+#      sound with speech is transcribed by the local audio model piece by piece, each line with its time, and a click
+#      on a line plays from it (the line lights up)
+L107=$(wc -l < "$T/shell.log")
+# (a question the model answers without tools: one that asks it to read the file leaves the turn waiting for the
+# person's permission, the list scrolls to that card and the buttons are no longer where they were)
+"$N" msg action spawn -- "$T/kalango-shell" conversar "--anexo=$VID/viagem.webm" "--anexo=$AUD" Nao use ferramentas. Responda so com a palavra recebido
+for _ in $(seq 300); do tail -n +"$L107" "$T/shell.log" | grep -aq "debug central: midia ir final em" && break; sleep 1; done
+echo "  ($(tail -n +"$L107" "$T/shell.log" | grep -a "debug midia: capítulos no cartão" | tail -1 | cut -c1-160))"
+ok "Chat · mídia: o vídeo da mensagem traz os capítulos que o app Vídeo achou" 'tail -n +"$L107" "$T/shell.log" | grep -aq "debug midia: capítulos no cartão (3): 00:00"'
+sleep 0.8
+sem_avisos 2>/dev/null || sleep 4
+read -r JX JY < <(janela_central)
+read -r PX PY < <(tail -n +"$L107" "$T/shell.log" | grep -a "debug central: midia ir \(final \)\?em" | tail -1 | awk '{print $(NF-1), $NF}')
+[ -n "$PX" ] && apontar $((JX + PX)) $((JY + PY)) && sleep 0.3 && xdotool click 1
+for _ in $(seq 40); do tail -n +"$L107" "$T/shell.log" | grep -aq "debug video: posição 8s" && break; sleep 0.3; done
+ok "Chat · mídia: \"Ir para 00:08\" abre o vídeo no capítulo escolhido" 'tail -n +"$L107" "$T/shell.log" | grep -aq "debug midia: ir para 00:08" && tail -n +"$L107" "$T/shell.log" | grep -aq "debug video: posição 8s"'
+"$N" msg action close-window --id "$(id_app kalango.video)" >/dev/null 2>&1
+sleep 0.8
+"$N" msg action focus-window --id "$(id_app os.kalango.agentes)" >/dev/null 2>&1
+sleep 0.5
+read -r JX JY < <(janela_central)
+read -r PX PY < <(tail -n +"$L107" "$T/shell.log" | grep -a "debug central: midia cortar \(final \)\?em" | tail -1 | awk '{print $(NF-1), $NF}')
+[ -n "$PX" ] && apontar $((JX + PX)) $((JY + PY)) && sleep 0.3 && xdotool click 1
+for _ in $(seq 120); do tail -n +"$L107" "$T/shell.log" | grep -aq "debug midia: trecho cortado" && break; sleep 0.5; done
+CORTE=$(tail -n +"$L107" "$T/shell.log" | grep -a "debug midia: trecho cortado" | tail -1 | sed 's/.*cortado \(.*\) ([0-9]* bytes)/\1/')
+echo "  (trecho: $CORTE)"
+ok "Chat · mídia: \"Cortar este trecho\" salva o pedaço do capítulo como um vídeo novo em Vídeos" '[ -s "$CORTE" ] && case "$CORTE" in "$X/area/Vídeos/"*) true;; *) false;; esac'
+read -r PX PY < <(tail -n +"$L107" "$T/shell.log" | grep -a "debug central: midia transcrever \(final \)\?em" | tail -1 | awk '{print $(NF-1), $NF}')
+[ -n "$PX" ] && apontar $((JX + PX)) $((JY + PY)) && sleep 0.3 && xdotool click 1
+for _ in $(seq 180); do tail -n +"$L107" "$T/shell.log" | grep -aq "debug midia: transcrito (" && break; sleep 1; done
+echo "  ($(tail -n +"$L107" "$T/shell.log" | grep -a "debug midia: transcrito (" | tail -1 | cut -c1-200))"
+ok "Chat · mídia: o áudio é transcrito no modelo local, cada linha com a hora em que começa" 'tail -n +"$L107" "$T/shell.log" | grep -a "debug midia: transcrito (" | tail -1 | grep -q "linhas: 0:00 «"'
+sleep 0.8
+read -r PX PY < <(tail -n +"$L107" "$T/shell.log" | grep -a "debug central: midia linha 1 em" | tail -1 | awk '{print $(NF-1), $NF}')
+[ -n "$PX" ] && apontar $((JX + PX)) $((JY + PY)) && sleep 0.3 && xdotool click 1
+for _ in $(seq 20); do tail -n +"$L107" "$T/shell.log" | grep -aq "debug midia: linha 1 acesa" && break; sleep 0.3; done
+ok "Chat · mídia: um clique na linha toca dali e a linha ouvida acende" 'tail -n +"$L107" "$T/shell.log" | grep -aq "debug midia: linha 1 acesa"'
+[ -n "${KALANGO_TESTE_CAPTURA:-}" ] && "$N" msg action screenshot-screen --path "${KALANGO_TESTE_CAPTURA%.png}-chat-midia-capitulos.png" >/dev/null && sleep 0.5
+"$N" msg action close-window --id "$(id_app os.kalango.agentes)" >/dev/null 2>&1
+sleep 0.8
+
+# 108. The canvas with live HTML (design "Chat · canvas com HTML ao vivo", 75452): a page the agent writes (accepted in
+#      its diff) opens on the canvas, drawn by kalangod's Moli; a click on the button outlines it and opens the field
+#      next to it; "Baixar .zip" puts the page in Downloads
+mkdir -p "$X/area/Documentos"
+L108=$(wc -l < "$T/shell.log")
+"$N" msg action spawn -- "$T/kalango-shell" conversar "Crie o arquivo $X/area/Documentos/landing.html com uma pagina HTML simples: um titulo h1, um paragrafo e um link com class cta escrito Baixar. Use CSS dentro do arquivo."
+for _ in $(seq 240); do tail -n +"$L108" "$T/shell.log" | grep -aq "debug central: diff aceitar em" && break; sleep 1; done
+sleep 1.5
+sem_avisos 2>/dev/null || sleep 4
+read -r JX JY < <(janela_central)
+read -r PX PY < <(tail -n +"$L108" "$T/shell.log" | grep -a "debug central: diff aceitar em" | tail -1 | awk '{print $(NF-1), $NF}')
+[ -n "$PX" ] && apontar $((JX + PX)) $((JY + PY)) && sleep 0.3 && xdotool click 1
+for _ in $(seq 60); do tail -n +"$L108" "$T/shell.log" | grep -aq "debug canvas: página desenhada" && break; sleep 1; done
+ok "Canvas: a página que o agente escreveu abre no canvas, desenhada pelo navegador do kalangod" \
+  'tail -n +"$L108" "$T/shell.log" | grep -aq "debug conversas: canvas com .*landing.html" && tail -n +"$L108" "$T/shell.log" | grep -aq "debug canvas: página desenhada (1100 px, versão 1)"'
+[ -n "${KALANGO_TESTE_CAPTURA:-}" ] && sleep 1 && "$N" msg action screenshot-screen --path "${KALANGO_TESTE_CAPTURA%.png}-canvas-html.png" >/dev/null && sleep 0.5
+read -r JX JY < <(janela_central)
+read -r PX PY < <(tail -n +"$L108" "$T/shell.log" | grep -a "debug central: canvas zip em" | tail -1 | awk '{print $(NF-1), $NF}')
+[ -n "$PX" ] && apontar $((JX + PX)) $((JY + PY)) && sleep 0.3 && xdotool click 1
+for _ in $(seq 10); do tail -n +"$L108" "$T/shell.log" | grep -aq "debug canvas: zip" && break; sleep 0.5; done
+ok "Canvas: \"Baixar .zip\" põe a página em Downloads" '[ -s "$X/area/Downloads/landing.zip" ]'
+"$N" msg action close-window --id "$(id_app os.kalango.agentes)" >/dev/null 2>&1
+sleep 0.8
+
 # 86. KalangoOS's own document reader (design "Leitor de documentos"; not GNOME's): a three-page PDF (real text) opens
 #     in a tab with its thumbnails; the local model sums it up with the places worth finding, and a click on one goes
 #     to its page and lights the words in gold; Ctrl+F finds a word in every page; a question is answered with its
@@ -3817,6 +3913,70 @@ for a in kalango.ajuda kalango.agentes kalango.apps; do "$N" msg action close-wi
 # (the stand-in back as it was: later checks list its apps)
 /usr/bin/python3 -c 'import json,sys; p=sys.argv[1]; e=json.load(open(p)); e["instaladas"]=[]; e["atualizacoes"]=["org.exemplo.Fotos"]; json.dump(e, open(p,"w"))' "$OUT/flatpak.json" 2>/dev/null
 sleep 0.8
+# 105. "App não está respondendo" (design 54053): an app whose interface waits for a child of ~200 MB reads none of
+#      the compositor's events; 5 s later its windows go to 60 % and the dialog says what holds it (its process, the
+#      diagnosis, the system's memory) with the least destructive way out first: ending only that child gives the app
+#      back, the dialog closes by itself and the window is whole again
+: > "$OUT/travado.log"
+L105=$(wc -l < "$T/shell.log")
+"$N" msg action spawn -- "$ROOT/sessao/ferramentas/travado-teste.py" "$OUT/travado.log"
+for _ in $(seq 20); do grep -q "travado: esperando o filho" "$OUT/travado.log" && break; sleep 0.5; done
+# events for it to leave unread: its window focused and the pointer moving over it (wherever niri put it), until the
+# shell sees it stuck
+for _ in $(seq 20); do [ -n "$(id_da_janela org.exemplo.Planilha)" ] && break; sleep 0.5; done
+"$N" msg action focus-window --id "$(id_da_janela org.exemplo.Planilha)" >/dev/null 2>&1
+read -r PJX PJY < <(janela_app org.exemplo.Planilha 2>/dev/null)
+for i in $(seq 30); do
+  apontar $((${PJX:-300} + 120 + i % 5 * 20)) $((${PJY:-300} + 120 + i % 3 * 20)); sleep 0.5
+  tail -n +"$L105" "$T/shell.log" | grep -aq "debug travado: janelas de org.exemplo.Planilha a 60%" && break
+done
+# (the diagnosis comes from the local model: it may be starting)
+for _ in $(seq 240); do tail -n +"$L105" "$T/shell.log" | grep -aq "debug travado: diagnóstico «" && break; sleep 0.5; done
+sleep 0.5
+ok "Não está respondendo: o app que não lê os eventos é visto, fica a 60% e o diálogo aponta o processo que o prende" \
+  'tail -n +"$L105" "$T/shell.log" | grep -aq "debug travado: janelas de org.exemplo.Planilha a 60%" && tail -n +"$L105" "$T/shell.log" | grep -aq "debug travado: diálogo «Planilha» · estado S · 2 processos · destaque planilha-calculo" && tail -n +"$L105" "$T/shell.log" | grep -aq "debug travado: diagnóstico «.*planilha-calculo"'
+[ -n "${KALANGO_TESTE_CAPTURA:-}" ] && "$N" msg action screenshot-screen --path "${KALANGO_TESTE_CAPTURA%.png}-travado.png" >/dev/null && sleep 0.5
+sleep 0.5
+sem_avisos 2>/dev/null || sleep 4
+read -r PX PY < <(tail -n +"$L105" "$T/shell.log" | grep -a "debug central: travado primeiro em" | tail -1 | awk '{print $(NF-1), $NF}')
+clicar "$PX" "$PY"
+for i in $(seq 20); do apontar 300 $((420 + i % 3 * 20)); grep -q "travado: respondendo de novo" "$OUT/travado.log" && tail -n +"$L105" "$T/shell.log" | grep -aq "debug travado: voltou a responder" && break; sleep 0.5; done
+ok "Não está respondendo: encerrar só o processo pesado devolve o app, e o diálogo fecha sozinho" \
+  'tail -n +"$L105" "$T/shell.log" | grep -aq "debug travado: encerrar só" && grep -q "travado: respondendo de novo" "$OUT/travado.log" && tail -n +"$L105" "$T/shell.log" | grep -aq "debug travado: diálogo fechado" && tail -n +"$L105" "$T/shell.log" | grep -aq "debug travado: voltou a responder"'
+"$N" msg action close-window --id "$(id_app org.exemplo.planilha)" >/dev/null 2>&1
+sleep 1
+# (whatever happened above, the test's app and its child do not stay)
+for p in $(sed -n 's/^travado: janela aberta (pid \([0-9]*\))$/\1/p; s/^travado: esperando o filho \([0-9]*\)$/\1/p' "$OUT/travado.log"); do kill "$p" 2>/dev/null; done
+sleep 0.5
+# 106. "Janelas lado a lado" (design 39375): three windows snapped as "Foco + pilha" get a divider where they meet;
+#      dragging it resizes the editor and the stack together, and a double click makes the sides equal
+fechar_apps
+abrir_ed
+abrir_calc
+"$N" msg action spawn -- "$T/kalango-shell" terminal
+for _ in $(seq 40); do [ "$("$N" msg -j windows | grep -cE '"os.kalango.(Editor|Calculadora|Terminal)"')" -ge 3 ] && break; sleep 0.5; done
+sleep 1.5
+L106=$(wc -l < "$T/shell.log")
+"$N" msg action snap-window --id "$(id_da_janela os.kalango.Editor)" "0,0,600,1000"
+"$N" msg action snap-window --id "$(id_da_janela os.kalango.Terminal)" "600,0,400,500"
+"$N" msg action snap-window --id "$(id_da_janela os.kalango.Calculadora)" "600,500,400,500"
+for _ in $(seq 20); do tail -n +"$L106" "$T/shell.log" | grep -aq "debug central: divisória 0 em" && break; sleep 0.3; done
+ok "Lado a lado: as janelas encaixadas ganham a divisória onde se encontram" \
+  'tail -n +"$L106" "$T/shell.log" | grep -a "debug divisória: 2 — vertical em" | tail -1 | grep -q "horizontal em"'
+# (a banner from a screenshot above covers the screen's top for a while: wait for it to go)
+sem_avisos 2>/dev/null || sleep 4
+read -r DX DY < <(tail -n +"$L106" "$T/shell.log" | grep -a "debug central: divisória 0 em" | tail -1 | awk '{print $(NF-1), $NF}')
+apontar "$DX" "$DY"; sleep 0.3; xdotool mousedown 1
+for d in 20 60 120 200 250; do xdotool mousemove --window "$W" $((DX - d)) "$DY"; sleep 0.1; done
+sleep 0.3; xdotool mouseup 1; sleep 1.5
+LARG=$("$N" msg -j windows | python3 -c 'import json,sys; print([int(w["layout"]["tile_size"][0]) for w in json.load(sys.stdin) if w["app_id"]=="os.kalango.Editor"][0])')
+echo "  (editor com $LARG px depois de arrastar a divisória de $DX para $((DX - 250)))"
+ok "Lado a lado: arrastar a divisória redimensiona o editor e a pilha juntos" \
+  'tail -n +"$L106" "$T/shell.log" | grep -aq "debug divisória: arrastada de $DX para $((DX - 250)) (3 janelas)" && [ "$LARG" = "$((DX - 250))" ]'
+[ -n "${KALANGO_TESTE_CAPTURA:-}" ] && "$N" msg action screenshot-screen --path "${KALANGO_TESTE_CAPTURA%.png}-lado-a-lado.png" >/dev/null && sleep 0.5
+apontar $((DX - 250)) "$DY"; sleep 0.3; xdotool click --repeat 2 --delay 80 1; sleep 1.5
+ok "Lado a lado: o duplo clique na divisória iguala os lados" 'tail -n +"$L106" "$T/shell.log" | grep -aq "debug divisória: igualada em"'
+fechar_apps
 # 88. KalangoOS's own Calendar (design "Calendário"; not GNOME's): today's events from its own calendar file; the
 #     agent notices the meeting with no agenda and drafts it (saved and opened); a drag on the grid makes an event
 #     (named where it was drawn) and another drag moves it; a request ("marque dentista quinta as 14h") becomes an

@@ -1083,6 +1083,30 @@ fn main() {
         return;
     }
 
+    // "App não está respondendo": what is holding a stuck app, from its processes (JSON on stdin: the app, how long, its
+    // state, its processes with memory and processor), in two short sentences on stdout as {"diagnostico"}
+    if rest.first() == Some(&"travado") {
+        let mut input = String::new();
+        let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input);
+        let model = modelo::Model::ensure(&|s| eprintln!("· {s}")).unwrap_or_else(|e| fail(e));
+        let language = match kalango_i18n::system_locale() {
+            Some(l) if l.starts_with("pt") => "Brazilian Portuguese",
+            _ => "English",
+        };
+        let prompt = format!("An app on a Linux desktop stopped responding (it reads none of its window's events). From the data \
+            only, in {language}, in at most two short sentences (thirty words), say what is most likely holding it — name the \
+            process that stands out (\"destaque\"), with its memory or processor, and say if the rest looks normal. Copy the \
+            numbers as they are; \"parte_da_memoria\" is its share of the whole system's memory: below 10% never say it uses \
+            most of the memory. No generic advice, no quotes around names, nothing that is not in the data. Examples: \"Uma aba do navegador está usando 9,8 GB de memória (31% do sistema) e o app espera por ela. O resto \
+            parece normal.\" \"O processo exportar usa 210 MB e quase nada do processador; o app espera por ele. O resto \
+            parece normal.\"\nThe app, as JSON: {}", input.trim());
+        let schema = serde_json::json!({"type": "object", "properties": {"diagnostico": {"type": "string"}}, "required": ["diagnostico"]});
+        let v = model.complete_json(&prompt, &schema).unwrap_or_else(|e| fail(e));
+        let text: String = v["diagnostico"].as_str().unwrap_or("").trim().chars().filter(|c| !matches!(c, '\'' | '"')).collect();
+        println!("{}", serde_json::json!({"diagnostico": text}));
+        return;
+    }
+
     // "Montar espaço" (the Spaces screen): {"pedido", "apps": [{"id", "nome"}]} on stdin; the space's short name and
     // the installed apps to open in it, as JSON on stdout
     if rest.first() == Some(&"espaco") {

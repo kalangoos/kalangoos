@@ -162,6 +162,9 @@ impl Estado {
             }
             // sizes and places only (frequent while windows move): kept quietly, nobody redraws for them
             "WindowLayoutsChanged" => {
+                // the measure while the focused window is resized (design "Estados de janela")
+                let focused = self.janelas.borrow().values().find(|j| j.focada).map(|j| j.id);
+                crate::resize_measure::layouts_changed(&d["changes"], focused);
                 let mut js = self.janelas.borrow_mut();
                 for c in d["changes"].as_array().into_iter().flatten() {
                     let (Some(id), l) = (c[0].as_u64(), &c[1]) else { continue };

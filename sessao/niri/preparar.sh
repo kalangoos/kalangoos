@@ -19,6 +19,18 @@
 #          das barras de tarefas (wlr) escondem a janela sem fechá-la — ela fica no espaço flutuante, sem ser
 #          desenhada, sem cliques e sem foco, e sai com a animação de fechar; a IPC diz is_minimized; ativá-la (a dock,
 #          Alt+Tab, o próprio app) a traz de volta com a animação de abrir, e para a coluna se veio de uma.
+#   0007 · a lupa (ação SetZoom { factor, mode }): um efeito de framebuffer copia a parte da tela em volta do ponteiro,
+#          ampliada, para a lente (620 × 380, contorno de 2 px no destaque), a tela inteira ou a metade longe do
+#          ponteiro; o ponteiro fica na frente, no tamanho normal; não aparece no bloqueio nem nas capturas de tela.
+#   0008 · controle remoto: com KALANGO_NIRI_CONTROLE (a sessão do KalangoOS define), wlr-screencopy, o ponteiro virtual
+#          e o teclado virtual só aparecem para os processos que esse arquivo permite (por executável, ou por pid + início
+#          do processo). Quem escreve o arquivo é o kalangod (root): o teclado na tela do shell sempre, e o núcleo do
+#          Kalango Remote enquanto durar uma sessão aprovada pela pessoa. Sem a variável, como o niri original.
+#   0009 · Esc Esc: com uma sessão de controle remoto acontecendo (um processo no arquivo de 0008), Esc duas vezes em
+#          meio segundo no teclado deste computador roda KALANGO_ESC_DUPLO (kalango-remote end-sessions), seja qual for
+#          a janela com o foco; o que o outro lado digita vem pelo teclado virtual e não passa por aí.
+#   0010 · sem aceleração na GPU principal (VirtualBox ou VMware sem 3D, um servidor com VGA simples), aceita o
+#          renderizador por software (llvmpipe) nela, em vez de ficar sem tela; as outras GPUs continuam recusando.
 set -eu
 cd "$(dirname "$0")/../.."
 BASE=8ed0da44d974c32c6877d2f4630c314da0717ecb
@@ -29,6 +41,8 @@ fi
 cd "$D"
 git checkout -q "$BASE"
 git checkout -q -- .
+# (os arquivos novos dos patches também saem, para reaplicar do zero; o target/ é ignorado e fica)
+git clean -fdq
 for p in ../../../../sessao/niri/*.patch; do
   git apply "$p"
   echo "aplicado: $(basename "$p")"

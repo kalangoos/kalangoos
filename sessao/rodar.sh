@@ -27,6 +27,11 @@ approval_timeout_s = 120
 total_grant_s = 900
 dry_run = true
 restore_root = "$T/raiz"
+# who may capture the screen and inject input in this niri (patch 0008): the shell types (on-screen keyboard);
+# Kalango Remote (the repository next to this one, or KALANGO_REMOTE_APP) asks for its core after an approval
+controle_remoto = "$T/controle-remoto"
+controle_remoto_sempre = ["$ROOT/target/release/kalango-shell teclado"]
+controle_remoto_apps = ["${KALANGO_REMOTE_APP:-$ROOT/../kalango-remote/target/release/kalango-remote}", "$ROOT/../kalango-remote/target/debug/kalango-remote", "/usr/bin/kalango-remote"]
 [[callers]]
 name = "voce"
 max_level = "total"
@@ -79,6 +84,6 @@ echo "sessão de teste em $T (registros: $T/niri.log, $T/shell.log, $T/aprovacao
 # teste não se misturam com os do seu desktop
 # XMODIFIERS=@im=none: com o IBus via XIM, as letras chegariam ao niri como texto do método de entrada,
 # que ele descarta (os atalhos passam, a digitação não).          
-XMODIFIERS=@im=none XCURSOR_THEME="$CURSOR_TEMA" XCURSOR_SIZE="$CURSOR_TAMANHO" /usr/bin/dbus-run-session -- "$N" --config "$T/niri.kdl" > "$T/niri.log" 2>&1
+KALANGO_ESC_DUPLO="${KALANGO_REMOTE_APP:-$ROOT/../kalango-remote/target/release/kalango-remote} end-sessions" KALANGO_NIRI_CONTROLE="$T/controle-remoto" KALANGO_NIRI_CONTROLE_DONO="$(id -u)" XMODIFIERS=@im=none XCURSOR_THEME="$CURSOR_TEMA" XCURSOR_SIZE="$CURSOR_TAMANHO" /usr/bin/dbus-run-session -- "$N" --config "$T/niri.kdl" > "$T/niri.log" 2>&1
 kill $KP 2>/dev/null
 pkill -f "$T/shell.sh"; pkill -f "$T/aprovacao.sh"

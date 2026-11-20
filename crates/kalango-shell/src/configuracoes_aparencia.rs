@@ -32,7 +32,7 @@ fn cartoes_da_aba(aba: &str) -> &'static [&'static str] {
         "fontes" => &["texto"],
         // (the dock tab's own cards are in its main column; the panel has the windows' and the corners')
         "dock" => &["janelas", "espacos", "cantos_ativos"],
-        _ => &["estilo", "destaque", "cantos", "dock", "transparencia"],
+        _ => &["estilo", "destaque", "cantos", "dock", "transparencia", "arquivos_area"],
     }
 }
 
@@ -48,6 +48,8 @@ pub struct Aparencia {
     dock_tamanho: gtk::Scale,
     dock_tamanho_txt: gtk::Label,
     transparentes: gtk::Switch,
+    /// the Desktop folder's files on the desktop
+    desktop_files: gtk::Switch,
     papeis: gtk::Box,
     texto: gtk::Scale,
     texto_txt: gtk::Label,
@@ -749,6 +751,22 @@ impl Aparencia {
         cw.append(&wt);
         controles.append(&cw);
         cartoes.push(("transparencia", cw.upcast()));
+        // the Desktop folder's files as icons on the desktop
+        let ca = cartao("");
+        let at = caixa(Orientation::Horizontal, 0, "");
+        let l = rotulo_esq(tr("DESKTOP FILES"), "cfg-rotulo");
+        l.set_hexpand(true);
+        l.set_valign(Align::Center);
+        at.append(&l);
+        let desktop_files = interruptor();
+        at.append(&desktop_files);
+        ca.append(&at);
+        let sub = rotulo_esq(tr("The files and folders of the Desktop folder, as icons beside the widgets."), "cfg-sub");
+        sub.set_wrap(true);
+        sub.set_max_width_chars(24);
+        ca.append(&sub);
+        controles.append(&ca);
+        cartoes.push(("arquivos_area", ca.upcast()));
         // the wallpaper (its tab)
         let cp = cartao("");
         cp.append(&rotulo_esq(tr("WALLPAPER"), "cfg-rotulo"));
@@ -775,7 +793,7 @@ impl Aparencia {
         controles.append(&cx);
         cartoes.push(("texto", cx.upcast()));
         let a = Rc::new(Aparencia { moldura: m, previa, cartoes, estilos, destaques, cantos, cantos_txt, dock_estilos, dock_tamanho,
-            dock_tamanho_txt, transparentes, papeis, texto, texto_txt, lendo: Cell::new(false), pendente: RefCell::default(),
+            dock_tamanho_txt, transparentes, desktop_files, papeis, texto, texto_txt, lendo: Cell::new(false), pendente: RefCell::default(),
             previa_cartao: pc, principal_rolagem, dock_grandes, dock_tamanho2, dock_tamanho2_txt, dock_ocultar, dock_recentes, dock_alinhamento, dock_alinhamento_linha });
         a.ligar(c);
         a.aba("tema");
@@ -802,6 +820,13 @@ impl Aparencia {
             let v = s.value().round() as u32;
             a.cantos_txt.set_text(&format!("{} · {v} px", tema::nome_dos_cantos(v)));
             a.depois(move |a| a.mudar(|t| t.cantos = v));
+        });
+        let w = Rc::downgrade(self);
+        self.desktop_files.connect_state_set(move |_, on| {
+            if let Some(a) = w.upgrade() {
+                a.mudar(|t| t.desktop_files = on);
+            }
+            glib::Propagation::Proceed
         });
         let w = Rc::downgrade(self);
         self.transparentes.connect_state_set(move |_, on| {
@@ -889,6 +914,7 @@ impl Aparencia {
             crate::configuracoes::registrar_posicao(c, nome, b.upcast_ref());
         }
         crate::configuracoes::registrar_posicao(c, "cfg aparencia transparentes", self.transparentes.upcast_ref());
+        crate::configuracoes::registrar_posicao(c, "cfg aparencia arquivos area", self.desktop_files.upcast_ref());
     }
 
     pub fn compactar(&self, c: bool) {
@@ -997,6 +1023,8 @@ impl Aparencia {
         self.cantos_txt.set_text(&format!("{} · {} px", tema::nome_dos_cantos(t.cantos), t.cantos));
         self.transparentes.set_active(t.widgets_transparentes);
         self.transparentes.set_state(t.widgets_transparentes);
+        self.desktop_files.set_active(t.desktop_files);
+        self.desktop_files.set_state(t.desktop_files);
         let d = crate::superficies::estilo_dock();
         for (id, b) in &self.dock_estilos {
             if d.estilo == *id {
