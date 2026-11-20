@@ -58,16 +58,59 @@ pub struct Sistema {
     pub agentes: (usize, usize),
 }
 
+/// Runs a command and gives up on it after `limit` (killed and reaped). The status polls run on GLib's shared pool
+/// of blocking threads: one command that never returns (bluetoothctl waiting for a controller that isn't there)
+/// held a thread for good, and once the pool was used up nothing else queued there ran — the lock screen's password
+/// check stayed on "Checking…" (215 of them in a VM after 30 minutes, and the shell at 1 GB).
+pub fn output_timeout(cmd: &mut Command, limit: std::time::Duration) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    // (read while it runs: a big output — pw-dump's whole graph — would fill the pipe and stall the command)
+    let reader = |p: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            if let Some(mut p) = p {
+                let _ = p.read_to_end(&mut v);
+            }
+            v
+        })
+    };
+    let out = reader(child.stdout.take().map(|o| Box::new(o) as Box<dyn Read + Send>));
+    let err = reader(child.stderr.take().map(|e| Box::new(e) as Box<dyn Read + Send>));
+    let end = std::time::Instant::now() + limit;
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if std::time::Instant::now() >= end {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the command did not answer in time"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    // (a child it left behind keeps the pipe open: the readers end with the command's own end of it closed, which
+    // is the usual case; the status commands here start no daemons)
+    let stdout = out.join().unwrap_or_default();
+    let stderr = err.join().unwrap_or_default();
+    Ok(std::process::Output { status, stdout, stderr })
+}
+
+/// How long a status command may take (nmcli, bluetoothctl, wpctl…): they answer in milliseconds when they work.
+pub const STATUS_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn sh(prog: &str, args: &[&str]) -> Option<String> {
     // (NetworkManager's command can be a stand-in: the session test's)
     let prog = match prog {
         "nmcli" => crate::configuracoes_rede::nmcli(),
+        "bluetoothctl" if !crate::configuracoes_bluetooth::adapter_present() => return None,
         "bluetoothctl" => crate::configuracoes_bluetooth::bluetoothctl(),
         "wpctl" => crate::configuracoes_som::comando("wpctl"),
         "powerprofilesctl" => crate::configuracoes_energia::powerprofilesctl(),
         p => p.to_string(),
     };
-    let o = Command::new(prog).args(args).env("LC_ALL", "C").output().ok()?;
+    let o = output_timeout(Command::new(prog).args(args).env("LC_ALL", "C"), STATUS_LIMIT).ok()?;
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
@@ -405,5 +448,33 @@ mod tests {
     fn morning_is_within_a_day() {
         let s = super::until_morning();
         assert!((60..=24 * 3600).contains(&s));
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::output_timeout;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_command_that_never_answers_is_given_up() {
+        let t = Instant::now();
+        let r = output_timeout(Command::new("sleep").arg("30"), Duration::from_millis(300));
+        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert!(t.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn a_big_output_does_not_stall_it() {
+        let o = output_timeout(Command::new("head").args(["-c", "200000", "/dev/zero"]), Duration::from_secs(5)).unwrap();
+        assert_eq!(o.stdout.len(), 200_000);
+    }
+
+    #[test]
+    fn a_quick_command_gives_its_output() {
+        let o = output_timeout(Command::new("echo").arg("oi"), Duration::from_secs(5)).unwrap();
+        assert!(o.status.success());
+        assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "oi");
     }
 }

@@ -36,7 +36,8 @@ pub fn comando(nome: &str) -> String {
 }
 
 fn executar(nome: &str, args: &[&str]) -> Result<String, String> {
-    let o = std::process::Command::new(comando(nome)).args(args).env("LC_ALL", "C").output().map_err(|e| e.to_string())?;
+    let o = crate::sistema::output_timeout(std::process::Command::new(comando(nome)).args(args).env("LC_ALL", "C"), crate::sistema::STATUS_LIMIT)
+        .map_err(|e| e.to_string())?;
     if o.status.success() {
         Ok(String::from_utf8_lossy(&o.stdout).into_owned())
     } else {
@@ -228,6 +229,11 @@ pub fn vigiar_chamadas(shell: &crate::Shell) {
         return;
     }
     let players = shell.midia.clone();
+    // (only with music playing, or lowered and waiting to come back: pw-dump writes the whole PipeWire graph, and
+    // every 3 s with nothing playing it took a third of a CPU in a VM for nothing)
+    if players.volumes_tocando().is_empty() && ABAIXADOS.with(|a| a.borrow().is_empty()) {
+        return;
+    }
     crate::lateral::em_segundo_plano(|| executar("pw-dump", &[]).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).map(|v| ler_pw(&v)), move |l| {
         let Some(l) = l else { return };
         let em_chamada = l.gravando.iter().any(|g| !g.app.is_empty() && l.apps.iter().any(|a| a.app == g.app) && !g.app.to_lowercase().contains("kalango"));

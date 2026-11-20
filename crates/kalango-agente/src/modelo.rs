@@ -15,6 +15,27 @@ use std::time::{Duration, Instant};
 pub const DEFAULT_MODEL: &str = "LFM3-1.7B-Q4_K_M.gguf";
 /// The model's whole context (LFM3 was trained with 256K tokens).
 const CONTEXT: u32 = 262_144;
+
+/// The text model's context for a computer with `mem_total_kib` of RAM: the cache for the whole 256K took ~4 GB
+/// beside the ~1 GB model (a 6 GB VM was left with 100 MB free at the login screen); smaller computers get a context
+/// that fits, bigger ones the whole of it.
+fn text_context(mem_total_kib: u64) -> u32 {
+    const GIB: u64 = 1024 * 1024;
+    match mem_total_kib {
+        m if m <= 8 * GIB => 32_768,
+        m if m <= 16 * GIB => 65_536,
+        m if m <= 32 * GIB => 131_072,
+        _ => CONTEXT,
+    }
+}
+
+/// MemTotal from /proc/meminfo, in KiB.
+fn mem_total_kib() -> u64 {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|m| m.lines().find(|l| l.starts_with("MemTotal:")).and_then(|l| l.split_whitespace().nth(1)?.parse().ok()))
+        .unwrap_or(0)
+}
 /// Voice: LFM3-Audio (speech recognition for the composer's microphone), with its audio projector.
 pub const AUDIO_MODEL: &str = "LFM3-Audio-2B-Q4_K_M.gguf";
 pub const AUDIO_PROJECTOR: &str = "mmproj-LFM3-Audio-2B-Q8_0.gguf";
@@ -253,7 +274,7 @@ impl Model {
             Kind::Vision => tr("starting the vision model…"),
         });
         let (log_name, ctx) = match kind {
-            Kind::Text => ("modelo.log", CONTEXT),
+            Kind::Text => ("modelo.log", text_context(mem_total_kib())),
             Kind::Audio => ("modelo-audio.log", AUDIO_CONTEXT),
             Kind::Vision => ("modelo-visao.log", VISION_CONTEXT),
         };
@@ -476,6 +497,22 @@ pub fn api_name(tool: &str) -> String {
 
 pub fn tool_name(api: &str) -> String {
     api.replace("__", ".")
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::{text_context, CONTEXT};
+
+    #[test]
+    fn the_context_fits_the_memory() {
+        const GIB: u64 = 1024 * 1024;
+        assert_eq!(text_context(6 * GIB), 32_768);
+        assert_eq!(text_context(16 * GIB - 1), 65_536);
+        assert_eq!(text_context(32 * GIB), 131_072);
+        assert_eq!(text_context(64 * GIB), CONTEXT);
+        // (no /proc/meminfo: the smallest)
+        assert_eq!(text_context(0), 32_768);
+    }
 }
 
 #[cfg(test)]
