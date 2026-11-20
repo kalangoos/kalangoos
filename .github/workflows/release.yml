@@ -187,7 +187,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kalangoos/kalango-remote
-          ref: d9ae498942be0608a31248dec822dbbeedeac55a
+          ref: ee7cb9cf7b3f2a4e16ca8beff1bfb48c5a352219
           path: apps/kalango-remote
           # (RustDesk's hbb_common is a submodule)
           submodules: true
@@ -195,7 +195,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kalangoos/kalango-audio
-          ref: 6609815f97b306f12edbbced192707d5aff8366c
+          ref: ae5a1e712c3b8be1f029bd6494db33ff3f258dff
           path: apps/kalango-audio
           persist-credentials: false
       - name: Kalango Remote e Kalango Audio
