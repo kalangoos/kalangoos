@@ -4,6 +4,8 @@
     testar-iso.py <serial.sock> ao-vivo           a sessão ao vivo: niri, shell e o instalador de pé, nada falhando
     testar-iso.py <serial.sock> instalar <plano>  roda o motor do instalador de verdade no disco da VM e desliga
     testar-iso.py <serial.sock> instalado <usuário> <senha>   o sistema instalado: a sessão da conta criada de pé
+    testar-iso.py <serial.sock> iommu <usuário> <senha> <url>  gpu.iommu_ligar/desligar de um kalangod novo (baixado de
+                                                  <url>) e, depois de cada reinício, a linha do kernel (imagem/testar-iommu.sh)
 
 Sai com 0 quando tudo confere; senão diz o que não conferiu (e o que o sistema registrou) e sai com 1.
 """
@@ -123,6 +125,48 @@ def main():
         steps = [l for l in out.splitlines() if l.startswith("{")]
         print("      " + "\n      ".join(l[:160] for l in steps if '"estado":"feito"' in l.replace(" ", "") or "erro" in l or "fim" in l or "modo" in l))
         good &= check(code == 0 and '"fim":true' in out.replace(" ", ""), "o motor instalou no disco da VM", out[-1500:])
+        c.send("sudo poweroff")
+        c.read(5)
+    elif mode == "iommu":
+        user, password, url = sys.argv[3], sys.argv[4], sys.argv[5]
+
+        def start_kalangod():
+            c.login(user, password, 900)
+            c.run(f"python3 -c \"import urllib.request as u; [u.urlretrieve('{url}/'+n, '/tmp/'+n) for n in ('kalangod', 'chamar-kalangod.py')]\" && chmod +x /tmp/kalangod", 120)
+            c.run("sudo -S -p '' true", 30, stdin=password)
+            c.run("sudo rm -rf /tmp/kd; sudo -b sh -c '/tmp/kalangod servir --dev /tmp/kd --sem-terminal > /tmp/kd.log 2>&1'; sleep 3; sudo cat /tmp/kd.log")
+
+        def call(tool):
+            return c.run(f"sudo env KALANGOD=/tmp/kalangod KALANGOD_SOCKET=/tmp/kd/mcp.sock python3 /tmp/chamar-kalangod.py {tool} 2>&1", 300)
+
+        def reboot():
+            c.send("sudo reboot")
+            c.read(20)
+
+        start_kalangod()
+        before, _ = c.run("cat /proc/cmdline")
+        print("      antes: " + before)
+        good &= check("iommu=pt" not in before, "a linha do kernel começa sem o IOMMU", before)
+        out, code = call("gpu.iommu_ligar")
+        good &= check(code == 0, "gpu.iommu_ligar com aprovação", out)
+        cfg, _ = c.run("cat /etc/default/grub.d/95-kalangoos-iommu.cfg; ls /etc/default/grub.d/; sudo grep -c 'iommu=pt' /boot/grub/grub.cfg")
+        good &= check("$GRUB_CMDLINE_LINUX_DEFAULT" in cfg and "90-kalangoos.cfg" in cfg, "o arquivo 95 ao lado do 90 do instalador, e o grub.cfg refeito", cfg)
+        reboot()
+        start_kalangod()
+        on, _ = c.run("cat /proc/cmdline; ls /sys/kernel/iommu_groups | wc -l")
+        print("      depois de ligar: " + on.replace("\n", " · "))
+        vendor = "intel_iommu=on" if "intel" in c.run("grep -m1 vendor_id /proc/cpuinfo")[0].lower() else "amd_iommu=on"
+        good &= check(vendor in on and "iommu=pt" in on and "quiet splash" in on, "depois do reinício a linha do kernel tem o IOMMU (e o que o instalador pôs)", on)
+        out, code = call("gpu.iommu_desligar")
+        good &= check(code == 0, "gpu.iommu_desligar com aprovação", out)
+        gone, _ = c.run("ls /etc/default/grub.d/; sudo grep -c 'iommu=pt' /boot/grub/grub.cfg")
+        good &= check("95-kalangoos-iommu.cfg" not in gone, "o arquivo 95 saiu", gone)
+        reboot()
+        c.login(user, password, 900)
+        off, _ = c.run("cat /proc/cmdline")
+        print("      depois de desligar: " + off)
+        good &= check("iommu=pt" not in off and vendor not in off and "quiet splash" in off, "depois do reinício a linha do kernel volta sem o IOMMU", off)
+        c.run("sudo -S -p '' true", 30, stdin=password)
         c.send("sudo poweroff")
         c.read(5)
     elif mode == "instalado":
