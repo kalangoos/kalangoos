@@ -34,6 +34,32 @@ fn debug() -> bool {
     std::env::var_os("KALANGO_ENTRADA_DEBUG").is_some() || teste()
 }
 
+/// The login screen's sound for a failed login: a wrong password (not another error, as the system being unreachable).
+fn failure_sound(wrong_password: bool) -> Option<&'static str> {
+    wrong_password.then_some("kalango-auth-failed")
+}
+
+/// A sound of the system's theme (the GTK setting the image gives, `kalango`), at the system sounds' usual volume
+/// (nobody's settings here yet). `KALANGO_SONS=nao` (the session test) only logs it.
+fn play_sound(id: &str) {
+    if std::env::var("KALANGO_SONS").as_deref() == Ok("nao") {
+        if debug() {
+            eprintln!("debug som: tocaria {id} (40%)");
+        }
+        return;
+    }
+    let theme = gtk::Settings::default().and_then(|s| s.gtk_sound_theme_name()).map(|s| s.to_string()).filter(|s| !s.is_empty())
+        .unwrap_or_else(|| kalango_sons::OWN_THEME.into());
+    let mut bases = vec![glib::user_data_dir().join("sounds")];
+    bases.extend(glib::system_data_dirs().into_iter().map(|d| d.join("sounds")));
+    if teste() {
+        bases.insert(0, PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/sounds")));
+    }
+    if let Some(p) = kalango_sons::resolve_in(id, &theme, &bases) {
+        kalango_sons::play(id, &p, 0.4, "kalango-entrada");
+    }
+}
+
 fn caixa(o: Orientation, gap: i32, classe: &str) -> gtk::Box {
     let b = gtk::Box::new(o, gap);
     if !classe.is_empty() {
@@ -557,6 +583,9 @@ impl Entrada {
         if debug() {
             eprintln!("debug entrada: {} ({msg})", if senha_errada { "senha incorreta" } else { "erro" });
         }
+        if let Some(id) = failure_sound(senha_errada) {
+            play_sound(id);
+        }
         if let Some(e) = self.erro.borrow().as_ref() {
             e.set_text(if senha_errada { tr("Wrong password. Try again.") } else { msg });
             e.add_css_class("falhou");
@@ -623,4 +652,17 @@ fn main() -> glib::ExitCode {
         *ent.borrow_mut() = Some(e);
     });
     app.run_with_args::<&str>(&[])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wrong_password_sounds_and_other_errors_do_not() {
+        assert_eq!(failure_sound(true), Some("kalango-auth-failed"));
+        assert_eq!(failure_sound(false), None);
+        let p = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/sounds/kalango/stereo/kalango-auth-failed.oga"));
+        assert!(p.is_file());
+    }
 }

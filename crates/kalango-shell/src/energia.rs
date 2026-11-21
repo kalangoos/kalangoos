@@ -509,7 +509,7 @@ impl Energia {
 }
 
 /// PackageKit lives on the system bus; tests use a stand-in on the session bus (KALANGO_PACKAGEKIT_BUS=session).
-fn packagekit_bus() -> gio::BusType {
+pub(crate) fn packagekit_bus() -> gio::BusType {
     if std::env::var("KALANGO_PACKAGEKIT_BUS").as_deref() == Ok("session") { gio::BusType::Session } else { gio::BusType::System }
 }
 

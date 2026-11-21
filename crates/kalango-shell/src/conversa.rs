@@ -1130,6 +1130,7 @@ impl Conversa {
         let turn = self.new_turn();
         *self.turn.borrow_mut() = Some(turn);
         self.set_busy(true);
+        crate::system_sounds::play_agent("kalango-agent-start");
         self.scroll_to_end();
 
         if let Err(e) = self.write_line(text) {

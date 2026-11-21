@@ -792,6 +792,7 @@ fn record_node(node: u32, mutter: Option<String>, crop: Option<(Rect, (f64, f64)
                 eprintln!("debug captura: gravando (nó {node}{}{})", if crop.is_some() { ", área" } else { "" }, if mic { ", com o microfone" } else { "" });
             }
             RECORDING.with(|r| *r.borrow_mut() = Some(Recording { child, mutter, path, started: Instant::now() }));
+            crate::configuracoes_som::tocar("kalango-screen-record-start");
             show_island(true);
             glib::timeout_add_local(Duration::from_millis(500), || {
                 let s = RECORDING.with(|r| r.borrow().as_ref().map(|r| r.started.elapsed().as_secs()));
@@ -812,6 +813,8 @@ fn record_node(node: u32, mutter: Option<String>, crop: Option<(Rect, (f64, f64)
 pub fn stop_recording() {
     let Some(mut r) = RECORDING.with(|x| x.borrow_mut().take()) else { return };
     show_island(false);
+    // (after the stop: the sound is not in the recording)
+    crate::configuracoes_som::tocar("kalango-screen-record-stop");
     crate::voz::signal_child(r.child.id(), 2);
     if let (Some(m), Ok(c)) = (r.mutter.take(), gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)) {
         // (after GStreamer has its last frames)
