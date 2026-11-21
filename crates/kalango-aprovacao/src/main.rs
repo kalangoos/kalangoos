@@ -110,6 +110,11 @@ struct Ui {
     aprovar: Button,
     negar: Button,
     sempre: Button,
+    /// a file that runs at login (design page 30): the warning and the exact diff, shown instead of the command
+    aviso: GBox,
+    aviso_texto: Label,
+    diff: gtk::ScrolledWindow,
+    diff_linhas: GBox,
     atual: RefCell<Option<Value>>,
     camada: bool,
     fundo: Animavel,
@@ -144,6 +149,23 @@ fn command_text(tool: &str, args: &Value) -> String {
     }
     let text = lines.join("\n");
     if text.chars().count() > 900 { format!("{}…", text.chars().take(900).collect::<String>()) } else { text }
+}
+
+/// The warning over a change to files that run at login: a shell's file runs in every terminal, the rest at login.
+fn startup_warning(files: &[String]) -> String {
+    let first = files.first().map(|f| f.rsplit(" → ").next().unwrap_or(f).to_string()).unwrap_or_default();
+    let name = first.rsplit('/').next().unwrap_or(&first);
+    let terminal = [".bashrc", ".bash_aliases", ".zshrc", ".zshenv"].contains(&name) || first.contains("/.config/fish");
+    if terminal {
+        trf("{file} runs every time you open a terminal. What is in it runs as you, without asking again.", &[("file", first)])
+    } else {
+        trf("{file} runs when you log in. What is in it runs as you, without asking again.", &[("file", first)])
+    }
+}
+
+fn capitalized(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 /// Tools of the agents platform (kalangod's tools/plataforma.rs) whose approval shows a preview.
@@ -210,6 +232,33 @@ impl Ui {
         self.risco.set_css_classes(&["risco", if alto { "alto" } else { "medio" }]);
         let agente = agent_name(p["caller"].as_str().unwrap_or("?"));
         let tool = p["tool"].as_str().unwrap_or("");
+        self.aviso.set_visible(false);
+        self.diff.set_visible(false);
+        self.comando.set_visible(true);
+        // a file that runs at login (design page 30): high risk, what it does, the exact diff; never "always"
+        if nivel == "inicio" {
+            self.risco.set_text(tr("High risk"));
+            self.risco.set_css_classes(&["risco", "alto"]);
+            self.frase.set_text(&trf("The agent {agent} wants to change a file that runs when you log in:", &[("agent", agente)]));
+            let st = &p["startup"];
+            let files: Vec<String> = st["arquivos"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_string)).collect();
+            self.aviso_texto.set_text(&if st["outro_nome"] == true {
+                trf("{file} has another name (a hard link) and may be a file that runs when you log in: what is in it may run as you.", &[("file", files.first().cloned().unwrap_or_default())])
+            } else {
+                startup_warning(&files)
+            });
+            self.aviso.set_visible(true);
+            self.comando.set_visible(false);
+            self.sempre.set_visible(false);
+            self.show_diff(&files, st);
+            let what = st["o_que"].as_str().map(capitalized).unwrap_or_default();
+            self.escopo.set_text(&[what, tr("can be undone in the timeline").into(), tr("startup files have no “Always”: each change asks").into()]
+                .into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · "));
+            self.aprovar.set_label(tr("Allow once"));
+            self.sempre.set_visible(false);
+            self.mostrar_comum(p);
+            return;
+        }
         // controlling the screen (design page 29): the window, the time and what the agent may do; never "always"
         if tool == "tela.controlar" {
             self.risco.set_text(tr("Medium risk"));
@@ -260,6 +309,53 @@ impl Ui {
         // (and never for what an agent creates: each agent, flow or connector is seen before it exists)
         self.sempre.set_visible(nivel == "sistema" && !plataforma);
         self.mostrar_comum(p);
+    }
+
+    /// The files, then each line of the diff: kept, removed (coral) or added (teal); a gap as "⋯".
+    fn show_diff(&self, files: &[String], st: &Value) {
+        while let Some(c) = self.diff_linhas.first_child() {
+            self.diff_linhas.remove(&c);
+        }
+        let head = Label::new(Some(&format!("{} · {}", files.join(", "), st["resumo"].as_str().unwrap_or(""))));
+        head.add_css_class("diff-arquivo");
+        head.set_xalign(0.0);
+        head.set_wrap(true);
+        head.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        head.set_max_width_chars(1);
+        head.set_hexpand(true);
+        self.diff_linhas.append(&head);
+        let lines = st["linhas"].as_array().cloned().unwrap_or_default();
+        for l in &lines {
+            let kind = l["t"].as_str().unwrap_or(" ");
+            let row = GBox::new(Orientation::Horizontal, 8);
+            row.add_css_class("diff-linha");
+            let (sign, class) = match kind {
+                "+" => ("+", Some("mais")),
+                "-" => ("-", Some("menos")),
+                "@" => ("⋯", Some("intervalo")),
+                _ => (" ", None),
+            };
+            if let Some(c) = class {
+                row.add_css_class(c);
+            }
+            let a = Label::new(Some(sign));
+            a.add_css_class("diff-sinal");
+            row.append(&a);
+            let b = Label::new(Some(l["l"].as_str().unwrap_or("")));
+            b.add_css_class("diff-texto");
+            b.set_xalign(0.0);
+            b.set_hexpand(true);
+            b.set_wrap(true);
+            b.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+            b.set_max_width_chars(1);
+            row.append(&b);
+            self.diff_linhas.append(&row);
+        }
+        self.diff.set_visible(true);
+        if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() || std::env::var_os("KALANGO_APROVACAO_DEBUG").is_some() {
+            let ch: Vec<String> = lines.iter().filter(|l| l["t"] != " ").map(|l| format!("{}{}", l["t"].as_str().unwrap_or(""), l["l"].as_str().unwrap_or(""))).collect();
+            eprintln!("debug aprovação: arquivo de início {} · {} · sempre visível {}", files.join(", "), ch.join(" | "), self.sempre.get_visible());
+        }
     }
 
     /// What every request shares: the error line, the deadline, the buttons held for a moment, the card's motion.
@@ -421,6 +517,14 @@ mod platform_tests {
 }
 
 fn demo_pedido() -> Value {
+    // (KALANGO_APROVACAO_DEMO=inicio: a change to a file that runs at login, as in design page 30)
+    if std::env::var("KALANGO_APROVACAO_DEMO").as_deref() == Ok("inicio") {
+        let l = |t: &str, x: &str| json!({"t": t, "l": x});
+        return json!({"id": 7, "tool": "arquivos.escrever", "level": "inicio", "caller": "Assistente (/usr/libexec/kalango/agente)",
+            "descricao": "", "efeito": "escreve", "reversivel": true, "no_always": true, "args": {"caminho": "~/.bashrc"}, "reason": "", "criado": now(), "prazo_s": 120,
+            "startup": {"arquivos": ["~/.bashrc"], "o_que": tr("Writes a file"), "resumo": tr("1 line changes"),
+                "linhas": [l(" ", "# aliases do terminal"), l(" ", "alias la='ls -A'"), l("-", "alias ll='ls -l'"), l("+", "alias ll='ls -alF'"), l(" ", "alias l='ls -CF'")]}});
+    }
     json!({"id": 7, "tool": "pacotes.remover", "level": "sistema", "caller": "Organizador (/usr/libexec/kalango/agente)",
         "descricao": tr("Removes packages (apt)"), "efeito": "destrutiva", "reversivel": true,
         "args": {"nomes": ["libreoffice-draw", "hplip"]}, "reason": "mudança no sistema", "criado": now(), "prazo_s": 120})
@@ -496,6 +600,25 @@ fn build(app: &Application) {
     let escopo = label("", "escopo");
     let erro = label("", "erro");
     erro.set_visible(false);
+    // a file that runs at login: the warning, and the diff (scrolls past a few lines)
+    let aviso = GBox::new(Orientation::Horizontal, 8);
+    aviso.add_css_class("aviso-inicio");
+    let escudo_aviso = gtk::Image::from_paintable(Some(&gdk::Texture::from_bytes(&glib::Bytes::from_owned(
+        include_str!("../../kalango-shell/assets/ui/escudo.svg").replace("#8E8F99", if light_theme() { "#7A5611" } else { "#E5C98C" }).into_bytes())).unwrap()));
+    escudo_aviso.set_pixel_size(16);
+    escudo_aviso.set_valign(Align::Start);
+    aviso.append(&escudo_aviso);
+    let aviso_texto = label("", "aviso-texto");
+    aviso.append(&aviso_texto);
+    aviso.set_visible(false);
+    let diff_linhas = GBox::new(Orientation::Vertical, 4);
+    diff_linhas.add_css_class("diff");
+    let diff = gtk::ScrolledWindow::new();
+    diff.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    diff.set_propagate_natural_height(true);
+    diff.set_max_content_height(300);
+    diff.set_child(Some(&diff_linhas));
+    diff.set_visible(false);
 
     let acoes = GBox::new(Orientation::Horizontal, 8);
     acoes.set_homogeneous(true);
@@ -512,7 +635,7 @@ fn build(app: &Application) {
     acoes.append(&sempre);
     let rodape = label("", "prazo");
 
-    for w in [topo.upcast_ref::<gtk::Widget>(), frase.upcast_ref(), comando.upcast_ref(), escopo.upcast_ref(), erro.upcast_ref(), acoes.upcast_ref(), rodape.upcast_ref()] {
+    for w in [topo.upcast_ref::<gtk::Widget>(), frase.upcast_ref(), aviso.upcast_ref(), comando.upcast_ref(), diff.upcast_ref(), escopo.upcast_ref(), erro.upcast_ref(), acoes.upcast_ref(), rodape.upcast_ref()] {
         cartao.append(w);
     }
     fundo.set_hexpand(true);
@@ -527,7 +650,7 @@ fn build(app: &Application) {
     win.set_child(Some(&raiz));
 
     let ui = Rc::new(Ui { win: win.clone(), risco, frase, comando, escopo, rodape, erro, aprovar: aprovar.clone(), negar: negar.clone(), sempre: sempre.clone(),
-        atual: RefCell::new(None), camada: !janela, fundo: fundo_a, cartao: cartao_a, desde: Cell::new(Instant::now()), waiting: Cell::new(0), havia: Cell::new(false) });
+        aviso, aviso_texto, diff, diff_linhas, atual: RefCell::new(None), camada: !janela, fundo: fundo_a, cartao: cartao_a, desde: Cell::new(Instant::now()), waiting: Cell::new(0), havia: Cell::new(false) });
     aprovar.connect_clicked({ let ui = ui.clone(); move |_| ui.decidir(true, false) });
     negar.connect_clicked({ let ui = ui.clone(); move |_| ui.decidir(false, false) });
     sempre.connect_clicked({ let ui = ui.clone(); move |_| ui.decidir(true, true) });

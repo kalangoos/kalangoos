@@ -121,7 +121,7 @@ impl Session {
         if let Some(d) = moli.parent() {
             leitura.push(d.to_path_buf());
         }
-        let landlock = Landlock { leitura, escrita: vec![dir.clone(), PathBuf::from("/dev/null"), PathBuf::from("/dev/shm")], portas: Some(vec![proxy.port]) };
+        let landlock = Landlock { leitura, listar: vec![], escrita: vec![dir.clone(), PathBuf::from("/dev/null"), PathBuf::from("/dev/shm")], portas: Some(vec![proxy.port]) };
         let lim = Limits { memoria_mb: 1024, cpu_pct: 200, processos: 128, tempo_s: LIFETIME_S };
         let programa = moli.display().to_string();
         let prep = limits::prepare_command(Pedido { programa: &programa, argumentos: &args, uid, gid, limites: lim, landlock: Some(landlock), seccomp: None,

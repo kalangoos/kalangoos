@@ -127,7 +127,7 @@ fn record(e: &Evento, timeline: &Timeline) {
     timeline.append(Entry {
         id: 0, time: 0, caller: "kernel (guarda eBPF)".into(), uid: e.uid, pid: e.pid as i32, tool: tool.into(), level: "auditoria".into(),
         args: json!({"inode": e.ino, "dispositivo": e.dev, "cgroup": e.cgroup, "nome": nome}),
-        status: status.into(), summary, inverse: None, restore_point: None, miniatura: None,
+        status: status.into(), summary, inverse: None, restore_point: None, miniatura: None, startup: None,
     });
 }
 

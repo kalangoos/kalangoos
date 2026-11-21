@@ -169,7 +169,7 @@ mod tests {
     use super::*;
 
     fn peer(pid: i32, exe: &str) -> Peer {
-        Peer { pid, uid: 1000, gid: 1000, exe: exe.into(), cgroup: String::new(), home: "/home/x".into(), user: "x".into(), has_tty: false }
+        Peer { pid, uid: 1000, gid: 1000, exe: exe.into(), cgroup: String::new(), home: "/home/x".into(), passwd_home: "/home/x".into(), user: "x".into(), has_tty: false }
     }
 
     #[test]

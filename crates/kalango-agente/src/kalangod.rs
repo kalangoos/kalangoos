@@ -91,6 +91,13 @@ impl Client {
             .into_iter().filter_map(|p| p.as_str().map(str::to_string)).collect()
     }
 
+    /// Whether kalangod will ask the person itself, on the system approval screen, before this call: it changes a
+    /// file that runs at login and the person wants those changes asked (with the diff, never "always"). The
+    /// conversation then does not ask the same question first. An old kalangod without the method: false.
+    pub fn asks_for_startup_file(&mut self, name: &str, args: &Value) -> bool {
+        self.request("kalango/inicio", json!({"ferramenta": name, "argumentos": args})).ok().and_then(|v| v["pede"].as_bool()).unwrap_or(false)
+    }
+
         /// How many approval requests wait for the person.
     pub fn pending(&mut self) -> Result<usize, String> {
         Ok(self.request("kalango/pendentes", json!({}))?.as_array().map(|a| a.len()).unwrap_or(0))

@@ -89,7 +89,9 @@ pub(crate) const INTERNAL: &[&str] = &["arquivos.restaurar", "arquivos.apagar_cr
 /// Domains of the tools and the words of a request that bring them in (pt and en). A small model chooses
 /// better among a dozen tools than among fifty.
 const DOMAINS: &[(&str, &[&str])] = &[
-    ("arquivos", &["arquivo", "pasta", "lixeira", "mover", "renome", "ler", "escrev", "file", "folder", "trash", "move", "rename", "read", "write", "download", "document", "txt", "pdf"]),
+    ("arquivos", &["arquivo", "pasta", "lixeira", "mover", "renome", "ler", "escrev", "file", "folder", "trash", "move", "rename", "read", "write", "download", "document", "txt", "pdf",
+        // the files that run at login (kalangod asks before changing them, with the diff)
+        ".bashrc", ".zshrc", ".profile", ".bash_", "alias", "autostart", "dotfile"]),
     ("rede", &["rede", "wi-fi", "wifi", "internet", "conex", "network", "ip", "dns"]),
     ("firewall", &["firewall", "porta", "port", "ufw", "bloque", "block"]),
     ("discos", &["disco", "partic", "montar", "desmont", "pendrive", "usb", "smart", "espaço", "espaco", "disk", "mount", "space", "storage"]),
@@ -212,6 +214,13 @@ impl Escopo {
         }
         Ok(())
     }
+}
+
+/// Whether the conversation asks the person before a call: when its permission says "ask", except the actions
+/// kalangod asks on the system approval screen itself — acting on the screen (the window and minutes) and changing a
+/// file that runs at login (with the diff and never "always": the conversation's card has an "always").
+fn conversation_asks(perm: Perm, tool: &str, kalangod_asks_startup: bool) -> bool {
+    perm == Perm::Ask && !(tool.starts_with("tela.") && tool != "tela.ver") && !kalangod_asks_startup
 }
 
 /// A permission under an autonomy: "sempre" asks before anything that changes; "autonomo" does not ask (never
@@ -354,7 +363,9 @@ fn folders_note() -> String {
     let area = std::env::var_os("KALANGO_AREA_TESTE").map(std::path::PathBuf::from);
     let config = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| home.join(".config"));
     let dirs = std::fs::read_to_string(config.join("user-dirs.dirs")).unwrap_or_default();
-    let lista = person_folders(&dirs, area.as_deref());
+    let mut lista = person_folders(&dirs, area.as_deref());
+    // (the home too: "my .bashrc" is there)
+    lista.insert(0, "~ (home)".into());
     if lista.is_empty() {
         return String::new();
     }
@@ -832,7 +843,10 @@ impl Agent {
                 }
                 // the person's permission for this tool (read now: a change applies at once); acting on the screen is
                 // asked once, by kalangod, on the system's approval screen (the window, the minutes)
-                if self.perm(tool) == Perm::Ask && !(name.starts_with("tela.") && name != "tela.ver") {
+                // a file that runs at login: kalangod asks on the system approval screen, with the exact diff and no
+                // "always" (the conversation's card has one), so it is not asked here too
+                let kalangod_asks = name.starts_with("arquivos.") && !tool.read_only && self.kalangod.asks_for_startup_file(&name, &call.arguments);
+                if conversation_asks(self.perm(tool), &name, kalangod_asks) {
                     self.next_ask += 1;
                     let id = self.next_ask;
                     on_event(Event::Ask { id, tool: name.clone(), description: description.clone(), args: call.arguments.clone(), level: tool.level.clone() });
@@ -1234,7 +1248,19 @@ mod tests {
         assert!(t.contains("Salvo"));
     }
 
-    use super::{autonomy, multi_step, person_folders, person_relative, select_tools, Escopo};
+    use super::{autonomy, conversation_asks, multi_step, person_folders, person_relative, select_tools, Escopo};
+
+    #[test]
+    fn the_conversation_does_not_ask_what_kalangod_asks() {
+        use crate::permissoes::Perm;
+        assert!(conversation_asks(Perm::Ask, "arquivos.escrever", false));
+        assert!(!conversation_asks(Perm::Ask, "arquivos.escrever", true), "a startup file: only the system screen asks");
+        assert!(!conversation_asks(Perm::Free, "arquivos.escrever", false));
+        assert!(!conversation_asks(Perm::Ask, "tela.clicar", false));
+        assert!(conversation_asks(Perm::Ask, "tela.ver", false));
+        // "never" is refused before this point and stays refused
+        assert!(!conversation_asks(Perm::Never, "arquivos.escrever", true));
+    }
 
     #[test]
     fn a_request_about_virtual_machines_brings_the_vm_tools() {
@@ -1244,6 +1270,17 @@ mod tests {
         assert!(names("ligue a máquina virtual Oficina").contains(&"vm.ligar".to_string()));
         assert!(names("tire um snapshot da Oficina").contains(&"vm.ligar".to_string()));
         assert!(!names("mova o arquivo").contains(&"vm.ligar".to_string()));
+    }
+
+    /// "Add an alias to my .bashrc" names no folder or file word: the file tools still come in (kalangod asks).
+    #[test]
+    fn a_request_about_a_startup_file_brings_the_file_tools() {
+        let t = |n: &str, ro: bool| crate::kalangod::Tool { name: n.into(), description: String::new(), schema: serde_json::json!({}), level: "usuario".into(), read_only: ro, destructive: false };
+        let all = vec![t("arquivos.escrever", false), t("arquivos.ler", true), t("vm.ligar", false)];
+        let names = |r: &str| select_tools(&all, r, false).iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+        for r in ["adicione um alias ll no meu .bashrc", "coloque um export no meu .profile", "abra o firefox no autostart"] {
+            assert!(names(r).contains(&"arquivos.escrever".to_string()), "{r}");
+        }
     }
 
     #[test]

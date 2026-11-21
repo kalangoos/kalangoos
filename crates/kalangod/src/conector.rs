@@ -162,6 +162,18 @@ impl Rodando {
 }
 
 /// Sobe o conector isolado, com stdin e stdout ligados a canos.
+/// A folder a manifest asks to write that is, holds, or leads (through links) to a startup path: (folder, startup path).
+fn startup_write(escrita: &[PathBuf], startup: &[PathBuf]) -> Option<(PathBuf, PathBuf)> {
+    use crate::policy::is_within;
+    escrita.iter().find_map(|p| {
+        let real = crate::sandbox::resolve_existing(p);
+        startup.iter().find(|x| {
+            let rx = crate::sandbox::resolve_existing(x);
+            [p, &real].iter().any(|q| is_within(q, x) || is_within(x, q) || is_within(q, &rx) || is_within(&rx, q))
+        }).map(|x| (p.clone(), x.clone()))
+    })
+}
+
 pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
     let (dados, registro) = paths(&m.nome);
     std::fs::create_dir_all(dados.join("tmp")).map_err(|e| format!("{}: {e}", dados.display()))?;
@@ -194,6 +206,15 @@ pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
             return Err(trf("the manifest asks for access to {path}, which is or contains the protected folder {protected}", &[("path", p.display().to_string()), ("protected", x.display().to_string())]));
         }
     }
+    // a connector that writes where programs start at login would run them as the person, outside its cgroup: only
+    // when the person lets agents change those files (startup.rs)
+    let setting = xdg("XDG_CONFIG_HOME", ".config").join("kalango/agente-permissoes.json");
+    if crate::startup::mode_from_file(&setting) == crate::startup::Mode::Ask {
+        let startup: Vec<PathBuf> = crate::policy::STARTUP_PATHS.iter().chain(crate::policy::PROGRAM_FOLDERS).flat_map(|s| crate::startup::expand_glob(&expand(s))).collect();
+        if let Some((p, x)) = startup_write(&escrita, &startup) {
+            return Err(trf("the manifest asks to write {path}, which is or holds {startup}, a file that runs when you log in", &[("path", p.display().to_string()), ("startup", x.display().to_string())]));
+        }
+    }
     let portas = if !m.rede { Some(vec![]) } else if m.portas.is_empty() { None } else { Some(m.portas.clone()) };
     let mut ambiente: BTreeMap<String, String> = BTreeMap::new();
     ambiente.insert("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into());
@@ -218,7 +239,7 @@ pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
     }
     let prep = limits::prepare_command(Pedido {
         programa: &m.comando, argumentos: &m.argumentos, uid, gid, limites: lim,
-        landlock: Some(Landlock { leitura, escrita, portas }), seccomp: Some(Seccomp { sem_rede: !m.rede }), ambiente: Some(ambiente),
+        landlock: Some(Landlock { leitura, escrita, listar: vec![], portas }), seccomp: Some(Seccomp { sem_rede: !m.rede, sem_unix: false }), ambiente: Some(ambiente),
         pasta: Some(pasta.unwrap_or(dados)), dry_run: false,
     }, "kalango-conector")?;
     let mut cmd = prep.cmd;
@@ -480,4 +501,26 @@ pub fn run(path: &Path) -> Result<i32, String> {
         eprintln!("kalangod conector: {}", trf("'{name}' exited with code {code}", &[("name", m.nome.clone()), ("code", code.to_string())]));
     }
     Ok(code)
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::startup_write;
+
+    /// A manifest's write folder may not be, hold or lead to a startup path (also through a link, also dangling).
+    #[test]
+    fn a_manifest_cannot_write_where_programs_start() {
+        let d = tempfile::tempdir().unwrap();
+        let h = d.path();
+        std::fs::create_dir_all(h.join(".config/autostart")).unwrap();
+        std::fs::create_dir_all(h.join("dados")).unwrap();
+        let startup = vec![h.join(".config/autostart"), h.join(".bashrc")];
+        assert!(startup_write(&[h.join(".config/autostart")], &startup).is_some());
+        assert!(startup_write(&[h.join(".config")], &startup).is_some(), "a folder that holds one");
+        std::os::unix::fs::symlink(h.join(".config/autostart"), h.join("dados/saida")).unwrap();
+        assert!(startup_write(&[h.join("dados/saida")], &startup).is_some(), "a link to autostart");
+        std::os::unix::fs::symlink(h.join(".bashrc"), h.join("dados/rc")).unwrap();
+        assert!(startup_write(&[h.join("dados/rc")], &startup).is_some(), "a link to a file not created yet");
+        assert!(startup_write(&[h.join("dados")], &startup).is_none(), "the connector's own folder");
+    }
 }

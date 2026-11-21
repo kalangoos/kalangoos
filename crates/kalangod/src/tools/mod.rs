@@ -29,6 +29,8 @@ pub struct Ctx<'a> {
     pub lan: Option<(String, u16)>,
     /// the server's state (the screen tools' sessions, approvals and grants); None when undoing
     pub state: Option<&'a crate::server::State>,
+    /// the startup files (`startup.rs`) this very call was approved for: only these are writable by the file helper
+    pub startup_ok: Vec<std::path::PathBuf>,
 }
 
 /// Resultado de uma ferramenta.

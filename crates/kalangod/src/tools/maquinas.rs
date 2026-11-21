@@ -70,7 +70,7 @@ pub fn program(peer: &Peer) -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("KALANGO_VIRTUALDESK").map(PathBuf::from).filter(|p| p.is_file()) {
         return Some(p);
     }
-    let fixed = [PathBuf::from("/usr/bin/kalango-virtualdesk"), PathBuf::from("/usr/local/bin/kalango-virtualdesk"), peer.home.join(".local/bin/kalango-virtualdesk")];
+    let fixed = [PathBuf::from("/usr/bin/kalango-virtualdesk"), PathBuf::from("/usr/local/bin/kalango-virtualdesk"), peer.passwd_home.join(".local/bin/kalango-virtualdesk")];
     if let Some(p) = fixed.into_iter().find(|p| p.is_file()) {
         return Some(p);
     }
@@ -86,10 +86,10 @@ fn virtualdesk(peer: &Peer, args: &[&str]) -> Result<Value, String> {
         use std::os::unix::process::CommandExt;
         // as the person, with only what VirtualDesk needs from the environment: their home (the machines) and their
         // runtime folder (the machines' sockets)
-        cmd.uid(peer.uid).gid(peer.gid).env_clear().env("HOME", &peer.home).env("USER", &peer.user)
+        cmd.uid(peer.uid).gid(peer.gid).env_clear().env("HOME", &peer.passwd_home).env("USER", &peer.user)
             .env("XDG_RUNTIME_DIR", format!("/run/user/{}", peer.uid)).env("PATH", "/usr/local/bin:/usr/bin:/bin").env("LANG", std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into()))
             .env("KALANGO_CHAMADOR", &peer.exe)
-            .current_dir(&peer.home);
+            .current_dir(&peer.passwd_home);
     }
     let o = cmd.output().map_err(|e| e.to_string())?;
     let line = String::from_utf8_lossy(&o.stdout);
@@ -185,9 +185,27 @@ fn copiar(c: &Ctx, a: &Value) -> Result<Out, String> {
     // only the side on this computer is checked; inside the machine it is the machine's business
     if a["sentido"].as_str() == Some("da_maquina") {
         change_arg(c, &mut a, "para")?;
-    } else {
-        path_arg(c, &mut a, "de")?;
+        // VirtualDesk writes into a staging file in the person's protected state (no agent reaches it), and kalangod
+        // puts it in place without following links (`arquivos::put_in_place`): VirtualDesk follows a link on the path
+        let dest = PathBuf::from(s(&a, "para")?);
+        let name = dest.file_name().ok_or_else(|| tr("path without a name").to_string())?.to_os_string();
+        let staging = c.peer.home.join(".local/state/kalango/vm-copias").join(format!("{}-{}", std::process::id(), crate::timeline::now()));
+        std::fs::create_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+        if nix::unistd::geteuid().is_root() {
+            let _ = nix::unistd::chown(&staging, Some(nix::unistd::Uid::from_raw(c.peer.uid)), Some(nix::unistd::Gid::from_raw(c.peer.gid)));
+        }
+        let staged = staging.join(&name);
+        a["para"] = json!(staged);
+        let out = call(c, "vm.copiar_arquivo", &a);
+        let placed = match &out {
+            Ok(_) if staged.exists() => crate::tools::arquivos::put_in_place(c, &staged, &dest).map(|_| ()),
+            _ => Ok(()),
+        };
+        let _ = std::fs::remove_dir_all(&staging);
+        placed?;
+        return out;
     }
+    path_arg(c, &mut a, "de")?;
     call(c, "vm.copiar_arquivo", &a)
 }
 fn executar(c: &Ctx, a: &Value) -> Result<Out, String> {

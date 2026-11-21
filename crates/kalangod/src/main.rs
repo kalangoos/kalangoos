@@ -28,6 +28,7 @@ mod sandbox;
 mod screen;
 mod screen_control;
 mod server;
+mod startup;
 mod timeline;
 mod tools;
 

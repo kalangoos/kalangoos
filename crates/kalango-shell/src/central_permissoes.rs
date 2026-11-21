@@ -4,8 +4,12 @@
 //! right, where the agent may act (its folders, and the ones kalangod protects from every agent), its limits (tokens a
 //! day, hours, model), and pausing it or revoking everything.
 //!
+//! Below the table, for all agents (design page 30, "Permissões · arquivos que rodam ao entrar"): whether a change
+//! to a file that runs at login (.bashrc, autostart…) asks every time or goes ahead; kalangod reads that choice and
+//! enforces it.
+//!
 //! Everything comes from and goes to the agent runtime (`kalango-agente perfil`, `coluna`, `pasta`, `limite`,
-//! `pausar`, `revogar`), which is what enforces it.
+//! `pausar`, `revogar`, `inicio`), which is what enforces it.
 
 use crate::conversa::ui_icon;
 use crate::superficies::{caixa, estrela, rotulo};
@@ -31,6 +35,12 @@ const COLUNAS: &[(&str, &str, &str)] = &[
 ];
 
 const HORARIOS: [&str; 3] = ["sempre", "dia", "noite"];
+
+/// The choices for files that run at login: (value, title, what it means).
+const INICIO: [(&str, &str, &str); 2] = [
+    ("perguntar", n_("Ask every time (recommended)"), n_("each change shows what changes and asks for your approval")),
+    ("livre", n_("Allow automatically"), n_("the change happens and goes to the timeline, with undo")),
+];
 
 /// A column unused for this long is suggested to become "never".
 const DIAS_SEM_USO: u64 = 30;
@@ -73,14 +83,15 @@ struct Medidas {
     painel: i32,
     escala: i32,
     escolha: i32,
+    inicio: i32,
 }
 
 impl Medidas {
     fn para(largura_janela: i32) -> Medidas {
         if largura_janela >= 1480 {
-            Medidas { agente: 254, celula: 92, painel: 474, escala: 200, escolha: 170 }
+            Medidas { agente: 254, celula: 92, painel: 474, escala: 200, escolha: 170, inicio: 280 }
         } else {
-            Medidas { agente: 196, celula: 74, painel: 340, escala: 130, escolha: 150 }
+            Medidas { agente: 196, celula: 74, painel: 340, escala: 130, escolha: 150, inicio: 240 }
         }
     }
 }
@@ -101,6 +112,10 @@ pub struct Permissoes {
     horario: gtk::DropDown,
     pausar_glifo: gtk::Box,
     pausar_rotulo: gtk::Label,
+    /// files that run at login: the chosen value's title and each choice's check mark
+    inicio_valor: gtk::Label,
+    inicio_marcas: Vec<gtk::Image>,
+    inicio_opcoes: Vec<gtk::Button>,
     perfil: RefCell<Value>,
     /// filling the controls: their signals are not the person's changes
     preenchendo: Cell<bool>,
@@ -172,7 +187,89 @@ impl Permissoes {
         sugestao.append(&mudar);
         sugestao.set_visible(false);
         corpo.append(&sugestao);
-        raiz.append(&corpo);
+        // ---- for all agents: files that run at login
+        let todos = rotulo(tr("ALL AGENTS"), "central-painel-secao");
+        todos.set_xalign(0.0);
+        todos.set_margin_top(22);
+        todos.set_margin_bottom(12);
+        corpo.append(&todos);
+        let cartao = caixa(Orientation::Vertical, 0, "central-cartao");
+        let linha = caixa(Orientation::Horizontal, 12, "central-pasta");
+        linha.append(&ui_icon("terminal", "#8E8F99", 16));
+        let col = caixa(Orientation::Vertical, 0, "");
+        col.set_hexpand(true);
+        col.set_valign(Align::Center);
+        let t = rotulo(tr("Files that run at login"), "central-pasta-nome");
+        t.set_xalign(0.0);
+        col.append(&t);
+        let d = rotulo(tr(".bashrc, .profile, autostart, user services…"), "central-agente-sub");
+        d.set_xalign(0.0);
+        d.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        d.set_max_width_chars(1);
+        col.append(&d);
+        linha.append(&col);
+        // the selector: a button with the chosen value, and a list of both with what each means
+        let inicio_valor = rotulo("", "");
+        inicio_valor.set_xalign(0.0);
+        inicio_valor.set_hexpand(true);
+        inicio_valor.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        let bc = caixa(Orientation::Horizontal, 8, "");
+        bc.append(&inicio_valor);
+        bc.append(&ui_icon("chevron-baixo", "#8E8F99", 16));
+        let seletor = gtk::MenuButton::new();
+        seletor.add_css_class("central-inicio");
+        seletor.set_child(Some(&bc));
+        seletor.set_valign(Align::Center);
+        seletor.set_size_request(m.inicio, -1);
+        let lista = caixa(Orientation::Vertical, 2, "");
+        let (mut inicio_marcas, mut inicio_opcoes) = (Vec::new(), Vec::new());
+        for (_, titulo, explica) in INICIO {
+            let b = gtk::Button::new();
+            b.add_css_class("central-inicio-opcao");
+            let r = caixa(Orientation::Horizontal, 10, "");
+            let marca = ui_icon("check", "#A5A1E2", 16);
+            marca.set_valign(Align::Start);
+            r.append(&marca);
+            let c = caixa(Orientation::Vertical, 2, "");
+            let a = rotulo(tr(titulo), "central-pasta-nome");
+            a.set_xalign(0.0);
+            c.append(&a);
+            let e = rotulo(tr(explica), "central-agente-sub");
+            e.set_xalign(0.0);
+            e.set_wrap(true);
+            e.set_max_width_chars(30);
+            c.append(&e);
+            r.append(&c);
+            b.set_child(Some(&r));
+            lista.append(&b);
+            inicio_marcas.push(marca);
+            inicio_opcoes.push(b);
+        }
+        let pop = gtk::Popover::new();
+        pop.add_css_class("central-inicio-lista");
+        pop.set_has_arrow(false);
+        pop.set_position(gtk::PositionType::Bottom);
+        pop.set_child(Some(&lista));
+        seletor.set_popover(Some(&pop));
+        linha.append(&seletor);
+        cartao.append(&linha);
+        corpo.append(&cartao);
+        let ajuda = rotulo(tr("These files run every time you log in or open a terminal: what an agent puts in them runs as you. With “Ask every time”, each change an agent makes shows exactly what changes and asks for your approval, without “Always”. The commands agents run do not touch these files: to change one, the agent uses the file tools, which ask. With “Allow automatically”, the change happens, goes to the timeline with undo, and you get a notice."), "central-legenda");
+        ajuda.set_xalign(0.0);
+        ajuda.set_wrap(true);
+        ajuda.set_max_width_chars(1);
+        ajuda.set_hexpand(true);
+        ajuda.set_margin_top(12);
+        ajuda.add_css_class("central-inicio-ajuda");
+        corpo.append(&ajuda);
+        // (the table, the legend and the setting for all agents scroll: on a short screen the page must not make the
+        // window taller than the output — a window keeps its biggest size, and the pages after it would be cut)
+        let rolagem = gtk::ScrolledWindow::new();
+        rolagem.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        rolagem.set_hexpand(true);
+        rolagem.set_vexpand(true);
+        rolagem.set_child(Some(&corpo));
+        raiz.append(&rolagem);
 
         // ---- the chosen agent, on the right
         let painel = caixa(Orientation::Vertical, 0, "central-painel");
@@ -270,9 +367,19 @@ impl Permissoes {
 
         let p = Rc::new(Permissoes {
             raiz, medidas: m, shell: Rc::downgrade(shell), linhas, sugestao, sugestao_texto, sugestao_coluna: RefCell::default(), agente, pastas,
-            tokens, tokens_v, tokens_espera: RefCell::default(), horario, pausar_glifo, pausar_rotulo, perfil: RefCell::new(Value::Null),
+            tokens, tokens_v, tokens_espera: RefCell::default(), horario, pausar_glifo, pausar_rotulo, inicio_valor, inicio_marcas, inicio_opcoes, perfil: RefCell::new(Value::Null),
             preenchendo: Cell::new(false),
         });
+        for (i, b) in p.inicio_opcoes.iter().enumerate() {
+            let (w, pop) = (Rc::downgrade(&p), pop.clone());
+            b.connect_clicked(move |_| {
+                pop.popdown();
+                if let Some(p) = w.upgrade() {
+                    p.executar(vec!["inicio".into(), INICIO[i].0.into()]);
+                }
+            });
+        }
+        crate::central::posicao_debug("arquivos de início", seletor.upcast_ref());
         let w = Rc::downgrade(&p);
         mudar.connect_clicked(move |_| {
             if let Some(p) = w.upgrade() {
@@ -551,13 +658,20 @@ impl Permissoes {
         }
         self.pausar_glifo.append(&ui_icon(if pausado { "tocar" } else { "pausa" }, "#E2E2E6", 14));
         self.pausar_rotulo.set_text(if pausado { tr("Resume agent") } else { tr("Pause agent") });
+        let inicio = v["arquivos_de_inicio"].as_str().unwrap_or("perguntar");
+        let i = INICIO.iter().position(|(x, _, _)| *x == inicio).unwrap_or(0);
+        self.inicio_valor.set_text(tr(INICIO[i].1));
+        for (j, (m, b)) in self.inicio_marcas.iter().zip(&self.inicio_opcoes).enumerate() {
+            m.set_opacity(if j == i { 1.0 } else { 0.0 });
+            if j == i { b.add_css_class("escolhida") } else { b.remove_css_class("escolhida") }
+        }
         if let Some(b) = self.pausar_glifo.parent().and_then(|c| c.parent()) {
             crate::central::posicao_debug("pausar", &b);
         }
         self.preenchendo.set(false);
         if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
             let valores: Vec<String> = colunas.iter().map(|c| format!("{}={}", c["id"].as_str().unwrap_or(""), c["valor"].as_str().unwrap_or(""))).collect();
-            eprintln!("debug central: permissões ({}; {} pastas; pausado {pausado})", valores.join(" "), v["pastas"].as_array().map(|a| a.len()).unwrap_or(0));
+            eprintln!("debug central: permissões ({}; {} pastas; pausado {pausado}; arquivos de início {inicio})", valores.join(" "), v["pastas"].as_array().map(|a| a.len()).unwrap_or(0));
         }
     }
 }

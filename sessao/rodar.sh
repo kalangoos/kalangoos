@@ -38,6 +38,10 @@ controle_remoto_sempre = ["$ROOT/target/$PERFIL/kalango-shell teclado"]
 controle_remoto_apps = ["${KALANGO_REMOTE_APP:-$ROOT/../kalango-remote/target/release/kalango-remote}", "$ROOT/../kalango-remote/target/debug/kalango-remote", "/usr/bin/kalango-remote"]
 # an agent operating the screen (tela.*): the helper kalangod starts for a session, as the person
 tela_auxiliar = "$ROOT/target/$PERFIL/kalango-tela"
+# files that run at login (agents' changes to them ask): the person's choice is in this session's settings; with a
+# test area, it is every caller's home ("~"), so "~/.bashrc" is the area's and never the real home's
+startup_setting = "${XDG_CONFIG_HOME:-~/.config}/kalango/agente-permissoes.json"
+$( [ -n "${KALANGO_AREA_TESTE:-}" ] && printf 'home = "%s"' "$KALANGO_AREA_TESTE" )
 [[callers]]
 name = "voce"
 max_level = "total"

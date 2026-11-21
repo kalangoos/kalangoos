@@ -299,7 +299,7 @@ pub fn ensure_session(st: &State, peer: &Peer, rule: &CallerRule, name: &str, ar
         caller: format!("{} ({})", agent, peer.exe), uid, pid: peer.pid,
         reason: trf("control the screen: {w} for {n} min", &[("w", title.clone()), ("n", minutes.to_string())]),
         descricao: tr("Use the mouse and the keyboard on the screen, as you would").into(), efeito: "escreve".into(), reversivel: false,
-        criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None,
+        criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: None, no_always: false,
     };
     match ask(pedido) {
         Outcome::Approved => {}
