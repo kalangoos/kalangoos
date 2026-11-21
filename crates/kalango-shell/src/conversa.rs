@@ -975,6 +975,12 @@ impl Conversa {
         });
         acoes.add_action(&aplicar);
         c.raiz.insert_action_group("conversa", Some(&acoes));
+        // (where its blocks keep their files: a LaTeX document's PDF)
+        let w = Rc::downgrade(&c);
+        let pasta: crate::latex_pdf::FolderFn = Rc::new(move || w.upgrade().map(|c| conversas_dir().join(c.id())).unwrap_or_else(conversas_dir));
+        unsafe {
+            c.raiz.set_data("conversa_pasta", pasta);
+        }
 
         let w = Rc::downgrade(&c);
         c.texto.buffer().connect_changed(move |b| {

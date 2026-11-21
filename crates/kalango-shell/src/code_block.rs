@@ -7,7 +7,8 @@ use crate::conversa::ui_icon;
 use crate::superficies::{caixa, rotulo};
 use gtk::prelude::*;
 use gtk::{glib, Align, Orientation};
-use kalango_i18n::tr;
+use crate::syntax::Kind;
+use kalango_i18n::{tr, trf};
 use std::time::Duration;
 
 /// A fence's info line: "rust", "rust src/ui/mod.rs", "rust:src/ui/mod.rs", "src/ui/mod.rs" → (language, file).
@@ -43,6 +44,8 @@ pub fn language_name(lang: &str) -> String {
         "html" => "HTML",
         "css" => "CSS",
         "md" | "markdown" => "Markdown",
+        "latex" | "tex" => "LaTeX",
+        "mermaid" => "Mermaid",
         "sql" => "SQL",
         "diff" | "patch" => "Diff",
         "" | "text" | "txt" | "plain" => return tr("Code").to_string(),
@@ -51,159 +54,186 @@ pub fn language_name(lang: &str) -> String {
     .to_string()
 }
 
-const RUST: &[&str] = &["as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while"];
-const PYTHON: &[&str] = &["and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "False", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "self", "True", "try", "while", "with", "yield"];
-const JS: &[&str] = &["async", "await", "break", "case", "catch", "class", "const", "continue", "default", "delete", "do", "else", "export", "extends", "false", "finally", "for", "from", "function", "if", "import", "in", "instanceof", "let", "new", "null", "of", "return", "static", "super", "switch", "this", "throw", "true", "try", "typeof", "undefined", "var", "void", "while", "yield", "interface", "type", "enum", "implements"];
-const SHELL: &[&str] = &["if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac", "in", "function", "return", "local", "export", "sudo", "cd", "echo", "exit"];
-const C: &[&str] = &["auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum", "extern", "float", "for", "goto", "if", "int", "long", "register", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void", "volatile", "while", "class", "public", "private", "namespace", "template", "true", "false", "nullptr", "include", "define", "func", "package", "import", "var", "type", "go", "defer", "chan", "map", "range"];
-
-/// What a token is (its colour).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Kind {
-    Plain,
-    Keyword,
-    Text,
-    Number,
-    Function,
-    Type,
-    Comment,
-}
-
-fn keywords(lang: &str) -> &'static [&'static str] {
-    match lang {
-        "rs" | "rust" => RUST,
-        "py" | "python" => PYTHON,
-        "js" | "javascript" | "mjs" | "ts" | "typescript" => JS,
-        "sh" | "bash" | "shell" | "zsh" | "console" => SHELL,
-        "c" | "h" | "cpp" | "c++" | "cc" | "hpp" | "go" => C,
-        _ => &[],
-    }
-}
-
-fn line_comment(lang: &str) -> &'static [&'static str] {
-    match lang {
-        "py" | "python" | "sh" | "bash" | "shell" | "zsh" | "console" | "toml" | "yaml" | "yml" => &["#"],
-        "sql" => &["--"],
-        "" | "text" | "txt" | "plain" | "md" | "markdown" | "json" => &[],
-        _ => &["//"],
-    }
-}
-
-/// A line split into coloured tokens (no state across lines: a block comment colours its own line only).
-pub fn tokens(lang: &str, line: &str) -> Vec<(Kind, String)> {
-    let kw = keywords(lang);
-    let comments = line_comment(lang);
-    let rust = matches!(lang, "rs" | "rust");
-    let chars: Vec<char> = line.chars().collect();
-    let mut out: Vec<(Kind, String)> = Vec::new();
-    let push = |out: &mut Vec<(Kind, String)>, k: Kind, s: String| {
-        if let Some(last) = out.last_mut().filter(|l| l.0 == k) {
-            last.1.push_str(&s);
-        } else {
-            out.push((k, s));
-        }
+/// The colour of a kind of code (design "Chat · diagramas, documentos e realce de sintaxe"), in the theme shown now.
+/// (Keywords take the accent for text: in the light theme it is a darker green than the accent's, and the two share
+/// their dark value, so the light one is read by name.)
+fn colour(k: Kind) -> String {
+    let name = match k {
+        Kind::Plain => "k_text2",
+        Kind::Keyword => "k_accent_text",
+        Kind::Text => "k_teal",
+        Kind::Number | Kind::Attribute => "k_gold",
+        Kind::Function => "k_blue",
+        Kind::Type | Kind::Tag => "k_coral",
+        Kind::Comment => "k_dim",
+        Kind::Punct => "k_muted",
     };
-    let mut i = 0;
-    while i < chars.len() {
-        let rest: String = chars[i..].iter().collect();
-        if comments.iter().any(|c| rest.starts_with(c)) || rest.starts_with("/*") && !comments.is_empty() {
-            push(&mut out, Kind::Comment, rest);
-            break;
-        }
-        let c = chars[i];
-        // strings ("…", and '…' where it is not a Rust lifetime or char of one letter)
-        if c == '"' || c == '`' || (c == '\'' && !rust) {
-            let mut j = i + 1;
-            while j < chars.len() && chars[j] != c {
-                if chars[j] == '\\' {
-                    j += 1;
-                }
-                j += 1;
-            }
-            let end = (j + 1).min(chars.len());
-            push(&mut out, Kind::Text, chars[i..end].iter().collect());
-            i = end;
-            continue;
-        }
-        if c.is_ascii_digit() {
-            let mut j = i;
-            while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '.' || chars[j] == '_') {
-                j += 1;
-            }
-            push(&mut out, Kind::Number, chars[i..j].iter().collect());
-            i = j;
-            continue;
-        }
-        if c.is_alphabetic() || c == '_' {
-            let mut j = i;
-            while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
-                j += 1;
-            }
-            let word: String = chars[i..j].iter().collect();
-            // (a macro's "!" goes with its name)
-            let macro_bang = rust && chars.get(j) == Some(&'!') && chars.get(j + 1) != Some(&'=');
-            let next = chars[j..].iter().find(|c| !c.is_whitespace()).copied();
-            let kind = if kw.contains(&word.as_str()) {
-                Kind::Keyword
-            } else if macro_bang {
-                Kind::Type
-            } else if next == Some('(') && !kw.is_empty() {
-                Kind::Function
-            } else if word.chars().next().is_some_and(char::is_uppercase) && !kw.is_empty() {
-                Kind::Type
-            } else {
-                Kind::Plain
-            };
-            push(&mut out, kind, word);
-            i = j;
-            if macro_bang {
-                push(&mut out, Kind::Type, "!".into());
-                i += 1;
-            }
-            continue;
-        }
-        push(&mut out, Kind::Plain, c.to_string());
-        i += 1;
+    if crate::tema::e_claro() {
+        crate::tema::token_claro(name).unwrap_or_else(|| crate::tema::token(name))
+    } else {
+        crate::tema::token(name)
     }
-    out
 }
 
-/// The block's lines as Pango markup, in the theme's colours now.
+/// The block's lines as Pango markup, in the theme's colours now (crate::syntax; a language it does not know: plain).
 fn markup(lang: &str, code: &str) -> String {
-    let cor = |k: Kind| -> String {
-        crate::tema::token(match k {
-            Kind::Plain => "k_text2",
-            Kind::Keyword => "k_accent",
-            Kind::Text => "k_teal",
-            Kind::Number => "k_gold",
-            Kind::Function => "k_blue",
-            Kind::Type => "k_coral",
-            Kind::Comment => "k_dim",
-        })
-    };
-    code.lines()
-        .map(|l| {
-            tokens(lang, l)
-                .into_iter()
-                .map(|(k, s)| format!("<span foreground=\"{}\">{}</span>", cor(k), glib::markup_escape_text(&s)))
-                .collect::<String>()
-        })
+    crate::syntax::highlight(crate::syntax::lang(lang), code)
+        .into_iter()
+        .map(|pieces| pieces.into_iter().map(|(k, s)| format!("<span foreground=\"{}\">{}</span>", colour(k), glib::markup_escape_text(&s))).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The folder of the conversation a widget is in (its root's "conversa_pasta"), or the documents' own when it is in
+/// none (a preview).
+fn conversation_folder(w: &gtk::Widget) -> std::path::PathBuf {
+    let mut x = Some(w.clone());
+    while let Some(c) = x {
+        if let Some(f) = unsafe { c.data::<crate::latex_pdf::FolderFn>("conversa_pasta") } {
+            return unsafe { f.as_ref() }();
+        }
+        x = c.parent();
+    }
+    glib::user_data_dir().join("kalango").join("latex")
+}
+
+/// "Gerar PDF": the document next to the conversation, compiled in the background with its progress (the first
+/// run downloads LaTeX packages), then opened in Documentos.
+fn generate_pdf(b: &gtk::Button, e: &crate::latex_pdf::Engine, tex: &str, aviso: &gtk::Box, div: &gtk::Box, estado: &gtk::Label) {
+    use crate::latex_pdf::{Failure, Progress};
+    let debug = std::env::var_os("KALANGO_SHELL_DEBUG").is_some();
+    let dir = conversation_folder(b.upcast_ref());
+    let _ = std::fs::create_dir_all(&dir);
+    let file = crate::latex_pdf::free_name(&dir);
+    if let Err(err) = std::fs::write(&file, tex) {
+        estado.set_text(&trf("The PDF could not be made: {reason}", &[("reason", err.to_string())]));
+        aviso.set_visible(true);
+        div.set_visible(true);
+        return;
+    }
+    b.set_sensitive(false);
+    b.set_label(tr("Generating PDF…"));
+    estado.set_text(tr("Starting LaTeX…"));
+    aviso.set_visible(true);
+    div.set_visible(true);
+    if debug {
+        eprintln!("debug latex: gerando {} com {}", file.display(), e.path.display());
+    }
+    enum Msg {
+        Step(Progress),
+        Done(Result<std::path::PathBuf, Failure>),
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<Msg>();
+    let mut cmd = crate::latex_pdf::command(e, &file, &dir);
+    let pdf = file.with_extension("pdf");
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let child = cmd.spawn();
+        let mut child = match child {
+            Ok(c) => c,
+            Err(err) => {
+                let _ = tx.send(Msg::Done(Err(Failure::Document(err.to_string()))));
+                return;
+            }
+        };
+        // (the notes come on stderr, TeX's own log on stdout: both read, each in its thread)
+        let out = child.stdout.take().map(|o| {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let mut all = String::new();
+                for l in std::io::BufReader::new(o).lines().map_while(Result::ok) {
+                    if let Some(p) = crate::latex_pdf::progress(&l) {
+                        let _ = tx.send(Msg::Step(p));
+                    }
+                    all.push_str(&l);
+                    all.push('\n');
+                }
+                all
+            })
+        });
+        let mut all = String::new();
+        if let Some(err) = child.stderr.take() {
+            for l in std::io::BufReader::new(err).lines().map_while(Result::ok) {
+                if let Some(p) = crate::latex_pdf::progress(&l) {
+                    let _ = tx.send(Msg::Step(p));
+                }
+                all.push_str(&l);
+                all.push('\n');
+            }
+        }
+        if let Some(o) = out.and_then(|h| h.join().ok()) {
+            all.push_str(&o);
+        }
+        let ok = child.wait().is_ok_and(|s| s.success()) && pdf.is_file();
+        let _ = tx.send(Msg::Done(if ok { Ok(pdf) } else { Err(crate::latex_pdf::failure(&all)) }));
+    });
+    let (b, estado) = (b.clone(), estado.clone());
+    glib::timeout_add_local(Duration::from_millis(150), move || {
+        for m in rx.try_iter() {
+            match m {
+                Msg::Step(Progress::Downloading(name)) => {
+                    estado.set_text(&trf("Downloading LaTeX packages (only the first time)… {name}", &[("name", name.clone())]));
+                    if debug {
+                        eprintln!("debug latex: baixando {name}");
+                    }
+                }
+                Msg::Step(Progress::Typesetting) => estado.set_text(tr("Typesetting the document…")),
+                Msg::Step(Progress::Writing) => estado.set_text(tr("Writing the PDF…")),
+                Msg::Done(r) => {
+                    b.set_sensitive(true);
+                    b.set_label(tr("Generate PDF"));
+                    match r {
+                        Ok(pdf) => {
+                            estado.set_text(&trf("PDF ready: {file}", &[("file", pdf.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())]));
+                            if debug {
+                                eprintln!("debug latex: pdf em {}", pdf.display());
+                            }
+                            // (KalangoOS's reader, in this same shell)
+                            if let Ok(exe) = std::env::current_exe() {
+                                let _ = std::process::Command::new(exe).arg("documentos").arg(&pdf).spawn();
+                            }
+                        }
+                        Err(Failure::Offline) => {
+                            estado.set_text(tr("No connection: the first time, LaTeX downloads the packages the document uses. Connect and try again."));
+                            if debug {
+                                eprintln!("debug latex: falhou sem rede");
+                            }
+                        }
+                        Err(Failure::Document(why)) => {
+                            estado.set_text(&if why.is_empty() { tr("LaTeX could not make the PDF.").to_string() } else { trf("LaTeX could not make the PDF: {reason}", &[("reason", why.clone())]) });
+                            if debug {
+                                eprintln!("debug latex: falhou: {why}");
+                            }
+                        }
+                    }
+                    return glib::ControlFlow::Break;
+                }
+            }
+        }
+        glib::ControlFlow::Continue
+    });
 }
 
 /// The block. `apply`: show "Aplicar no arquivo" (the agent's conversation, a block that names its file); the
 /// button runs the widget action `conversa.aplicar` with `{"file", "lang", "code"}`.
 pub fn new(info: &str, code: &str, apply: bool) -> gtk::Widget {
+    with_detail(info, code, apply, None, None, false)
+}
+
+/// A code block with a word beside its language ("LaTeX documento") and a note over its lines (a diagram that could
+/// not be drawn: "Não consegui desenhar este diagrama. O código está abaixo.").
+/// `pdf`: a LaTeX document, with "Gerar PDF" when a TeX engine is installed.
+pub fn with_detail(info: &str, code: &str, apply: bool, detail: Option<&str>, note: Option<&str>, pdf: bool) -> gtk::Widget {
     let (lang, file) = parse_info(info);
+    let side = file.clone().or_else(|| detail.map(str::to_string));
     let bloco = caixa(Orientation::Vertical, 0, "md-bloco");
     let cab = caixa(Orientation::Horizontal, 8, "md-bloco-cab");
     cab.append(&ui_icon("codigo", "#8E8F99", 16));
     let t = rotulo(&language_name(&lang), "md-bloco-titulo");
     cab.append(&t);
-    if let Some(f) = &file {
+    if let Some(f) = &side {
         let d = rotulo(f, "md-bloco-detalhe");
-        d.set_ellipsize(gtk::pango::EllipsizeMode::Start);
+        d.set_ellipsize(if file.is_some() { gtk::pango::EllipsizeMode::Start } else { gtk::pango::EllipsizeMode::End });
         d.set_max_width_chars(1);
         d.set_hexpand(true);
         d.set_xalign(0.0);
@@ -253,6 +283,54 @@ pub fn new(info: &str, code: &str, apply: bool) -> gtk::Widget {
     }
     bloco.append(&cab);
     bloco.append(&caixa(Orientation::Horizontal, 0, "md-bloco-div"));
+    if let Some(e) = pdf.then(crate::latex_pdf::engine).flatten() {
+        let gerar = gtk::Button::with_label(tr("Generate PDF"));
+        gerar.add_css_class("md-bloco-aplicar");
+        gerar.set_valign(Align::Center);
+        cab.append(&gerar);
+        crate::central::posicao_debug("latex gerar pdf", gerar.upcast_ref());
+        // the progress and what went wrong: a line over the code, as a diagram's note
+        let aviso = caixa(Orientation::Horizontal, 8, "md-bloco-aviso");
+        let ponto = caixa(Orientation::Horizontal, 0, "md-bloco-aviso-ponto");
+        ponto.set_valign(Align::Center);
+        ponto.set_hexpand(false);
+        aviso.append(&ponto);
+        let estado = rotulo("", "md-bloco-aviso-texto");
+        estado.set_wrap(true);
+        estado.set_xalign(0.0);
+        estado.set_hexpand(true);
+        aviso.append(&estado);
+        let div = caixa(Orientation::Horizontal, 0, "md-bloco-div");
+        aviso.set_visible(false);
+        div.set_visible(false);
+        let tex = code.to_string();
+        let (av, dv) = (aviso.clone(), div.clone());
+        gerar.connect_clicked(move |b| generate_pdf(b, &e, &tex, &av, &dv, &estado));
+        // (inserted after the header's divider below)
+        unsafe {
+            bloco.set_data("aviso_pdf", (aviso, div));
+        }
+    }
+    if let Some(n) = note {
+        let aviso = caixa(Orientation::Horizontal, 8, "md-bloco-aviso");
+        let ponto = caixa(Orientation::Horizontal, 0, "md-bloco-aviso-ponto");
+        ponto.set_valign(Align::Center);
+        ponto.set_hexpand(false);
+        aviso.append(&ponto);
+        let l = rotulo(n, "md-bloco-aviso-texto");
+        l.set_wrap(true);
+        l.set_xalign(0.0);
+        aviso.append(&l);
+        bloco.append(&aviso);
+        bloco.append(&caixa(Orientation::Horizontal, 0, "md-bloco-div"));
+        if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+            eprintln!("debug codigo: aviso \"{n}\"");
+        }
+    }
+    if let Some((aviso, div)) = unsafe { bloco.steal_data::<(gtk::Box, gtk::Box)>("aviso_pdf") } {
+        bloco.append(&aviso);
+        bloco.append(&div);
+    }
     let corpo = caixa(Orientation::Horizontal, 14, "md-bloco-corpo");
     let n = code.lines().count().max(1);
     let nums = rotulo(&(1..=n).map(|i| i.to_string()).collect::<Vec<_>>().join("\n"), "md-bloco-num");
@@ -301,27 +379,11 @@ mod tests {
     }
 
     #[test]
-    fn rust_tokens() {
-        let t = tokens("rust", "    let t = x11_get_server_time(&xwin); // hora");
-        assert!(t.contains(&(Kind::Keyword, "let".into())));
-        assert!(t.contains(&(Kind::Function, "x11_get_server_time".into())));
-        assert_eq!(t.last().unwrap(), &(Kind::Comment, "// hora".into()));
-        let t = tokens("rust", "println!(\"oi {}\", 42);");
-        assert!(t.contains(&(Kind::Type, "println!".into())));
-        assert!(t.contains(&(Kind::Text, "\"oi {}\"".into())));
-        assert!(t.contains(&(Kind::Number, "42".into())));
-        // a lifetime is not a string
-        let t = tokens("rust", "fn f<'a>(x: &'a str) -> Option<String>");
-        assert!(!t.iter().any(|(k, _)| *k == Kind::Text));
-        assert!(t.contains(&(Kind::Type, "Option".into())));
+    fn markup_is_escaped_and_coloured() {
+        let m = markup("html", "<a href=\"x\">&</a>");
+        assert!(m.contains("&lt;") && m.contains("&amp;") && !m.contains("<a "));
+        // a language it does not know: one plain span a line
+        assert_eq!(markup("brainfuck", "+.\n-.").matches("<span").count(), 2);
     }
 
-    #[test]
-    fn shell_and_plain() {
-        let t = tokens("bash", "cargo test --release # tudo");
-        assert_eq!(t.last().unwrap(), &(Kind::Comment, "# tudo".into()));
-        // plain text: nothing coloured as code
-        let t = tokens("", "Olá, mundo (de novo)");
-        assert!(t.iter().all(|(k, _)| *k == Kind::Plain || *k == Kind::Number));
-    }
 }

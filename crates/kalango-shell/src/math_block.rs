@@ -397,6 +397,26 @@ pub fn equations(src: &str) -> Vec<String> {
         .filter(|l| !l.is_empty() && !l.starts_with("\\begin") && !l.starts_with("\\end")).collect()
 }
 
+/// A LaTeX source that is a document or text, not maths: its structure (\documentclass, \begin{document},
+/// \section, lists and their \item, verbatim, tables), text-mode commands (\textbf, \emph…) or comments ("%").
+/// Shown as code ("LaTeX · documento"): typeset as equations it came out as lines of italic letters, spaces eaten.
+pub fn is_document(src: &str) -> bool {
+    const TEXT_MODE: [&str; 24] = [
+        "\\documentclass", "\\usepackage", "\\begin{document}", "\\maketitle", "\\title{", "\\author{", "\\chapter",
+        "\\section", "\\subsection", "\\paragraph{", "\\item", "\\begin{itemize}", "\\begin{enumerate}",
+        "\\begin{description}", "\\begin{verbatim}", "\\begin{tabular}", "\\begin{figure}", "\\begin{table}",
+        "\\textbf{", "\\textit{", "\\emph{", "\\underline{", "\\footnote{", "\\includegraphics",
+    ];
+    if TEXT_MODE.iter().any(|c| src.contains(c)) {
+        return true;
+    }
+    // a comment: "%" not escaped ("\\%" is a percent sign)
+    src.lines().any(|l| {
+        let b = l.as_bytes();
+        (0..b.len()).any(|i| b[i] == b'%' && (i == 0 || b[i - 1] != b'\\'))
+    })
+}
+
 /// The block for a LaTeX source (None when there is no equation in it).
 pub fn new(src: &str) -> Option<gtk::Widget> {
     let eqs = equations(src);
@@ -474,6 +494,20 @@ mod tests {
         assert!(n.iter().any(|x| matches!(x, Atom::Sqrt(_))));
         assert!(n.contains(&Atom::Sym("±".into(), false)));
         assert_eq!(flat(den), "2a");
+    }
+
+    #[test]
+    fn documents_are_not_equations() {
+        // the user's answer of 2026-11-21: a whole document in a ```latex block came out as 18 "equations"
+        let doc = "% ---------------------------------------------------\n% Arquivo: forum.tex\n% ---------------------------------------------------\n\\documentclass{article}\n\\usepackage[utf8]{inputenc}\n\\begin{document}\n\\section*{Fórum}\n\\begin{enumerate}\n  \\item \\textbf{Post 1:} Olá a todos! Como está o ambiente de LaTeX?\n  \\item \\textit{Resposta:} Tudo bem, estou começando a aprender.\n  \\item \\textbf{Post 3:} Dúvidas sobre pacotes? Me diga!\n\\end{enumerate}\n\\end{document}";
+        assert!(is_document(doc));
+        // a fragment with only text-mode commands or a comment is text too
+        assert!(is_document("\\item \\textbf{Post 2:} Queria criar um diagrama"));
+        assert!(is_document("% Arquivo: forum.html (texto simples)"));
+        // maths stays maths, a percent sign too
+        assert!(!is_document(r"x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}"));
+        assert!(!is_document(r"\begin{align} a &= b \\ c &= d \end{align}"));
+        assert!(!is_document(r"\text{taxa} = 5\%"));
     }
 
     #[test]

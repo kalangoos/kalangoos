@@ -2464,7 +2464,17 @@ impl Conversas {
         // a page the agent wrote (HTML): open on the canvas, the side bar folded to its rail (design "Chat · canvas com
         // HTML ao vivo")
         let pagina = tocados.iter().rev().map(|p| std::path::PathBuf::from(p.strip_prefix("~/").map(|r| glib::home_dir().join(r).display().to_string()).unwrap_or_else(|| p.clone())))
-            .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm")) && p.is_file());
+            .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm")) && p.is_file())
+            // (or a page written in the answer itself, a ```html block: kept beside the conversation to be drawn)
+            .or_else(|| {
+                let md = ev.iter().rev().find(|e| e["tipo"] == "resposta").and_then(|e| e["texto"].as_str())?;
+                let page = crate::html_canvas::page_in_answer(md)?;
+                let p = conversa::conversas_dir().join(&id).join("pagina.html");
+                if std::fs::read_to_string(&p).ok().as_deref() != Some(page.as_str()) {
+                    std::fs::write(&p, &page).ok()?;
+                }
+                Some(p)
+            });
         if let Some(p) = pagina {
             let nova = self.html.file().as_deref() != Some(p.as_path());
             self.html.open(&p);

@@ -4,6 +4,7 @@
 
 use gtk::prelude::*;
 use gtk::{glib, Align, Orientation};
+use kalango_i18n::tr;
 
 fn escape(s: &str) -> String {
     glib::markup_escape_text(s).to_string()
@@ -274,7 +275,45 @@ fn display_math_delims(md: &str) -> String {
 fn render_with(md: &str, apply: bool) -> gtk::Box {
     let out = gtk::Box::new(Orientation::Vertical, 8);
     out.add_css_class("md");
-    let md = &display_math_delims(md);
+    // the fenced blocks first (crate::fences: nested fences, "~~~", an answer still arriving), the text between them
+    for piece in crate::fences::split(md) {
+        match piece {
+            crate::fences::Piece::Text(lines) => render_text(&out, &display_math_delims(&lines.join("\n")), apply),
+            crate::fences::Piece::Code(f) => out.append(&fenced_block(&f, apply)),
+        }
+    }
+    out
+}
+
+/// A fenced block: a mermaid diagram, a formula, a plan or code. A block still open (the answer is arriving) is code
+/// until its closing fence comes.
+fn fenced_block(f: &crate::fences::Fence, apply: bool) -> gtk::Widget {
+    let (lang, _) = crate::code_block::parse_info(&f.info);
+    if !f.closed {
+        return crate::code_block::new(&f.info, &f.body, apply);
+    }
+    let src = &f.body;
+    let drawn = match lang.as_str() {
+        // a mermaid diagram is drawn (the source one click away); one it cannot draw is its code, with a note
+        "mermaid" => crate::diagram_block::new(src, apply)
+            .or_else(|| Some(crate::code_block::with_detail(&f.info, src, apply, None, Some(tr("I couldn't draw this diagram. The code is below.")), false))),
+        // (a whole document, or text with \item and \textbf, is source: typeset as equations it lost its spaces)
+        "latex" | "tex" if crate::math_block::is_document(src) => Some(crate::code_block::with_detail(&f.info, src, apply, Some(tr("document")), None, true)),
+        "latex" | "tex" | "math" | "katex" => crate::math_block::new(src),
+        // a markdown block that only wraps another block (the model showing "its" diagram) is that block
+        "markdown" | "md" => match crate::fences::only_block(src) {
+            Some(inner) => Some(fenced_block(&inner, apply)),
+            // (a model's plan fenced as markdown — a task list and nothing else — is the plan, not its source)
+            None if apply && is_task_list(src) => Some(render_with(src, apply).upcast()),
+            None => None,
+        },
+        _ => None,
+    };
+    drawn.unwrap_or_else(|| crate::code_block::new(&f.info, src, apply))
+}
+
+/// Markdown without fenced blocks: paragraphs, headings, lists, tables, display maths.
+fn render_text(out: &gtk::Box, md: &str, apply: bool) {
     let lines: Vec<&str> = md.lines().collect();
     let mut paragraph: Vec<&str> = Vec::new();
     let flush = |p: &mut Vec<&str>, out: &gtk::Box| {
@@ -288,29 +327,9 @@ fn render_with(md: &str, apply: bool) -> gtk::Box {
     while i < lines.len() {
         let l = lines[i];
         let t = l.trim();
-        if t.starts_with("```") {
-            flush(&mut paragraph, &out);
-            let info = t.trim_start_matches('`').to_string();
-            let mut code = Vec::new();
-            i += 1;
-            while i < lines.len() && !lines[i].trim().starts_with("```") {
-                code.push(lines[i]);
-                i += 1;
-            }
-            let src = code.join("\n");
-            // a mermaid flowchart is drawn (the source one click away); anything else is a code block
-            let lang = info.trim().to_lowercase();
-            let desenho = match lang.as_str() {
-                "mermaid" => crate::diagram_block::new(&src, apply),
-                "latex" | "tex" | "math" | "katex" => crate::math_block::new(&src),
-                // (a model's plan fenced as markdown — a task list and nothing else — is the plan, not its source)
-                "markdown" | "md" if apply && is_task_list(&src) => Some(render_with(&src, apply).upcast()),
-                _ => None,
-            };
-            out.append(&desenho.unwrap_or_else(|| crate::code_block::new(&info, &src, apply)));
-        } else if t.starts_with("$$") {
+        if t.starts_with("$$") {
             // display math: "$$…$$" on one line, or lines between two "$$"
-            flush(&mut paragraph, &out);
+            flush(&mut paragraph, out);
             let mut src = vec![t.trim_start_matches("$$").to_string()];
             let mut fechou = t.len() > 2 && t.ends_with("$$");
             while !fechou && i + 1 < lines.len() {
@@ -346,7 +365,7 @@ fn render_with(md: &str, apply: bool) -> gtk::Box {
                 out.append(&w);
             }
         } else if is_table_line(l) {
-            flush(&mut paragraph, &out);
+            flush(&mut paragraph, out);
             let mut rows = Vec::new();
             while i < lines.len() && is_table_line(lines[i]) {
                 if !is_separator(lines[i]) {
@@ -357,7 +376,7 @@ fn render_with(md: &str, apply: bool) -> gtk::Box {
             out.append(&table(&rows));
             continue;
         } else if let Some(h) = t.strip_prefix("#") {
-            flush(&mut paragraph, &out);
+            flush(&mut paragraph, out);
             // (its level as a class too: a document's title and its sections look different)
             let nivel = 1 + h.chars().take_while(|c| *c == '#').count();
             let l = label(&inline(h.trim_start_matches('#').trim()), "md-h");
@@ -365,7 +384,7 @@ fn render_with(md: &str, apply: bool) -> gtk::Box {
             out.append(&l);
         } else if apply && task_item(l).is_some() && lines.get(i + 1).is_some_and(|n| task_item(n).is_some()) {
             // the agent's plan: its steps in one block, how many are done (design "Chat · código (plano, diff e terminal)")
-            flush(&mut paragraph, &out);
+            flush(&mut paragraph, out);
             let mut passos = Vec::new();
             while i < lines.len() {
                 let Some((feito, texto)) = task_item(lines[i]) else { break };
@@ -376,7 +395,7 @@ fn render_with(md: &str, apply: bool) -> gtk::Box {
             continue;
         } else if let Some((feito, texto)) = task_item(l) {
             // a task: its box, ticked or not (a ticked one's text is quieter)
-            flush(&mut paragraph, &out);
+            flush(&mut paragraph, out);
             let row = gtk::Box::new(Orientation::Horizontal, 8);
             let caixa = gtk::Box::new(Orientation::Horizontal, 0);
             caixa.add_css_class("md-tarefa-caixa");
@@ -402,10 +421,10 @@ fn render_with(md: &str, apply: bool) -> gtk::Box {
             row.append(&body);
             out.append(&row);
         } else if t == "---" || t == "***" {
-            flush(&mut paragraph, &out);
+            flush(&mut paragraph, out);
             out.append(&gtk::Separator::new(Orientation::Horizontal));
         } else if let Some((mark, rest)) = list_item(l) {
-            flush(&mut paragraph, &out);
+            flush(&mut paragraph, out);
             let row = gtk::Box::new(Orientation::Horizontal, 8);
             let indent = (l.len() - l.trim_start().len()) as i32;
             row.set_margin_start(4 + indent * 6);
@@ -418,14 +437,13 @@ fn render_with(md: &str, apply: bool) -> gtk::Box {
             row.append(&body);
             out.append(&row);
         } else if t.is_empty() {
-            flush(&mut paragraph, &out);
+            flush(&mut paragraph, out);
         } else {
             paragraph.push(l);
         }
         i += 1;
     }
-    flush(&mut paragraph, &out);
-    out
+    flush(&mut paragraph, out);
 }
 
 /// The agent's plan: "Plano · 3 de 5 passos" with its bar; the steps ticked, the next one marked, the rest quieter.
