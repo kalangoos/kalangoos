@@ -1,7 +1,7 @@
 //! Nível usuário: arquivos do chamador, nas pastas permitidas, com Landlock e com desfazer.
 
 use super::*;
-use crate::sandbox::{check_path, run_as_user};
+use crate::sandbox::{check_change_path, check_path, run_as_user};
 use std::path::PathBuf;
 
 pub fn tools() -> Vec<Tool> {
@@ -25,6 +25,11 @@ pub fn tools() -> Vec<Tool> {
 
 fn path(c: &Ctx, raw: &str) -> Result<PathBuf, String> {
     check_path(raw, c.peer, &c.rule.allowed_paths, &c.cfg.protected_paths)
+}
+
+/// A path the tool changes: also not a folder that holds a protected one (see `check_change_path`).
+fn change_path(c: &Ctx, raw: &str) -> Result<PathBuf, String> {
+    check_change_path(raw, c.peer, &c.rule.allowed_paths, &c.cfg.protected_paths)
 }
 
 fn roots(c: &Ctx) -> Vec<PathBuf> {
@@ -53,7 +58,7 @@ fn backup_dir(c: &Ctx) -> PathBuf {
 }
 
 fn write(c: &Ctx, a: &Value) -> Result<Out, String> {
-    let p = path(c, s(a, "caminho")?)?;
+    let p = change_path(c, s(a, "caminho")?)?;
     // binary content (a voice recording, a picture) only creates new files: the undo of a replaced binary would need
     // a binary backup, and "undo" of a new file is deleting it
     let op = match a.get("conteudo_base64").and_then(Value::as_str) {
@@ -84,10 +89,10 @@ fn rand_tag() -> u64 {
 }
 
 fn mv(c: &Ctx, a: &Value) -> Result<Out, String> {
-    let (from, to) = (path(c, s(a, "de")?)?, path(c, s(a, "para")?)?);
+    let (from, to) = (change_path(c, s(a, "de")?)?, change_path(c, s(a, "para")?)?);
     // as `mv` does: an existing folder as the destination means into it, with the same name
     let to = match from.file_name() {
-        Some(nome) if to.is_dir() && !to.starts_with(&from) => path(c, &to.join(nome).to_string_lossy())?,
+        Some(nome) if to.is_dir() && !to.starts_with(&from) => change_path(c, &to.join(nome).to_string_lossy())?,
         _ => to,
     };
     run_as_user(c.peer, &roots(c), json!({"tipo": "mover", "de": from, "para": to}))?;
@@ -96,7 +101,7 @@ fn mv(c: &Ctx, a: &Value) -> Result<Out, String> {
 }
 
 fn trash(c: &Ctx, a: &Value) -> Result<Out, String> {
-    let p = path(c, s(a, "caminho")?)?;
+    let p = change_path(c, s(a, "caminho")?)?;
     let lixeira = c.cfg.trash_dir.clone().unwrap_or_else(|| c.peer.home.join(".local/share/Trash"));
     // a person who never used the trash has no folder yet: Landlock only grants existing paths, so it is created
     // first, as the person, with access limited to its nearest existing parent and to nothing but that mkdir
@@ -123,7 +128,7 @@ fn iso_now() -> String {
 }
 
 fn restore(c: &Ctx, a: &Value) -> Result<Out, String> {
-    let p = path(c, s(a, "caminho")?)?;
+    let p = change_path(c, s(a, "caminho")?)?;
     let copy = PathBuf::from(s(a, "copia")?);
     if !crate::policy::is_within(&copy, &backup_dir(c)) {
         return Err(kalango_i18n::tr("copy outside this user's copies folder").into());
@@ -134,7 +139,7 @@ fn restore(c: &Ctx, a: &Value) -> Result<Out, String> {
 }
 
 fn delete_created(c: &Ctx, a: &Value) -> Result<Out, String> {
-    let p = path(c, s(a, "caminho")?)?;
+    let p = change_path(c, s(a, "caminho")?)?;
     run_as_user(c.peer, &roots(c), json!({"tipo": "apagar_arquivo", "caminho": p}))?;
     Ok(Out::read(json!({"caminho": p}), trf("deleted {path}", &[("path", p.display().to_string())])))
 }

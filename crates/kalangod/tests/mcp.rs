@@ -238,6 +238,41 @@ fn pastas_protegidas_e_fora_da_area() {
     assert!(!nomes.contains(&"segredo"), "{nomes:?}");
 }
 
+/// The routes around a protected folder with the file tools, through the real kalangod: a link to a protected file
+/// not created yet, and moving (or trashing) the folder that holds a protected one, to change it where it is not
+/// protected and move it back.
+#[test]
+fn protected_folders_cannot_be_reached_around() {
+    let d = start_cfg(|cfg| cfg.replace("/segredo\"]", "/cfg/kalango\"]"));
+    let mut c = Client::new(&d.sock);
+    let kalango = d.area.join("cfg/kalango");
+    std::fs::create_dir_all(&kalango).unwrap();
+    std::fs::write(kalango.join("agente-permissoes.json"), "{}").unwrap();
+    std::fs::create_dir_all(d.area.join("docs")).unwrap();
+    // a dangling link: writing through it would create cfg/kalango/conectores.json
+    std::os::unix::fs::symlink(kalango.join("conectores.json"), d.area.join("docs/novo.json")).unwrap();
+    let r = c.call("arquivos.escrever", json!({"caminho": d.area.join("docs/novo.json"), "conteudo": "x"}));
+    assert_eq!(r["isError"], true, "{r}");
+    assert!(!kalango.join("conectores.json").exists());
+    // the folder holding it, moved away or to the trash, would carry it out of the protection
+    let r = c.call("arquivos.mover", json!({"de": d.area.join("cfg"), "para": d.area.join("docs/cfg")}));
+    assert_eq!(r["isError"], true, "{r}");
+    let r = c.call("arquivos.lixeira", json!({"caminho": d.area.join("cfg")}));
+    assert_eq!(r["isError"], true, "{r}");
+    assert!(kalango.join("agente-permissoes.json").is_file());
+    // nor can a folder made elsewhere be moved in to become it
+    std::fs::create_dir_all(d.area.join("docs/outro/kalango")).unwrap();
+    std::fs::remove_dir_all(d.area.join("cfg")).unwrap();
+    let r = c.call("arquivos.mover", json!({"de": d.area.join("docs/outro"), "para": d.area.join("cfg")}));
+    assert_eq!(r["isError"], true, "{r}");
+    assert!(!d.area.join("cfg").exists());
+    // the rest of the area works as before
+    let r = c.call("arquivos.escrever", json!({"caminho": d.area.join("docs/notas.md"), "conteudo": "ok"}));
+    assert_eq!(r["isError"], false, "{r}");
+    let r = c.call("arquivos.mover", json!({"de": d.area.join("docs/notas.md"), "para": d.area.join("notas.md")}));
+    assert_eq!(r["isError"], false, "{r}");
+}
+
 #[test]
 fn trash_uses_the_configured_folder() {
     let d = start();

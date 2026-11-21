@@ -102,17 +102,30 @@ fn virtualdesk(peer: &Peer, args: &[&str]) -> Result<Value, String> {
 
 /// Whether this call asks the person first (the choices in VirtualDesk's settings; turning off and deleting always).
 pub fn needs_approval(peer: &Peer, name: &str, args: &Value) -> Result<Option<String>, String> {
-    if matches!(name, "vm.desligar" | "vm.apagar") {
+    let v = virtualdesk(peer, &["ferramenta", "--aprovacao", name, &args.to_string()])?;
+    // turning off or deleting asks, except a disposable sandbox copy (VirtualDesk knows which machines are those: it
+    // made them with vm.clonar, and nothing of the person's is in them)
+    if matches!(name, "vm.desligar" | "vm.apagar") && v["pedir"].as_bool() != Some(false) {
         return Ok(Some(tr("turning off or deleting a machine always asks").into()));
     }
-    let v = virtualdesk(peer, &["ferramenta", "--aprovacao", name, &args.to_string()])?;
     Ok(v["pedir"].as_bool().unwrap_or(true).then(|| v["motivo"].as_str().unwrap_or("").to_string()))
 }
 
 /// A path of this computer in the arguments: absolute, inside the allowed folders and outside the protected ones.
 fn path_arg(c: &Ctx, a: &mut Value, k: &str) -> Result<(), String> {
+    checked_arg(c, a, k, crate::sandbox::check_path)
+}
+
+/// As `path_arg`, for a path the machine may change (a folder shared into it, a file copied out of it): also not a
+/// folder that holds a protected one — ~/.config shared into a machine would let what runs there write
+/// ~/.config/kalango.
+fn change_arg(c: &Ctx, a: &mut Value, k: &str) -> Result<(), String> {
+    checked_arg(c, a, k, crate::sandbox::check_change_path)
+}
+
+fn checked_arg(c: &Ctx, a: &mut Value, k: &str, check: fn(&str, &Peer, &[String], &[String]) -> Result<PathBuf, String>) -> Result<(), String> {
     if let Some(raw) = a.get(k).and_then(Value::as_str).filter(|r| !r.is_empty()) {
-        let p = crate::sandbox::check_path(raw, c.peer, &c.rule.allowed_paths, &c.cfg.protected_paths)?;
+        let p = check(raw, c.peer, &c.rule.allowed_paths, &c.cfg.protected_paths)?;
         a[k] = json!(p);
     }
     Ok(())
@@ -164,14 +177,17 @@ fn criar(c: &Ctx, a: &Value) -> Result<Out, String> {
 }
 fn pastas(c: &Ctx, a: &Value) -> Result<Out, String> {
     let mut a = a.clone();
-    path_arg(c, &mut a, "caminho")?;
+    change_arg(c, &mut a, "caminho")?;
     call(c, "vm.pastas", &a)
 }
 fn copiar(c: &Ctx, a: &Value) -> Result<Out, String> {
     let mut a = a.clone();
     // only the side on this computer is checked; inside the machine it is the machine's business
-    let here = if a["sentido"].as_str() == Some("da_maquina") { "para" } else { "de" };
-    path_arg(c, &mut a, here)?;
+    if a["sentido"].as_str() == Some("da_maquina") {
+        change_arg(c, &mut a, "para")?;
+    } else {
+        path_arg(c, &mut a, "de")?;
+    }
     call(c, "vm.copiar_arquivo", &a)
 }
 fn executar(c: &Ctx, a: &Value) -> Result<Out, String> {

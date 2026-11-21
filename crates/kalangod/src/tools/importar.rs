@@ -270,6 +270,17 @@ fn copy(c: &Ctx, a: &Value) -> Result<Out, String> {
             }
         }
     }
+    // every destination in this home and outside its protected folders, wherever a link there leads: the folders'
+    // places come from ~/.config/user-dirs.dirs, which an agent can write, and the copy runs as root (an
+    // XDG_DOCUMENTS_DIR in ~/.config/kalango, in /etc, or a Documents that is a link to them, would put files there)
+    let home_rule = [home.display().to_string()];
+    plan.retain(|(_, to)| match crate::sandbox::check_change_path(&to.display().to_string(), c.peer, &home_rule, &c.cfg.protected_paths) {
+        Ok(_) => true,
+        Err(_) => {
+            skipped.push(to.display().to_string());
+            false
+        }
+    });
     let commands: Vec<String> = plan.iter().map(|(f, t)| format!("rsync -a --ignore-existing --chown={owner} {}{} {}", f.display(), if f.is_dir() { "/" } else { "" }, t.display())).collect();
     let uid = c.peer.uid;
     let summary = trf("bringing {n} folders from {system}", &[("n", plan.len().to_string()), ("system", system.clone())]);
