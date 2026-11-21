@@ -12,6 +12,8 @@ mod imp {
     #[derive(Default)]
     pub struct Limite {
         pub max: Cell<i32>,
+        /// asks for `max` even when the child would be happy narrower (a side panel that should keep its width)
+        pub fill: Cell<bool>,
         pub filho: RefCell<Option<gtk::Widget>>,
     }
 
@@ -40,7 +42,8 @@ mod imp {
             let max = self.max.get();
             if o == gtk::Orientation::Horizontal {
                 let (min, nat, _, _) = c.measure(o, for_size);
-                (min, nat.min(max).max(min), -1, -1)
+                let nat = if self.fill.get() { max } else { nat.min(max) };
+                (min, nat.max(min), -1, -1)
             } else {
                 // the height for the width the child will get
                 let w = if for_size < 0 { -1 } else { for_size.min(max).max(c.measure(gtk::Orientation::Horizontal, -1).0) };
@@ -72,5 +75,19 @@ impl Limite {
         *l.imp().filho.borrow_mut() = Some(filho.clone().upcast());
         l.set_hexpand(true);
         l
+    }
+
+    /// Asks for the whole limit, not only what the child would like (it still gives way down to the child's
+    /// minimum).
+    pub fn set_fill(&self, fill: bool) {
+        self.imp().fill.set(fill);
+        self.queue_resize();
+    }
+
+    /// A new limit (the window changed size).
+    pub fn set_max(&self, max: i32) {
+        if self.imp().max.replace(max) != max {
+            self.queue_resize();
+        }
     }
 }

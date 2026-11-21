@@ -6,8 +6,8 @@
 //! and saved a moment later (`flows.save`); triggers go by `triggers.save`. Execuções and the live run are
 //! `fluxo_execucoes`.
 //!
-//! The service keeps a block's kind, data and place but not the name the person gave it: the names are kept here,
-//! per flow, in the shell's data folder.
+//! A block's name is the flow's own (`title` on the block). Names the shell kept before in its data folder
+//! (`fluxos-nomes.json`) move into the flow the next time it is saved.
 
 use crate::conversa::ui_icon;
 use crate::fluxo_canvas::{Canvas, CanvasData, CanvasEvent};
@@ -52,35 +52,54 @@ pub fn run_status_text(status: &str) -> (String, &'static str) {
     }
 }
 
-// ── the names the person gave the blocks (kept by the shell) ─────────────────────────────────────────────────────
-
 /// How kalango-fluxos begins the refusal of a run's input (`runtime::INVALID_INPUT`); the rest is its pt-BR sentence.
 const INVALID_INPUT: &str = "entrada inválida: ";
 
-fn names_path() -> std::path::PathBuf {
+// ── the names the shell kept before the flow had them ───────────────────────────────────────────────────────────
+
+fn old_names_path() -> std::path::PathBuf {
     glib::user_data_dir().join("kalango/fluxos-nomes.json")
 }
 
-fn load_names(flow: &str) -> HashMap<String, String> {
-    std::fs::read_to_string(names_path())
+/// The names the shell kept for a flow's blocks (read once, to move them into the flow).
+fn old_names(flow: &str) -> HashMap<String, String> {
+    std::fs::read_to_string(old_names_path())
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .and_then(|v| v[flow].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()))
         .unwrap_or_default()
 }
 
-fn save_names(flow: &str, doc: &FlowDoc) {
-    let path = names_path();
-    let mut all: Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({}));
-    if !all.is_object() {
-        all = json!({});
+/// Once the flow holds them, the old file forgets a flow's names (and goes when it holds none).
+fn forget_old_names(flow: &str) {
+    let path = old_names_path();
+    let Some(mut all) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return };
+    let Some(o) = all.as_object_mut() else { return };
+    if o.remove(flow).is_none() {
+        return;
     }
-    let names: serde_json::Map<String, Value> = doc.nodes.iter().filter(|n| !n.title.is_empty()).map(|n| (n.id.clone(), json!(n.title))).collect();
-    all[flow] = Value::Object(names);
-    if let Some(d) = path.parent() {
-        let _ = std::fs::create_dir_all(d);
+    if o.is_empty() {
+        let _ = std::fs::remove_file(&path);
+    } else {
+        let _ = std::fs::write(&path, serde_json::to_string_pretty(&all).unwrap_or_default());
     }
-    let _ = std::fs::write(&path, serde_json::to_string_pretty(&all).unwrap_or_default());
+}
+
+/// The old names given to the blocks that have none in the flow yet. True when any moved in.
+pub fn adopt_names(doc: &mut FlowDoc, names: &HashMap<String, String>) -> bool {
+    let mut any = false;
+    for n in doc.nodes.iter_mut().filter(|n| n.title.trim().is_empty()) {
+        if let Some(t) = names.get(&n.id).filter(|t| !t.trim().is_empty()) {
+            n.title = t.clone();
+            any = true;
+        }
+    }
+    any
+}
+
+thread_local! {
+    /// The blocks copied with Ctrl+C and the connections among them (they paste into any flow).
+    static COPIED: RefCell<Option<(Vec<NodeDoc>, Vec<EdgeDoc>)>> = const { RefCell::new(None) };
 }
 
 /// A fresh id for a trigger made on this screen.
@@ -100,11 +119,31 @@ pub struct FlowPage {
     pub agents: RefCell<Vec<(String, String)>>,
     pub flows: RefCell<Vec<(String, String)>>,
     pub tools: RefCell<Vec<String>>,
+    /// each system action's description (by its name): a block without a name is called by it
+    pub tool_info: RefCell<HashMap<String, String>>,
     /// the recent runs (newest first) with their steps
     pub recent: RefCell<Vec<(Value, Vec<Step>)>>,
     /// every run of the flow (`runs.list`), newest first
     pub runs: RefCell<Vec<Value>>,
     pub selected: RefCell<Option<String>>,
+    /// the blocks chosen together (Shift+click, the band): two or more; empty when one or none is
+    pub chosen: RefCell<Vec<String>>,
+    /// each agent's input fields (by id), for the Agente block's "Entrada do agente"
+    pub agent_fields: RefCell<HashMap<String, Vec<Value>>>,
+    /// tools.list as the tool picker groups it (system, connectors, custom)
+    pub tool_items: RefCell<Vec<crate::fluxos_ferramentas::ToolItem>>,
+    /// the VirtualDesk machines a sandbox can copy: (id, name)
+    pub templates: RefCell<Vec<(String, String)>>,
+    /// a For each going through its items in the live run: node → (item, how many)
+    pub progress: RefCell<HashMap<String, (usize, usize)>>,
+    /// the live run's sandboxes: node → what its machine did
+    pub sandbox_notes: RefCell<HashMap<String, String>>,
+    /// a word for the empty inspector until something is chosen (a block taken out of the middle of a path)
+    pub note: RefCell<Option<String>>,
+    /// the names that moved in from the old file wait for this flow's next save to leave it
+    names_moved: Cell<bool>,
+    /// "Adicionar bloco aqui…": where the next block goes
+    insert_at: Cell<Option<(f64, f64)>>,
     pub insp_tab: RefCell<String>,
     /// problems per block id ("" for the flow; "trigger:<id>" for a trigger)
     pub issues: RefCell<HashMap<String, String>>,
@@ -113,6 +152,8 @@ pub struct FlowPage {
     pub insp_footer: gtk::Box,
     /// the chosen block's problem line in the inspector
     pub issue_label: RefCell<Option<(String, gtk::Label)>>,
+    /// the chosen block's name in the inspector's header and its name box (they follow the block's edits)
+    pub insp_title: RefCell<Option<(String, gtk::Label, Option<gtk::Entry>)>>,
     /// the inspector's mapping rows: they show their problems again each time the flow is checked or saved
     pub on_issues: RefCell<Option<Rc<dyn Fn()>>>,
     pub inspector: gtk::Box,
@@ -138,6 +179,8 @@ pub struct FlowPage {
     trigger_timers: RefCell<HashMap<String, glib::SourceId>>,
     /// a palette item chosen to go into the connection picked on the canvas ("/")
     insert_into: RefCell<Option<EdgeDoc>>,
+    /// Ctrl+Z and Ctrl+Shift+Z
+    history: RefCell<m::History>,
     /// loads still answering for an older flow are dropped
     generation: Cell<u64>,
     /// the flow and its triggers still answering (the canvas fits the whole once both are in)
@@ -254,6 +297,7 @@ impl FlowPage {
         is.set_child(Some(&insp_content));
         inspector.append(&is);
         let insp_footer = caixa(Orientation::Horizontal, 8, "fluxo-insp-rodape");
+        crate::superficies::hide_when_empty(&insp_footer);
         inspector.append(&insp_footer);
         edit.append(&inspector);
         body.add_named(&edit, Some("editar"));
@@ -261,11 +305,12 @@ impl FlowPage {
 
         let p = Rc::new(FlowPage {
             root, flow_id: RefCell::default(), name: RefCell::default(), enabled: Cell::new(true), doc: RefCell::default(), triggers: RefCell::default(),
-            agents: RefCell::default(), flows: RefCell::default(), tools: RefCell::default(), recent: RefCell::default(), runs: RefCell::default(),
-            selected: RefCell::default(), insp_tab: RefCell::new("ajustes".into()), issues: RefCell::default(), narrow: Cell::new(false), insp_content, insp_footer,
-            issue_label: RefCell::default(), on_issues: RefCell::default(), inspector, canvas, live: RefCell::default(), runs_view: RefCell::default(), body, palette, palette_list, search, title, state_chip, sub_trigger, sub_last,
+            agents: RefCell::default(), flows: RefCell::default(), tools: RefCell::default(), tool_info: RefCell::default(), recent: RefCell::default(), runs: RefCell::default(),
+            selected: RefCell::default(), chosen: RefCell::default(), agent_fields: RefCell::default(), tool_items: RefCell::default(), templates: RefCell::default(),
+            progress: RefCell::default(), sandbox_notes: RefCell::default(), note: RefCell::default(), names_moved: Cell::new(false), insert_at: Cell::new(None), insp_tab: RefCell::new("ajustes".into()), issues: RefCell::default(), narrow: Cell::new(false), insp_content, insp_footer,
+            issue_label: RefCell::default(), insp_title: RefCell::default(), on_issues: RefCell::default(), inspector, canvas, live: RefCell::default(), runs_view: RefCell::default(), body, palette, palette_list, search, title, state_chip, sub_trigger, sub_last,
             sub_save, seg_edit, seg_runs, test_btn, run_btn, header_actions, top, save_timer: RefCell::default(), trigger_timers: RefCell::default(), insert_into: RefCell::default(),
-            generation: Cell::new(0), pending: Cell::new(0), go: RefCell::default(), test_values: RefCell::default(), run_refusal: RefCell::default(),
+            history: RefCell::default(), generation: Cell::new(0), pending: Cell::new(0), go: RefCell::default(), test_values: RefCell::default(), run_refusal: RefCell::default(),
         });
         let rv = RunsView::new(&p);
         p.body.add_named(&rv.root, Some("execucoes"));
@@ -277,6 +322,25 @@ impl FlowPage {
                 p.build_palette();
             }
         });
+        // Enter adds the first block found (after "/" on a connection: into it)
+        let w = Rc::downgrade(&p);
+        p.search.connect_activate(move |e| {
+            let Some(p) = w.upgrade() else { return };
+            let q = e.text().to_string();
+            // (into a connection only a block goes: triggers start the flow)
+            let into_link = p.insert_into.borrow().is_some() || p.canvas.edge.borrow().is_some();
+            let first = m::palette()
+                .into_iter()
+                .flat_map(|(_, items)| items)
+                .filter(|i| !(into_link && i.0.starts_with("trigger:")))
+                .find(|(_, name, ..)| m::palette_matches(name, tr(name), &q))
+                .map(|i| i.0);
+            if let Some(id) = first {
+                e.set_text("");
+                p.add_item(id, None);
+                p.canvas.root.grab_focus();
+            }
+        });
         let w = Rc::downgrade(&p);
         *p.canvas.on_event.borrow_mut() = Some(Rc::new(move |e| {
             if let Some(p) = w.upgrade() {
@@ -286,16 +350,35 @@ impl FlowPage {
         // keys on the canvas: Delete removes the chosen block or connection; "/" searches the palette
         let keys = gtk::EventControllerKey::new();
         let w = Rc::downgrade(&p);
-        keys.connect_key_pressed(move |_, k, _, _| {
+        keys.connect_key_pressed(move |_, k, _, mods| {
             let Some(p) = w.upgrade() else { return glib::Propagation::Proceed };
+            // Ctrl+Z undoes, Ctrl+Shift+Z (or Ctrl+Y) redoes; Ctrl+D duplicates, Ctrl+C / Ctrl+V copy and paste a block
+            if mods.contains(gdk::ModifierType::CONTROL_MASK) {
+                let shift = mods.contains(gdk::ModifierType::SHIFT_MASK);
+                match k.to_lower() {
+                    gdk::Key::z if shift => p.redo(),
+                    gdk::Key::z => p.undo(),
+                    gdk::Key::y => p.redo(),
+                    gdk::Key::d => p.duplicate_selected(),
+                    gdk::Key::c => p.copy_selected(),
+                    gdk::Key::v => p.paste(None),
+                    gdk::Key::a => p.select_all(),
+                    _ => return glib::Propagation::Proceed,
+                }
+                return glib::Propagation::Stop;
+            }
             match k {
                 gdk::Key::Delete | gdk::Key::BackSpace => {
                     let edge = p.canvas.edge.borrow_mut().take();
                     if let Some(e) = edge {
                         p.edit_flow(|f| f.edges.retain(|x| *x != e));
-                    } else if p.selected.borrow().is_some() {
+                    } else if p.selected.borrow().is_some() || !p.chosen.borrow().is_empty() {
                         p.remove_selected();
                     }
+                    glib::Propagation::Stop
+                }
+                gdk::Key::F2 => {
+                    p.rename_selected();
                     glib::Propagation::Stop
                 }
                 gdk::Key::slash => {
@@ -343,11 +426,18 @@ impl FlowPage {
         self.generation.set(gen);
         *self.flow_id.borrow_mut() = id.to_string();
         *self.selected.borrow_mut() = None;
+        self.chosen.borrow_mut().clear();
+        self.progress.borrow_mut().clear();
+        self.sandbox_notes.borrow_mut().clear();
+        *self.note.borrow_mut() = None;
+        self.names_moved.set(false);
         *self.insp_tab.borrow_mut() = "ajustes".into();
         *self.live.borrow_mut() = None;
         self.issues.borrow_mut().clear();
         self.test_values.borrow_mut().clear();
         *self.run_refusal.borrow_mut() = None;
+        // (another flow: the palette shows every block again)
+        self.search.set_text("");
         self.recent.borrow_mut().clear();
         self.runs.borrow_mut().clear();
         self.triggers.borrow_mut().clear();
@@ -362,13 +452,17 @@ impl FlowPage {
                 Ok(v) => {
                     *p.name.borrow_mut() = v["name"].as_str().unwrap_or("").to_string();
                     let mut doc = FlowDoc::from_json(&v["flow"]);
-                    let names = load_names(&p.flow_id.borrow());
-                    for n in doc.nodes.iter_mut() {
-                        if let Some(t) = names.get(&n.id) {
-                            n.title = t.clone();
-                        }
-                    }
+                    // the names the shell kept before: into the flow, saved with it in a moment
+                    let moved = adopt_names(&mut doc, &old_names(&p.flow_id.borrow()));
+                    *p.history.borrow_mut() = m::History::new(&doc);
                     *p.doc.borrow_mut() = doc;
+                    if moved {
+                        p.names_moved.set(true);
+                        p.schedule_save();
+                    } else if !old_names(&p.flow_id.borrow()).is_empty() {
+                        // (every block already has its name in the flow)
+                        forget_old_names(&p.flow_id.borrow());
+                    }
                 }
                 Err(e) => {
                     p.issues.borrow_mut().insert(String::new(), e);
@@ -390,6 +484,30 @@ impl FlowPage {
             p.loaded();
         });
         self.reload_runs();
+        self.reload_templates();
+    }
+
+    /// The VirtualDesk machines a sandbox can copy (kalangod `vm.listar`, off the main thread).
+    fn reload_templates(self: &Rc<Self>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::servicos::kalangod_chamar("vm.listar", json!({})));
+        });
+        let w = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_millis(100), move || match rx.try_recv() {
+            Ok(r) => {
+                if let (Some(p), Ok(v)) = (w.upgrade(), r) {
+                    *p.templates.borrow_mut() = m::machine_list(&v);
+                    p.canvas.set_data(p.canvas_data());
+                    if p.doc.borrow().nodes.iter().any(|n| n.kind == "sandbox") {
+                        p.refresh_inspector();
+                    }
+                }
+                glib::ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(_) => glib::ControlFlow::Break,
+        });
     }
 
     /// One of the flow's parts answered: once all are in, the canvas shows the whole flow.
@@ -407,13 +525,11 @@ impl FlowPage {
         let w = Rc::downgrade(self);
         crate::fluxos::call("agents.list", json!({}), move |r| {
             let Some(p) = w.upgrade().filter(|p| p.generation.get() == gen) else { return };
-            *p.agents.borrow_mut() = r
-                .unwrap_or_default()
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|a| Some((a["agent"]["id"].as_str()?.to_string(), a["agent"]["name"].as_str().unwrap_or("").to_string())))
-                .collect();
+            let rows = r.unwrap_or_default();
+            let rows = rows.as_array().cloned().unwrap_or_default();
+            *p.agents.borrow_mut() = rows.iter().filter_map(|a| Some((a["agent"]["id"].as_str()?.to_string(), a["agent"]["name"].as_str().unwrap_or("").to_string()))).collect();
+            *p.agent_fields.borrow_mut() =
+                rows.iter().filter_map(|a| Some((a["agent"]["id"].as_str()?.to_string(), a["agent"]["input_fields"].as_array().cloned().unwrap_or_default()))).collect();
             p.refresh();
         });
         let w = Rc::downgrade(self);
@@ -425,13 +541,20 @@ impl FlowPage {
                 p.enabled.set(f["enabled"].as_bool().unwrap_or(true));
             }
             *p.flows.borrow_mut() = list.as_array().into_iter().flatten().filter_map(|f| Some((f["id"].as_str()?.to_string(), f["name"].as_str().unwrap_or("").to_string()))).collect();
-            p.refresh_header();
+            // (a Subflow is called by its flow's name)
+            p.refresh();
         });
         let w = Rc::downgrade(self);
         crate::fluxos::call("tools.list", json!({}), move |r| {
             let Some(p) = w.upgrade().filter(|p| p.generation.get() == gen) else { return };
             let v = r.unwrap_or_default();
-            *p.tools.borrow_mut() = v["system"].as_array().into_iter().flatten().chain(v["custom"].as_array().into_iter().flatten()).filter_map(|t| t["name"].as_str().or(t["id"].as_str()).map(str::to_string)).collect();
+            let all: Vec<&Value> = v["system"].as_array().into_iter().flatten().chain(v["custom"].as_array().into_iter().flatten()).collect();
+            *p.tools.borrow_mut() = all.iter().filter_map(|t| t["name"].as_str().or(t["id"].as_str()).map(str::to_string)).collect();
+            *p.tool_info.borrow_mut() = all.iter().filter_map(|t| Some((t["name"].as_str().or(t["id"].as_str())?.to_string(), t["description"].as_str().unwrap_or("").to_string()))).collect();
+            let connectors: Vec<String> = crate::fluxos_ui::connectors().into_iter().map(|c| c.0).collect();
+            *p.tool_items.borrow_mut() = crate::fluxos_ferramentas::classify(&v, &connectors);
+            // (an action without a name is called by its description)
+            p.refresh();
         });
     }
 
@@ -593,21 +716,36 @@ impl FlowPage {
                 }
             }
         }
+        // after a test (the run followed here): each block's step and the way it went
+        let tested = live.as_ref().is_some_and(|l| l.finished_shown && !l.active());
+        let names = self.agent_names();
+        let path = (tested && !steps.is_empty()).then(|| m::path_text(&steps, |id| flow.node(id).map(|n| m::node_text(n, &names, None).0).unwrap_or_else(|| id.to_string())));
         CanvasData {
-            flow,
             triggers: self.triggers.borrow().clone(),
-            agents: self.agent_names(),
+            agents: names,
             states,
             travelled,
             items,
             labels,
             issues: self.issues.borrow().clone(),
             selected: self.selected.borrow().clone(),
+            chosen: self.chosen.borrow().clone(),
+            progress: if live.as_ref().is_some_and(|l| l.active()) { self.progress.borrow().clone() } else { HashMap::new() },
+            step_no: if tested { m::step_numbers(&steps) } else { HashMap::new() },
+            path,
+            sandbox_notes: if live.is_some() { self.sandbox_notes.borrow().clone() } else { HashMap::new() },
+            templates: self.templates.borrow().iter().cloned().collect(),
+            flow,
         }
     }
 
+    /// What names the blocks (`fluxo_modelo::node_text`): the agents by id, the system actions' descriptions and
+    /// the other flows' names.
     pub fn agent_names(&self) -> HashMap<String, String> {
-        self.agents.borrow().iter().cloned().collect()
+        let mut names: HashMap<String, String> = self.agents.borrow().iter().cloned().collect();
+        names.extend(self.tool_info.borrow().iter().map(|(t, d)| (m::tool_key(t), d.clone())));
+        names.extend(self.flows.borrow().iter().map(|(f, n)| (m::flow_key(f), n.clone())));
+        names
     }
 
     pub fn node_title(&self, id: &str) -> String {
@@ -631,8 +769,41 @@ impl FlowPage {
             *self.insp_tab.borrow_mut() = "ajustes".into();
         }
         *self.selected.borrow_mut() = id;
+        self.chosen.borrow_mut().clear();
+        *self.note.borrow_mut() = None;
         self.canvas.set_data(self.canvas_data());
         self.refresh_inspector();
+    }
+
+    /// The blocks chosen now: the ones chosen together, else the one chosen (a trigger is not a block).
+    pub fn selection(&self) -> Vec<String> {
+        let chosen = self.chosen.borrow();
+        if !chosen.is_empty() {
+            return chosen.clone();
+        }
+        self.selected.borrow().iter().filter(|s| self.doc.borrow().node(s).is_some()).cloned().collect()
+    }
+
+    /// Chooses these blocks together (one: that block alone).
+    pub fn select_many(self: &Rc<Self>, ids: Vec<String>) {
+        let mut ids: Vec<String> = ids.into_iter().filter(|i| self.doc.borrow().node(i).is_some()).collect();
+        let mut seen = std::collections::HashSet::new();
+        ids.retain(|i| seen.insert(i.clone()));
+        if ids.len() <= 1 {
+            return self.select(ids.pop());
+        }
+        *self.selected.borrow_mut() = None;
+        *self.chosen.borrow_mut() = ids;
+        *self.note.borrow_mut() = None;
+        *self.canvas.edge.borrow_mut() = None;
+        self.canvas.set_data(self.canvas_data());
+        self.refresh_inspector();
+    }
+
+    /// Ctrl+A: every block.
+    pub fn select_all(self: &Rc<Self>) {
+        let ids: Vec<String> = self.doc.borrow().nodes.iter().map(|n| n.id.clone()).collect();
+        self.select_many(ids);
     }
 
     // ── the palette ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -703,17 +874,72 @@ impl FlowPage {
     fn on_canvas(self: &Rc<Self>, e: CanvasEvent) {
         match e {
             CanvasEvent::Select(id) => self.select(id),
-            CanvasEvent::Moved(id, x, y) => {
-                if let Some(n) = self.doc.borrow_mut().node_mut(&id) {
-                    n.x = x;
-                    n.y = y;
+            CanvasEvent::Toggle(id) => {
+                let mut set = self.selection();
+                match set.iter().position(|x| *x == id) {
+                    Some(i) => {
+                        set.remove(i);
+                    }
+                    None => set.push(id),
                 }
-                self.schedule_save();
+                self.select_many(set);
+            }
+            CanvasEvent::SelectMany(ids, add) => {
+                let mut set = if add { self.selection() } else { Vec::new() };
+                set.extend(ids);
+                self.select_many(set);
+            }
+            CanvasEvent::Moved(places, into) => {
+                {
+                    let mut d = self.doc.borrow_mut();
+                    for (id, x, y) in &places {
+                        if let Some(n) = d.node_mut(id) {
+                            n.x = *x;
+                            n.y = *y;
+                        }
+                    }
+                    for (id, parent) in &into {
+                        d.set_parent(id, parent.as_deref());
+                    }
+                    d.fix_sandboxes();
+                }
+                if into.is_empty() {
+                    self.record();
+                    self.schedule_save();
+                    // (a sandbox's dashed area follows what moved inside it)
+                    if self.doc.borrow().nodes.iter().any(|n| n.kind == "sandbox") {
+                        self.canvas.set_data(self.canvas_data());
+                    }
+                } else {
+                    self.changed();
+                    self.refresh_inspector();
+                }
             }
             CanvasEvent::Connect(a, b) => {
-                let ok = self.doc.borrow_mut().connect(&a, &b);
+                let ok = self.doc.borrow().may_connect(&a, &b) && self.doc.borrow_mut().connect(&a, &b);
                 if ok {
                     self.changed();
+                    // (the chosen block's ways out show where they go now)
+                    self.refresh_inspector();
+                }
+            }
+            CanvasEvent::Reconnect(e, t) => {
+                if self.doc.borrow().may_connect(&e.source, &t) {
+                    self.edit_flow(|f| {
+                        f.edges.retain(|x| *x != e);
+                        if !f.edges.iter().any(|x| x.source == e.source && x.target == t && x.handle == e.handle) {
+                            f.edges.push(EdgeDoc { source: e.source.clone(), target: t.clone(), handle: e.handle.clone() });
+                        }
+                    });
+                    self.refresh_inspector();
+                }
+            }
+            CanvasEvent::Menu(id, at, world) => crate::fluxo_inspetor::context_menu(self, id, at, world),
+            CanvasEvent::Activate(id) => {
+                // (after the click that came with it chose the block)
+                if self.doc.borrow().node(&id).is_some_and(|n| n.kind == "system_action") {
+                    let p = self.clone();
+                    glib::timeout_add_local_once(Duration::from_millis(150), move || crate::fluxo_inspetor::tool_picker(&p, &id));
                 }
             }
             CanvasEvent::Drop(item, at) => self.add_item(&item, Some(at)),
@@ -725,6 +951,8 @@ impl FlowPage {
 
     /// A palette item: a trigger, or a block (after the chosen one, at `at`, or into the connection picked).
     pub fn add_item(self: &Rc<Self>, item: &str, at: Option<(f64, f64)>) {
+        // ("Adicionar bloco aqui…": where the menu was opened)
+        let at = at.or_else(|| self.insert_at.take());
         if let Some(kind) = item.strip_prefix("trigger:") {
             let id = new_trigger_id();
             let cfg = m::default_trigger(kind, &self.flow_id.borrow());
@@ -738,15 +966,24 @@ impl FlowPage {
         let into = self.insert_into.borrow_mut().take().or_else(|| self.canvas.edge.borrow().clone());
         let rects = self.canvas.rects();
         let w = m::node_width(kind);
+        // (a block put into a connection takes the place of the block it led to, which moves one step along with
+        // everything after it)
+        let mut shift: Option<(Vec<String>, f64, f64)> = None;
         let (x, y, after) = match (at, &into) {
             (Some(p), _) => (p.0 - w / 2.0, p.1 - 30.0, None),
             (None, Some(e)) => {
                 let (a, b) = (rects.iter().find(|r| r.0 == e.source).map(|r| r.1), rects.iter().find(|r| r.0 == e.target).map(|r| r.1));
                 match (a, b) {
-                    (Some(a), Some(b)) => {
-                        let (sx, sy) = m::free_spot(&rects, Some(Rect { x: (a.x + b.x) / 2.0 - w / 2.0, y: (a.y + b.y) / 2.0, w: 0.0, h: 0.0 }), w, 90.0);
-                        (sx, sy, None)
-                    }
+                    (Some(a), Some(b)) => match m::insert_step(a, b, w) {
+                        Some((dx, dy)) => {
+                            shift = Some((m::downstream(&self.doc.borrow(), &e.target, &e.source), dx, dy));
+                            (if dy > 0.0 { b.x + (b.w - w) / 2.0 } else { b.x }, b.y, None)
+                        }
+                        None => {
+                            let (sx, sy) = m::free_spot(&rects, Some(Rect { x: (a.x + b.x) / 2.0 - w / 2.0, y: (a.y + b.y) / 2.0, w: 0.0, h: 0.0 }), w, 90.0);
+                            (sx, sy, None)
+                        }
+                    },
                     _ => (0.0, 0.0, None),
                 }
             }
@@ -778,9 +1015,15 @@ impl FlowPage {
             "mcp" => tr("MCP connector").to_string(),
             _ => String::new(),
         };
-        let node = NodeDoc { id: id.clone(), x, y, kind: kind.to_string(), data, title };
+        let node = NodeDoc { id: id.clone(), x, y, kind: kind.to_string(), data, title, ..Default::default() };
         {
             let mut d = self.doc.borrow_mut();
+            if let Some((ids, dx, dy)) = &shift {
+                for n in d.nodes.iter_mut().filter(|n| ids.contains(&n.id)) {
+                    n.x += dx;
+                    n.y += dy;
+                }
+            }
             d.nodes.push(node);
             if let Some(e) = &into {
                 d.edges.retain(|x| x != e);
@@ -792,10 +1035,28 @@ impl FlowPage {
         }
         *self.canvas.edge.borrow_mut() = None;
         *self.selected.borrow_mut() = Some(id.clone());
+        self.chosen.borrow_mut().clear();
         *self.insp_tab.borrow_mut() = "ajustes".into();
         self.changed();
         self.refresh_inspector();
         self.canvas.reveal(&id);
+        // (a new system action asks which one right away)
+        if kind == "system_action" {
+            let (p, id) = (self.clone(), id.clone());
+            glib::idle_add_local_once(move || crate::fluxo_inspetor::tool_picker(&p, &id));
+        }
+    }
+
+    /// "Adicionar bloco aqui…" ("/" on the canvas): the next block goes where the menu was opened.
+    pub fn add_here(self: &Rc<Self>, world: (f64, f64)) {
+        self.insert_at.set(Some(world));
+        *self.insert_into.borrow_mut() = None;
+        *self.canvas.edge.borrow_mut() = None;
+        if self.narrow.get() {
+            self.canvas.add_button.popup();
+        } else {
+            self.search.grab_focus();
+        }
     }
 
     /// Changes a block (the inspector's fields): the canvas redraws, the flow is checked and saved.
@@ -804,6 +1065,20 @@ impl FlowPage {
             f(n);
         }
         self.changed();
+        self.show_title(id);
+    }
+
+    /// The inspector's header and name box say the block's name as it is now (without rebuilding the inspector,
+    /// whose box is being typed in).
+    fn show_title(&self, id: &str) {
+        let Some(n) = self.doc.borrow().node(id).cloned() else { return };
+        if let Some((_, label, name)) = self.insp_title.borrow().as_ref().filter(|t| t.0 == id) {
+            let names = self.agent_names();
+            label.set_text(&m::node_text(&n, &names, None).0);
+            if let Some(e) = name {
+                e.set_placeholder_text(Some(&m::node_text(&NodeDoc { title: String::new(), ..n }, &names, None).0));
+            }
+        }
     }
 
     /// Changes the flow (connections): the canvas redraws, the flow is checked and saved.
@@ -813,8 +1088,86 @@ impl FlowPage {
     }
 
     fn changed(self: &Rc<Self>) {
+        self.doc.borrow_mut().fix_sandboxes();
+        self.record();
         self.canvas.set_data(self.canvas_data());
         self.schedule_save();
+    }
+
+    /// Keeps the flow as it was before this change, to undo it.
+    fn record(&self) {
+        let doc = self.doc.borrow().clone();
+        self.history.borrow_mut().record(&doc, glib::monotonic_time() / 1000);
+    }
+
+    /// Ctrl+Z: the flow as it was before the last change.
+    pub fn undo(self: &Rc<Self>) {
+        let cur = self.doc.borrow().clone();
+        let Some(prev) = self.history.borrow_mut().undo(cur) else { return };
+        *self.doc.borrow_mut() = prev;
+        self.restored();
+    }
+
+    /// Ctrl+Shift+Z: the change undone, again.
+    pub fn redo(self: &Rc<Self>) {
+        let cur = self.doc.borrow().clone();
+        let Some(next) = self.history.borrow_mut().redo(cur) else { return };
+        *self.doc.borrow_mut() = next;
+        self.restored();
+    }
+
+    fn restored(self: &Rc<Self>) {
+        let gone = self.selected.borrow().as_ref().is_some_and(|s| !s.starts_with(m::TRIGGER_PREFIX) && self.doc.borrow().node(s).is_none());
+        if gone {
+            *self.selected.borrow_mut() = None;
+        }
+        *self.canvas.edge.borrow_mut() = None;
+        self.canvas.set_data(self.canvas_data());
+        self.refresh_inspector();
+        self.schedule_save();
+    }
+
+    /// Ctrl+C: the blocks chosen (with what is inside a sandbox among them), to paste in this flow or another one.
+    pub fn copy_selected(&self) {
+        let ids = self.selection();
+        if ids.is_empty() {
+            return;
+        }
+        let copy = self.doc.borrow().copy_nodes(&ids);
+        COPIED.with(|c| *c.borrow_mut() = Some(copy));
+    }
+
+    /// Ctrl+V: the blocks copied, as new blocks (at `at`, or where the view is, on a free spot), chosen.
+    pub fn paste(self: &Rc<Self>, at: Option<(f64, f64)>) {
+        let Some((nodes, edges)) = COPIED.with(|c| c.borrow().clone()) else { return };
+        let Some(b) = m::bbox(nodes.iter().map(|n| Rect { x: n.x, y: n.y, w: m::node_width(&n.kind), h: 90.0 })) else { return };
+        let (x, y) = match at {
+            Some(p) => (p.0, p.1),
+            None => {
+                let c = self.canvas.center_world();
+                m::free_spot(&self.canvas.rects(), Some(Rect { x: c.0 - b.w, y: c.1 - 45.0, w: 0.0, h: 0.0 }), b.w, b.h)
+            }
+        };
+        let ids = self.doc.borrow_mut().paste_nodes(&nodes, &edges, x - b.x, y - b.y);
+        self.after_new(ids);
+    }
+
+    /// New blocks (pasted, duplicated) are the ones chosen.
+    fn after_new(self: &Rc<Self>, ids: Vec<String>) {
+        *self.insp_tab.borrow_mut() = "ajustes".into();
+        *self.canvas.edge.borrow_mut() = None;
+        if ids.len() == 1 {
+            *self.selected.borrow_mut() = ids.first().cloned();
+            self.chosen.borrow_mut().clear();
+        } else {
+            *self.selected.borrow_mut() = None;
+            *self.chosen.borrow_mut() = ids.clone();
+        }
+        self.changed();
+        self.refresh_inspector();
+        if let Some(id) = ids.first() {
+            self.canvas.reveal(id);
+        }
     }
 
     pub fn edit_trigger(self: &Rc<Self>, id: &str, f: impl FnOnce(&mut Value)) {
@@ -881,7 +1234,6 @@ impl FlowPage {
             return;
         }
         let doc = self.doc.borrow().clone();
-        save_names(&id, &doc);
         let flow = doc.to_json();
         let name = self.name.borrow().clone();
         let w = Rc::downgrade(self);
@@ -906,6 +1258,10 @@ impl FlowPage {
                 let w = Rc::downgrade(&p);
                 crate::fluxos::call("flows.save", json!({"id": id, "name": name, "flow": flow}), move |r| {
                     if let Some(p) = w.upgrade() {
+                        // (the names that moved in are the flow's now: the old file forgets them)
+                        if r.is_ok() && p.names_moved.replace(false) {
+                            forget_old_names(&p.flow_id.borrow());
+                        }
                         if let Err(e) = r {
                             // (the service names a block's problems by its id: a Subflow's mapping)
                             let ids: Vec<String> = p.doc.borrow().nodes.iter().map(|n| n.id.clone()).collect();
@@ -943,35 +1299,97 @@ impl FlowPage {
         }
     }
 
+    /// Delete: the chosen trigger, or the chosen blocks — a block in the middle of a path leaves the one before it
+    /// connected to the one after it (Ctrl+Z puts it back).
     pub fn remove_selected(self: &Rc<Self>) {
-        let Some(sel) = self.selected.borrow_mut().take() else { return };
-        if let Some(tid) = sel.strip_prefix(m::TRIGGER_PREFIX) {
-            let tid = tid.to_string();
+        let sel = self.selected.borrow().clone();
+        if let Some(tid) = sel.as_deref().and_then(|s| s.strip_prefix(m::TRIGGER_PREFIX)).map(str::to_string) {
+            *self.selected.borrow_mut() = None;
             self.triggers.borrow_mut().retain(|t| t.id != tid);
-            self.issues.borrow_mut().remove(&sel);
+            self.issues.borrow_mut().remove(sel.as_deref().unwrap_or(""));
             crate::fluxos::call("triggers.delete", json!({"id": tid}), |_| {});
             self.canvas.set_data(self.canvas_data());
             self.refresh_header();
-        } else {
-            self.doc.borrow_mut().remove_node(&sel);
-            self.issues.borrow_mut().remove(&sel);
-            self.changed();
+            self.refresh_inspector();
+            return;
         }
+        let ids = self.selection();
+        if ids.is_empty() {
+            return;
+        }
+        *self.selected.borrow_mut() = None;
+        self.chosen.borrow_mut().clear();
+        let mut joined = false;
+        {
+            let mut d = self.doc.borrow_mut();
+            for id in &ids {
+                joined |= d.remove_node_reconnecting(id);
+            }
+        }
+        for id in &ids {
+            self.issues.borrow_mut().remove(id);
+        }
+        *self.note.borrow_mut() = joined.then(|| tr("The block before it now leads to the one after it; Ctrl+Z undoes.").to_string());
+        self.changed();
         self.refresh_inspector();
     }
 
+    /// Ctrl+D: copies of the chosen blocks next to them (a copy of several keeps their connections among them).
     pub fn duplicate_selected(self: &Rc<Self>) {
-        let Some(sel) = self.selected.borrow().clone() else { return };
-        let Some(n) = self.doc.borrow().node(&sel).cloned() else { return };
+        let ids = self.selection();
+        if ids.is_empty() {
+            return;
+        }
+        let (nodes, edges) = self.doc.borrow().copy_nodes(&ids);
         let rects = self.canvas.rects();
-        let after = rects.iter().find(|r| r.0 == sel).map(|r| r.1);
-        let (x, y) = m::free_spot(&rects, after, m::node_width(&n.kind), after.map(|r| r.h).unwrap_or(90.0));
-        let id = self.doc.borrow().new_id(&n.kind);
-        self.doc.borrow_mut().nodes.push(NodeDoc { id: id.clone(), x, y, ..n });
-        *self.selected.borrow_mut() = Some(id.clone());
-        self.changed();
+        let new = if ids.len() == 1 {
+            let after = rects.iter().find(|r| r.0 == ids[0]).map(|r| r.1);
+            let n = &nodes[0];
+            let (x, y) = m::free_spot(&rects, after, m::node_width(&n.kind), after.map(|r| r.h).unwrap_or(90.0));
+            self.doc.borrow_mut().paste_nodes(&nodes, &edges, x - n.x, y - n.y)
+        } else {
+            // (several: one step to the right and down, side by side with the originals)
+            self.doc.borrow_mut().paste_nodes(&nodes, &edges, 40.0, 40.0)
+        };
+        self.after_new(new);
+    }
+
+    /// Desativar / Ativar: the chosen blocks switched off (a run passes their input straight on) or on again.
+    pub fn toggle_disabled(self: &Rc<Self>) {
+        let ids = self.selection();
+        let all_off = ids.iter().all(|i| self.doc.borrow().node(i).is_some_and(|n| n.disabled));
+        self.edit_flow(|f| {
+            for n in f.nodes.iter_mut().filter(|n| ids.contains(&n.id)) {
+                n.disabled = !all_off;
+            }
+        });
         self.refresh_inspector();
-        self.canvas.reveal(&id);
+    }
+
+    /// "Alinhar na vertical": the chosen blocks one under the other.
+    pub fn align_selected(self: &Rc<Self>) {
+        let ids = self.selection();
+        let sizes = self.canvas.sizes();
+        self.edit_flow(|f| f.align_vertical(&ids, &sizes));
+    }
+
+    /// "Organizar o fluxo": every block top-down along the connections (Ctrl+Z undoes).
+    pub fn arrange(self: &Rc<Self>) {
+        let sizes = self.canvas.sizes();
+        self.edit_flow(|f| f.arrange(&sizes));
+        self.canvas.fit();
+    }
+
+    /// F2: the chosen block's name box, ready to type in.
+    pub fn rename_selected(self: &Rc<Self>) {
+        let Some(id) = self.selection().first().cloned() else { return };
+        if self.selected.borrow().as_deref() != Some(id.as_str()) || *self.insp_tab.borrow() != "ajustes" {
+            *self.insp_tab.borrow_mut() = "ajustes".into();
+            self.select(Some(id.clone()));
+        }
+        if let Some(e) = self.insp_title.borrow().as_ref().filter(|t| t.0 == id).and_then(|t| t.2.clone()) {
+            e.grab_focus();
+        }
     }
 
     /// Below a decision's threshold the person is asked: an approval block with the decision's question, on the
@@ -994,7 +1412,7 @@ impl FlowPage {
         let id = self.doc.borrow().new_id("approval");
         let data = json!({"question": if q.is_empty() { tr("What should be done?").to_string() } else { q }, "details": tr("The decision model was not sure: you choose."), "timeout_s": 7200});
         self.edit_flow(|f| {
-            f.nodes.push(NodeDoc { id: id.clone(), x, y, kind: "approval".into(), data, title: String::new() });
+            f.nodes.push(NodeDoc { id: id.clone(), x, y, kind: "approval".into(), data, ..Default::default() });
             f.set_way(src, Some(m::LOW_CONFIDENCE), Some(&id));
         });
     }
@@ -1200,5 +1618,18 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1));
         assert_ne!(a, new_trigger_id());
         assert!(a.starts_with('g'));
+    }
+
+    #[test]
+    fn old_names_move_into_blocks_without_a_name() {
+        let mut doc = FlowDoc::default();
+        doc.nodes.push(NodeDoc { id: "a".into(), ..Default::default() });
+        doc.nodes.push(NodeDoc { id: "b".into(), title: "Já tem".into(), ..Default::default() });
+        let names: HashMap<String, String> = [("a".to_string(), "Classificar".to_string()), ("b".to_string(), "Velho".to_string())].into();
+        assert!(adopt_names(&mut doc, &names));
+        assert_eq!(doc.node("a").unwrap().title, "Classificar");
+        // (a name the flow already has stays)
+        assert_eq!(doc.node("b").unwrap().title, "Já tem");
+        assert!(!adopt_names(&mut doc, &names));
     }
 }

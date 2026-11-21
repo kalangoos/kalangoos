@@ -179,6 +179,11 @@ pub struct Ajustes {
     botao_adicionar: gtk::Button,
     filtro: Cell<usize>,
     preenchendo: Cell<bool>,
+    // Modelos e provedores, Chaves (ajustes_modelos.rs, ajustes_chaves.rs): read when their tab shows
+    models: Rc<crate::ajustes_modelos::ModelsTab>,
+    keys: Rc<crate::ajustes_chaves::KeysTab>,
+    sandbox: Rc<crate::ajustes_sandbox::SandboxTab>,
+    abas_conteudo: gtk::Stack,
 }
 
 impl Ajustes {
@@ -187,6 +192,8 @@ impl Ajustes {
         let vista = gtk::Stack::new();
         vista.set_transition_type(gtk::StackTransitionType::Crossfade);
         vista.set_transition_duration(140);
+        // (the hidden "new connector" page must not hold a narrow window wide)
+        vista.set_hhomogeneous(false);
         let raiz = caixa(Orientation::Horizontal, 0, "");
         raiz.set_vexpand(true);
         vista.add_named(&raiz, Some("lista"));
@@ -197,7 +204,7 @@ impl Ajustes {
         let h = rotulo(tr("Agent settings"), "central-titulo");
         h.set_xalign(0.0);
         corpo.append(&h);
-        let sub = rotulo(tr("How the agents connect to apps and services."), "central-sub");
+        let sub = rotulo(tr("How the agents connect to models, apps and services."), "central-sub");
         sub.set_xalign(0.0);
         sub.set_margin_top(4);
         corpo.append(&sub);
@@ -215,8 +222,12 @@ impl Ajustes {
         abas_lado.set_transition_duration(140);
         abas_lado.set_hhomogeneous(false);
         let gerais = crate::agent_settings::AgentSettings::new();
+        let largura_lado = if compacta { 340 } else { 474 };
+        let models = crate::ajustes_modelos::ModelsTab::new(largura_lado);
+        let keys = crate::ajustes_chaves::KeysTab::new(largura_lado);
+        let sandbox = crate::ajustes_sandbox::SandboxTab::new(largura_lado);
         let mut botoes_abas: Vec<(&'static str, gtk::Button)> = Vec::new();
-        for (id, nome) in [("geral", tr("General")), ("conectores", tr("Connectors (MCP)")), ("notificacoes", tr("Notifications")), ("avancado", tr("Advanced"))] {
+        for (id, nome) in [("geral", tr("General")), ("modelos", tr("Models and providers")), ("conectores", tr("Connectors (MCP)")), ("chaves", tr("Keys")), ("sandbox", tr("Sandbox")), ("notificacoes", tr("Notifications")), ("avancado", tr("Advanced"))] {
             let b = gtk::Button::with_label(nome);
             b.add_css_class("ajustes-aba");
             if id == "conectores" {
@@ -228,7 +239,14 @@ impl Ajustes {
         }
         for (id, b) in &botoes_abas {
             let (id, todos, c, l) = (*id, botoes_abas.iter().map(|(_, b)| b.clone()).collect::<Vec<_>>(), abas_conteudo.clone(), abas_lado.clone());
+            let (mw, kw, sw) = (Rc::downgrade(&models), Rc::downgrade(&keys), Rc::downgrade(&sandbox));
             b.connect_clicked(move |b| {
+                match id {
+                    "modelos" => mw.upgrade().into_iter().for_each(|m| m.reload()),
+                    "chaves" => kw.upgrade().into_iter().for_each(|k| k.reload()),
+                    "sandbox" => sw.upgrade().into_iter().for_each(|s| s.reload()),
+                    _ => {}
+                }
                 for x in &todos {
                     x.remove_css_class("ativa");
                 }
@@ -240,7 +258,12 @@ impl Ajustes {
                 }
             });
         }
-        corpo.append(&abas);
+        // in a narrow window the row of tabs scrolls sideways instead of holding the window wide
+        let abas_rolagem = gtk::ScrolledWindow::new();
+        abas_rolagem.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
+        abas_rolagem.set_propagate_natural_width(true);
+        abas_rolagem.set_child(Some(&abas));
+        corpo.append(&abas_rolagem);
         corpo.append(&caixa(Orientation::Horizontal, 0, "central-linha"));
         // the connectors' tab
         let con = caixa(Orientation::Vertical, 0, "");
@@ -343,6 +366,9 @@ impl Ajustes {
         abas_conteudo.add_named(&gerais.general.body, Some("geral"));
         abas_conteudo.add_named(&gerais.notifications.body, Some("notificacoes"));
         abas_conteudo.add_named(&gerais.advanced.body, Some("avancado"));
+        abas_conteudo.add_named(&models.body, Some("modelos"));
+        abas_conteudo.add_named(&keys.body, Some("chaves"));
+        abas_conteudo.add_named(&sandbox.body, Some("sandbox"));
         abas_conteudo.set_visible_child_name("conectores");
         corpo.append(&abas_conteudo);
         raiz.append(&corpo);
@@ -545,6 +571,9 @@ impl Ajustes {
             lado.set_hexpand(false);
             abas_lado.add_named(lado, Some(id));
         }
+        abas_lado.add_named(&models.cols.side, Some("modelos"));
+        abas_lado.add_named(&keys.cols.side, Some("chaves"));
+        abas_lado.add_named(&sandbox.side, Some("sandbox"));
         abas_lado.set_visible_child_name("conectores");
         raiz.append(&abas_lado);
         // (a narrow window: the side panel waits — the body below 520 px hides it, it comes back when the body
@@ -575,7 +604,7 @@ impl Ajustes {
             p_ferramentas, p_filtros, p_quem, p_testar, p_registro, p_remover, p_remover_rotulo, remover_confirma: Cell::new(false),
             normal, diag, d_texto, d_acoes, d_reg_sub, d_codigo, d_log, d_afeta, banner, banner_texto, cabecalho,
             kalangod: RefCell::default(), permissoes: RefCell::default(), terceiros: RefCell::default(), escolhido: RefCell::new("arquivos".into()), escolha_feita: Cell::new(false), botao_adicionar: adicionar.clone(),
-            filtro: Cell::new(0), preenchendo: Cell::new(false),
+            filtro: Cell::new(0), preenchendo: Cell::new(false), models, keys, sandbox, abas_conteudo: abas_conteudo.clone(),
         });
         a.p_filtros[0].set_active(true);
         for (i, b) in a.p_filtros.iter().enumerate() {
@@ -734,6 +763,12 @@ impl Ajustes {
 
     /// Reads everything again (kalangod's tools, the agent's permissions, each third-party connector's handshake).
     pub fn recarregar(self: &Rc<Self>) {
+        match self.abas_conteudo.visible_child_name().as_deref() {
+            Some("modelos") => self.models.reload(),
+            Some("chaves") => self.keys.reload(),
+            Some("sandbox") => self.sandbox.reload(),
+            _ => {}
+        }
         let w = Rc::downgrade(self);
         let bin = crate::voz::agent_binary();
         crate::lateral::em_segundo_plano(move || {
@@ -872,6 +907,7 @@ impl Ajustes {
     #[allow(clippy::too_many_arguments)]
     fn linha(self: &Rc<Self>, id: &str, nome: &str, glifo: &str, tipo: &str, classe: &str, estado_t: &str, extra: &str, ligado: bool, acao: Option<&'static str>) {
         let card = caixa(Orientation::Horizontal, 14, "rotinas-item");
+        card.add_css_class("ajustes-conector");
         if *self.escolhido.borrow() == id {
             card.add_css_class("escolhido");
         }

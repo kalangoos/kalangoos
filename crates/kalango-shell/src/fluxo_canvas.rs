@@ -9,7 +9,7 @@ use crate::fluxo_modelo::{self as m, EdgeDoc, FlowDoc, Rect, TriggerDoc, View};
 use crate::superficies::{caixa, rotulo};
 use gtk::prelude::*;
 use gtk::{gdk, glib, graphene, gsk, Align, Orientation};
-use kalango_i18n::tr;
+use kalango_i18n::{tr, trf};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -30,13 +30,35 @@ pub struct CanvasData {
     /// problems found by the service, per block
     pub issues: HashMap<String, String>,
     pub selected: Option<String>,
+    /// every block chosen (Shift+click, the band), the one above among them
+    pub chosen: Vec<String>,
+    /// a For each going through its items now (`run.item`): (the item it is on, how many)
+    pub progress: HashMap<String, (usize, usize)>,
+    /// after a test: each block's step ("Passo N") and the way the run went ("Caminho: A → B → …")
+    pub step_no: HashMap<String, usize>,
+    pub path: Option<String>,
+    /// the sandboxes' machines as the run reports them (`run.sandbox`): "pronta em 0,8 s", "apagada"…
+    pub sandbox_notes: HashMap<String, String>,
+    /// the VirtualDesk machines by id (a sandbox's template by its name)
+    pub templates: HashMap<String, String>,
 }
 
 pub enum CanvasEvent {
     /// a block or a trigger ("trigger:<id>") chosen, or none
     Select(Option<String>),
-    Moved(String, f64, f64),
+    /// Shift+click: a block added to the blocks chosen, or taken out
+    Toggle(String),
+    /// the band drawn on the empty canvas: the blocks inside it (with Shift: added to the ones chosen)
+    SelectMany(Vec<String>, bool),
+    /// blocks dragged to these places, and the ones that went into a sandbox (Some) or out of one (None)
+    Moved(Vec<(String, f64, f64)>, Vec<(String, Option<String>)>),
     Connect(String, String),
+    /// a connection's end dragged to another block
+    Reconnect(EdgeDoc, String),
+    /// the right button: on a block (Some) or on the empty canvas, at a screen and a world point
+    Menu(Option<String>, (f64, f64), (f64, f64)),
+    /// a double click on a block
+    Activate(String),
     /// a palette item dropped at a world point
     Drop(String, (f64, f64)),
     /// a connection chosen (Delete removes it, "/" puts a block in it)
@@ -46,8 +68,11 @@ pub enum CanvasEvent {
 enum Drag {
     None,
     Pan { start: (f64, f64) },
-    Move { id: String, start: (f64, f64) },
+    /// the blocks that move (each with where it started; a sandbox brings the blocks inside along)
+    Move { id: String, ids: Vec<(String, (f64, f64))> },
     Connect { from: String, at: (f64, f64) },
+    Reconnect { edge: EdgeDoc, at: (f64, f64) },
+    Band { from: (f64, f64), at: (f64, f64) },
 }
 
 pub struct Canvas {
@@ -70,7 +95,13 @@ pub struct Canvas {
     nodes: RefCell<Vec<(String, gtk::Box, Rect)>>,
     drag: RefCell<Drag>,
     moved: Cell<bool>,
+    /// Shift held when the press began
+    shift: Cell<bool>,
     pointer: Cell<(f64, f64)>,
+    /// "Caminho: A → B → …" after a test
+    path: gtk::Label,
+    /// each sandbox's title width (its dashed border breaks there)
+    captions: RefCell<HashMap<String, f64>>,
     pub edge: RefCell<Option<EdgeDoc>>,
     fitted: Cell<bool>,
     pub on_event: RefCell<Option<Rc<dyn Fn(CanvasEvent)>>>,
@@ -118,6 +149,17 @@ impl Canvas {
         tip.set_margin_start(24);
         tip.set_margin_top(16);
         root.add_overlay(&tip);
+        let path = rotulo("", "fluxo-percurso");
+        // (above the zoom bar: the tip and the blocks stay clear)
+        path.set_halign(Align::Start);
+        path.set_valign(Align::End);
+        path.set_margin_start(16);
+        path.set_margin_end(160);
+        path.set_margin_bottom(62);
+        path.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        path.set_visible(false);
+        path.set_can_target(false);
+        root.add_overlay(&path);
         let banner = caixa(Orientation::Horizontal, 8, "fluxo-faixa");
         banner.append(&ui_icon("escudo", "#E5C98C", 14));
         let banner_text = rotulo("", "fluxo-faixa-texto");
@@ -178,7 +220,7 @@ impl Canvas {
 
         let c = Rc::new(Canvas {
             root, fixed, edges, minimap, zoom_label, tip, banner, banner_text, banner_note, add_button, controls: [zoom.clone(), mapa.clone()], view: Cell::new(View::default()), data: RefCell::default(),
-            nodes: RefCell::default(), drag: RefCell::new(Drag::None), moved: Cell::new(false), pointer: Cell::new((0.0, 0.0)), edge: RefCell::default(),
+            nodes: RefCell::default(), drag: RefCell::new(Drag::None), moved: Cell::new(false), shift: Cell::new(false), pointer: Cell::new((0.0, 0.0)), path, captions: RefCell::default(), edge: RefCell::default(),
             fitted: Cell::new(false), on_event: RefCell::default(),
         });
         let w = Rc::downgrade(&c);
@@ -278,6 +320,28 @@ impl Canvas {
         self.fitted.set(false);
     }
 
+    /// Each block's size on the canvas (a sandbox's dashed area, and its corner under `SANDBOX_AREA`), for
+    /// "Organizar o fluxo" and "Alinhar na vertical".
+    pub fn sizes(&self) -> HashMap<String, (f64, f64)> {
+        let d = self.data.borrow();
+        let mut v = HashMap::new();
+        for (id, _, r) in self.nodes.borrow().iter() {
+            v.insert(id.clone(), (r.w, r.h));
+            if d.flow.node(id).is_some_and(|n| n.kind == "sandbox") {
+                v.insert(format!("{}{id}", m::SANDBOX_AREA), (r.x, r.y));
+            }
+        }
+        v
+    }
+
+    /// A block's place on the screen (a popover points at it).
+    pub fn screen_rect(&self, id: &str) -> Option<gdk::Rectangle> {
+        let r = self.rect_of(id)?;
+        let v = self.view.get();
+        let (a, b) = (v.to_screen((r.x, r.y)), v.to_screen((r.x + r.w, r.y + r.h)));
+        Some(gdk::Rectangle::new(a.0 as i32, a.1 as i32, (b.0 - a.0) as i32, (b.1 - a.1) as i32))
+    }
+
     pub fn rects(&self) -> Vec<(String, Rect)> {
         self.nodes.borrow().iter().map(|(id, _, r)| (id.clone(), *r)).collect()
     }
@@ -289,11 +353,18 @@ impl Canvas {
             self.fixed.remove(&w);
         }
         let d = self.data.borrow();
+        // the sandboxes' dashed areas go first: under the blocks, and the last to take a click
+        let mut areas: Vec<(String, gtk::Box)> = Vec::new();
+        for n in d.flow.nodes.iter().filter(|n| n.kind == "sandbox") {
+            let w = self.sandbox_widget(n, &d);
+            self.fixed.put(&w, 0.0, 0.0);
+            areas.push((n.id.clone(), w));
+        }
         let mut out = Vec::new();
         // the flow's input fields, on the start: its triggers, or the block a run starts at when it has none
         let input = m::inputs_line(&d.flow.inputs()).map(|text| m::Line { text, mono: true, wrap: true });
         let entry = d.flow.entry().map(|n| n.id.clone()).filter(|_| d.triggers.is_empty());
-        for n in &d.flow.nodes {
+        for n in d.flow.nodes.iter().filter(|n| n.kind != "sandbox") {
             let (title, mut lines) = m::node_text(n, &d.agents, d.items.get(&n.id).copied());
             if entry.as_deref() == Some(n.id.as_str()) {
                 lines.extend(input.clone());
@@ -303,7 +374,6 @@ impl Canvas {
             let width = m::node_width(&n.kind);
             out.push((n.id.clone(), w, Rect { x: n.x, y: n.y, w: width, h: 0.0 }));
         }
-        let mut th = 96.0;
         let mut trig = Vec::new();
         for t in &d.triggers {
             let (title, mut lines) = m::trigger_text(&t.config);
@@ -313,22 +383,34 @@ impl Canvas {
             let w = self.node_widget(&id, m::look("trigger").caps, glyph, m::Tone::Gold, &title, &lines, &d);
             trig.push((id, w));
         }
-        for (id, w, r) in out.iter_mut() {
+        for (_, w, r) in out.iter_mut() {
             self.fixed.put(w, 0.0, 0.0);
             r.h = w.measure(Orientation::Vertical, r.w as i32).0 as f64;
-            let _ = id;
         }
+        // each dashed area holds the blocks inside it
+        let mut all: Vec<(String, gtk::Box, Rect)> = Vec::new();
+        for (id, w) in areas {
+            let own = d.flow.node(&id).map(|n| (n.x, n.y)).unwrap_or((0.0, 0.0));
+            let inside = out.iter().filter(|(k, _, _)| d.flow.node(k).is_some_and(|n| n.parent.as_deref() == Some(id.as_str()))).map(|(_, _, r)| *r);
+            let r = m::sandbox_area(own, inside);
+            w.set_size_request(r.w as i32, r.h as i32);
+            let cw = w.first_child().map(|c| c.measure(Orientation::Horizontal, -1).1 as f64).unwrap_or(0.0);
+            self.captions.borrow_mut().insert(id.clone(), cw.min(r.w - 24.0));
+            all.push((id, w, r));
+        }
+        all.extend(out);
         for (i, (id, w)) in trig.into_iter().enumerate() {
             self.fixed.put(&w, 0.0, 0.0);
-            th = w.measure(Orientation::Vertical, m::node_width("trigger") as i32).0 as f64;
-            out.push((id, w, trigger_rect(&d.flow, i, th)));
+            let th = w.measure(Orientation::Vertical, m::node_width("trigger") as i32).0 as f64;
+            all.push((id, w, trigger_rect(&d.flow, i, th)));
         }
-        let _ = th;
-        for (_, w, r) in &out {
+        for (_, w, r) in &all {
             self.place(w, r);
         }
+        self.path.set_text(&d.path.as_deref().map(|p| format!("{}: {p}", tr("Path"))).unwrap_or_default());
+        self.path.set_visible(d.path.is_some());
         drop(d);
-        *self.nodes.borrow_mut() = out;
+        *self.nodes.borrow_mut() = all;
         if !self.fitted.get() && self.root.width() > 10 && !self.nodes.borrow().is_empty() {
             self.fitted.set(true);
             self.fit();
@@ -337,14 +419,64 @@ impl Canvas {
         self.minimap.queue_draw();
     }
 
+    /// A sandbox's dashed area (design "Bloco em sandbox"): its title on the border; the blocks inside sit over it.
+    fn sandbox_widget(&self, n: &m::NodeDoc, d: &CanvasData) -> gtk::Box {
+        let b = caixa(Orientation::Vertical, 0, "fluxo-sandbox");
+        if d.chosen.contains(&n.id) || d.selected.as_deref() == Some(n.id.as_str()) {
+            b.add_css_class("escolhido");
+        }
+        if n.disabled {
+            b.add_css_class("desativado");
+        }
+        if d.issues.contains_key(&n.id) {
+            b.add_css_class("problema");
+            b.set_tooltip_text(d.issues.get(&n.id).map(String::as_str));
+        }
+        let cab = caixa(Orientation::Horizontal, 6, "fluxo-sandbox-cab");
+        cab.set_halign(Align::Start);
+        cab.append(&ui_icon("escudo", "#A5A1E2", 12));
+        let tid = n.data["template"].as_str().unwrap_or("");
+        let name = d.templates.get(tid).cloned().unwrap_or_else(|| tid.to_string());
+        let mut caption = m::sandbox_caption(&n.data, &name);
+        if !n.title.trim().is_empty() {
+            caption = format!("{} · {caption}", n.title.trim());
+        }
+        let l = rotulo(&caption, "fluxo-sandbox-titulo");
+        l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        cab.append(&l);
+        if let Some(k) = d.step_no.get(&n.id) {
+            let st = rotulo(&trf("Step {n}", &[("n", k.to_string())]), "fluxo-no-passo");
+            st.set_valign(Align::Center);
+            cab.append(&st);
+        }
+        b.append(&cab);
+        // what the run's machine did, at the bottom of the area
+        if let Some(x) = d.sandbox_notes.get(&n.id) {
+            let gap = caixa(Orientation::Vertical, 0, "");
+            gap.set_vexpand(true);
+            b.append(&gap);
+            let l = rotulo(x, "fluxo-sandbox-nota");
+            l.set_halign(Align::Start);
+            l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            b.append(&l);
+        }
+        b
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn node_widget(&self, id: &str, caps: &'static str, glyph: &str, tone: m::Tone, title: &str, lines: &[m::Line], d: &CanvasData) -> gtk::Box {
         let b = caixa(Orientation::Vertical, 0, "fluxo-no");
         let is_trigger = id.starts_with(m::TRIGGER_PREFIX);
         let kind = if is_trigger { "trigger".to_string() } else { d.flow.node(id).map(|n| n.kind.clone()).unwrap_or_default() };
         b.set_size_request(m::node_width(&kind) as i32, -1);
-        if d.selected.as_deref() == Some(id) {
+        if d.selected.as_deref() == Some(id) || d.chosen.iter().any(|c| c == id) {
             b.add_css_class("escolhido");
+        }
+        let node = d.flow.node(id);
+        // (switched off: faded, a run passes its input straight on)
+        if node.is_some_and(|n| n.disabled) {
+            b.add_css_class("desativado");
+            b.set_tooltip_text(Some(tr("Off: a run passes its input straight on")));
         }
         let state = d.states.get(id).map(String::as_str);
         if state == Some("waiting") {
@@ -416,6 +548,47 @@ impl Canvas {
             }
             b.append(&x);
         }
+        // after a test: the block's step in the run (under its words: the card keeps its width)
+        if let Some(k) = d.step_no.get(id) {
+            let st = rotulo(&trf("Step {n}", &[("n", k.to_string())]), "fluxo-no-passo");
+            st.set_halign(Align::Start);
+            st.set_margin_top(6);
+            b.append(&st);
+        }
+        // one row per way of its own (an agent's routes, a condition's rules)
+        if let Some(n) = node {
+            let rows = m::way_rows(n);
+            if !rows.is_empty() {
+                let list = caixa(Orientation::Vertical, 2, "fluxo-no-saidas");
+                for r in rows {
+                    let row = caixa(Orientation::Horizontal, 6, "fluxo-no-saida");
+                    let dot = caixa(Orientation::Horizontal, 0, "fluxo-no-saida-ponto");
+                    dot.set_size_request(5, 5);
+                    dot.set_valign(Align::Center);
+                    row.append(&dot);
+                    let l = rotulo(&r, "fluxo-no-mono");
+                    l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                    l.set_max_width_chars(10);
+                    l.set_xalign(0.0);
+                    l.set_hexpand(true);
+                    row.append(&l);
+                    list.append(&row);
+                }
+                b.append(&list);
+            }
+            // several ways at once and no Join after them
+            if d.flow.needs_join(id) {
+                let row = caixa(Orientation::Horizontal, 6, "fluxo-no-aviso");
+                row.append(&ui_icon("alerta", "#E5C98C", 12));
+                let l = rotulo(tr("ways never meet: add a Join"), "fluxo-no-aviso-texto");
+                l.set_wrap(true);
+                l.set_max_width_chars(10);
+                l.set_xalign(0.0);
+                l.set_hexpand(true);
+                row.append(&l);
+                b.append(&row);
+            }
+        }
         b
     }
 
@@ -448,11 +621,47 @@ impl Canvas {
         let chip_bg = rgba("#121317", 1.0);
         let chip_line = rgba("#26272F", 1.0);
         let chosen = self.edge.borrow().clone();
+        // the sandboxes' dashed areas, broken where their title sits
+        for n in d.flow.nodes.iter().filter(|n| n.kind == "sandbox") {
+            let Some(r) = self.rect_of(&n.id) else { continue };
+            let sel = d.selected.as_deref() == Some(n.id.as_str()) || d.chosen.contains(&n.id);
+            let (a, b) = (v.to_screen((r.x, r.y + 8.0)), v.to_screen((r.x + r.w, r.y + r.h)));
+            let cap = self.captions.borrow().get(&n.id).copied().unwrap_or(0.0) * z;
+            let issue = d.issues.contains_key(&n.id);
+            // (the run's word on it: failed coral, done teal)
+            let line = match d.states.get(&n.id).map(String::as_str) {
+                _ if issue => rgba("#EFA2A6", 1.0),
+                Some("failed") => rgba("#EFA2A6", 1.0),
+                Some("done") => teal,
+                _ => (accent.0, accent.1, accent.2, if n.disabled { 0.45 } else { 1.0 }),
+            };
+            set(cr, line);
+            cr.set_line_width(if sel { 2.0 } else { 1.5 } * z.max(0.6));
+            cr.set_dash(&[5.0 * z.max(0.6), 4.0 * z.max(0.6)], 0.0);
+            let gap = (a.0 + 10.0 * z, a.0 + 14.0 * z + cap);
+            cr.new_path();
+            cr.move_to(gap.1.min(b.0), a.1);
+            cr.line_to(b.0, a.1);
+            cr.line_to(b.0, b.1);
+            cr.line_to(a.0, b.1);
+            cr.line_to(a.0, a.1);
+            cr.line_to(gap.0, a.1);
+            let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
+        }
         let edges = self.drawn_edges();
         let fanout = |s: &str| d.flow.edges.iter().filter(|e| e.source == s).count();
         let mut ports: Vec<((f64, f64), (f64, f64, f64, f64))> = Vec::new();
+        let _ = &bg;
         let mut labels: Vec<((f64, f64), String, (f64, f64, f64, f64), bool)> = Vec::new();
+        let moving = match &*self.drag.borrow() {
+            Drag::Reconnect { edge, .. } => Some(edge.clone()),
+            _ => None,
+        };
         for (e, from_trigger) in &edges {
+            if moving.as_ref() == Some(e) {
+                continue;
+            }
             let (Some(a), Some(b)) = (self.rect_of(&e.source), self.rect_of(&e.target)) else { continue };
             let r = m::route(a, b);
             let bz = m::bezier(&r);
@@ -492,7 +701,11 @@ impl Canvas {
             ports.push((p[3], color));
             // the way's label (a run's numbers when it has them)
             let src_kind = d.flow.node(&e.source).map(|n| n.kind.as_str()).unwrap_or("");
-            let text = e.handle.as_ref().and_then(|h| d.labels.get(&(e.source.clone(), h.clone())).cloned()).unwrap_or_else(|| m::way_label(src_kind, e.handle.as_deref()));
+            let mut text = e.handle.as_ref().and_then(|h| d.labels.get(&(e.source.clone(), h.clone())).cloned()).unwrap_or_else(|| m::way_label(src_kind, e.handle.as_deref()));
+            // (a For each's "done" only reads when it also has its "empty list" way)
+            if src_kind == "for_each" && e.handle.is_none() && !d.flow.edges.iter().any(|x| x.source == e.source && x.handle.as_deref() == Some(m::EMPTY_LIST)) {
+                text.clear();
+            }
             if !text.is_empty() {
                 let t = if r.back { 0.12 } else if fanout(&e.source) >= 3 { 0.86 } else { 0.5 };
                 let q = v.to_screen(m::point_at(&bz, t));
@@ -508,8 +721,51 @@ impl Canvas {
                 labels.push((q, if r.back { format!("↻ {text}") } else { text }, tc, r.back));
             }
         }
-        // a connection being drawn
-        if let Drag::Connect { from, at } = &*self.drag.borrow() {
+        // a For each's loop back (design "Fluxo · construtor": its agent runs once per item, inside the block; the
+        // dashed curve from the block after it says so): faint until a run goes through it
+        for n in d.flow.nodes.iter().filter(|n| n.kind == "for_each") {
+            let Some(next) = d.flow.edges.iter().find(|e| e.source == n.id && e.handle.is_none() && !e.target.starts_with(m::TRIGGER_PREFIX)).map(|e| e.target.clone()) else { continue };
+            if d.flow.edges.iter().any(|e| e.source == next && e.target == n.id) {
+                continue;
+            }
+            let (Some(f), Some(a)) = (self.rect_of(&n.id), self.rect_of(&next)) else { continue };
+            let (p0, p3) = (a.left_mid(), f.left_mid());
+            let bend = p0.0.min(p3.0) - 26.0 - (p0.1 - p3.1).abs() * 0.18;
+            let bz = [p0, (bend, p0.1), (bend, p3.1), p3];
+            let alpha = if d.states.contains_key(&n.id) { 1.0 } else { 0.45 };
+            let c = (purple.0, purple.1, purple.2, alpha);
+            let p: Vec<(f64, f64)> = bz.iter().map(|q| v.to_screen(*q)).collect();
+            cr.new_path();
+            cr.move_to(p[0].0, p[0].1);
+            cr.curve_to(p[1].0, p[1].1, p[2].0, p[2].1, p[3].0, p[3].1);
+            set(cr, c);
+            cr.set_line_width(1.5 * z.max(0.6));
+            cr.set_dash(&[3.0 * z.max(0.6), 3.0 * z.max(0.6)], 0.0);
+            let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
+            let word = m::item_word(n.data["items"].as_str().unwrap_or("content"));
+            // (while it runs, the item it is on; once done, all of them)
+            let at = d.progress.get(&n.id).copied().or_else(|| d.items.get(&n.id).map(|k| (*k, *k)));
+            labels.push((v.to_screen(m::point_at(&bz, 0.88)), format!("↻ {}", m::loop_label(&word, at)), c, true));
+        }
+        // the band being drawn on the empty canvas
+        if let Drag::Band { from, at } = &*self.drag.borrow() {
+            let (a, b) = (v.to_screen(*from), v.to_screen(*at));
+            // (dashed, without a fill: design "seleção e menus")
+            cr.rectangle(a.0.min(b.0), a.1.min(b.1), (a.0 - b.0).abs(), (a.1 - b.1).abs());
+            set(cr, accent);
+            cr.set_line_width(1.0);
+            cr.set_dash(&[4.0, 3.0], 0.0);
+            let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
+        }
+        // a connection being drawn (or its end moved to another block)
+        let drawing = match &*self.drag.borrow() {
+            Drag::Connect { from, at } => Some((from.clone(), *at)),
+            Drag::Reconnect { edge, at } => Some((edge.source.clone(), *at)),
+            _ => None,
+        };
+        if let Some((from, at)) = drawing.as_ref().map(|(f, a)| (f, a)) {
             if let Some(a) = self.rect_of(from) {
                 let target = m::hit_node(&self.rects(), *at).filter(|t| t != from).and_then(|t| self.rect_of(t));
                 let (p0, p1) = match target {
@@ -557,7 +813,8 @@ impl Canvas {
         }
         let layout = pangocairo::functions::create_layout(cr);
         let mut fd = gtk::pango::FontDescription::from_string("Inter Semi-Bold 8.25");
-        fd.set_absolute_size(11.0 * z.clamp(0.7, 1.4) * gtk::pango::SCALE as f64);
+        // (the labels shrink with the blocks, down to where they still read)
+        fd.set_absolute_size(11.0 * z.clamp(0.5, 1.4) * gtk::pango::SCALE as f64);
         layout.set_font_description(Some(&fd));
         for (q, text, c, back) in labels {
             layout.set_text(&text);
@@ -616,26 +873,59 @@ impl Canvas {
         self.set_view(v);
     }
 
+    /// The blocks a press on `id` moves: the chosen ones when it is one of them, else itself; a sandbox brings the
+    /// blocks inside along.
+    fn moving_set(&self, id: &str) -> Vec<(String, (f64, f64))> {
+        let d = self.data.borrow();
+        let mut ids: Vec<String> = if d.chosen.len() > 1 && d.chosen.iter().any(|c| c == id) { d.chosen.clone() } else { vec![id.to_string()] };
+        let boxes: Vec<String> = ids.iter().filter(|i| d.flow.node(i).is_some_and(|n| n.kind == "sandbox")).cloned().collect();
+        for n in d.flow.nodes.iter().filter(|n| n.parent.as_ref().is_some_and(|p| boxes.contains(p))) {
+            if !ids.contains(&n.id) {
+                ids.push(n.id.clone());
+            }
+        }
+        drop(d);
+        ids.into_iter().filter(|i| !i.starts_with(m::TRIGGER_PREFIX)).filter_map(|i| self.rect_of(&i).map(|r| (i, (r.x, r.y)))).collect()
+    }
+
+    /// The connection whose arriving end is under `p` (to drag it to another block).
+    fn hit_edge_end(&self, p: (f64, f64), radius: f64) -> Option<EdgeDoc> {
+        let edges = self.data.borrow().flow.edges.clone();
+        edges.into_iter().find(|e| {
+            let (Some(a), Some(b)) = (self.rect_of(&e.source), self.rect_of(&e.target)) else { return false };
+            let to = m::route(a, b).to;
+            (to.0 - p.0).powi(2) + (to.1 - p.1).powi(2) <= radius * radius
+        })
+    }
+
     fn connect_input(self: &Rc<Self>) {
-        // drag: a port draws a connection, a block moves, the empty canvas pans; without moving it is a click
+        // drag: a port draws a connection, a connection's end goes to another block, a block moves (with the others
+        // chosen), the empty canvas draws a band; without moving it is a click. The middle button pans.
         let g = gtk::GestureDrag::new();
         g.set_button(gdk::BUTTON_PRIMARY);
         let w = Rc::downgrade(self);
-        g.connect_drag_begin(move |_, x, y| {
+        g.connect_drag_begin(move |g, x, y| {
             let Some(c) = w.upgrade() else { return };
             c.root.grab_focus();
             c.moved.set(false);
+            c.shift.set(g.current_event_state().contains(gdk::ModifierType::SHIFT_MASK));
             let world = c.view.get().to_world((x, y));
             let rects = c.rects();
             let r = 7.0 / c.view.get().zoom;
-            let port = m::hit_port(&rects, world, r).filter(|id| !id.starts_with(m::TRIGGER_PREFIX)).filter(|id| c.data.borrow().flow.node(id).is_some_and(|n| n.kind != "end")).map(str::to_string);
+            let port = m::hit_port(&rects, world, r)
+                .filter(|id| !id.starts_with(m::TRIGGER_PREFIX))
+                .filter(|id| c.data.borrow().flow.node(id).is_some_and(|n| n.kind != "end"))
+                .map(str::to_string);
+            let end = if port.is_none() { c.hit_edge_end(world, r) } else { None };
             *c.drag.borrow_mut() = if let Some(from) = port {
                 Drag::Connect { from, at: world }
+            } else if let Some(edge) = end {
+                Drag::Reconnect { edge, at: world }
             } else if let Some(id) = m::hit_node(&rects, world) {
-                let r = c.rect_of(id).unwrap();
-                Drag::Move { id: id.to_string(), start: (r.x, r.y) }
+                let id = id.to_string();
+                Drag::Move { ids: c.moving_set(&id), id }
             } else {
-                Drag::Pan { start: c.view.get().pan }
+                Drag::Band { from: world, at: world }
             };
         });
         let w = Rc::downgrade(self);
@@ -649,44 +939,37 @@ impl Canvas {
             let start = g.start_point().unwrap_or((0.0, 0.0));
             let mut d = c.drag.borrow_mut();
             match &mut *d {
-                Drag::Pan { start: p } => {
-                    let mut v = c.view.get();
-                    v.pan = (p.0 + dx, p.1 + dy);
+                Drag::Pan { .. } | Drag::None => {}
+                Drag::Move { ids, .. } => {
+                    let ids = ids.clone();
                     drop(d);
-                    c.set_view(v);
-                }
-                Drag::Move { id, start: s } => {
-                    if id.starts_with(m::TRIGGER_PREFIX) {
-                        return;
-                    }
-                    let (nx, ny) = (s.0 + dx / z, s.1 + dy / z);
-                    let id = id.clone();
-                    drop(d);
-                    // (the borrow ends before the change: an `if let` on it would hold it through its body)
-                    let pos = c.nodes.borrow().iter().position(|(x, _, _)| *x == id);
-                    if let Some(i) = pos {
-                        let mut ns = c.nodes.borrow_mut();
-                        ns[i].2.x = nx;
-                        ns[i].2.y = ny;
-                        let (wg, r) = (ns[i].1.clone(), ns[i].2);
-                        drop(ns);
-                        c.place(&wg, &r);
-                    }
-                    if let Some(n) = c.data.borrow_mut().flow.node_mut(&id) {
-                        n.x = nx;
-                        n.y = ny;
+                    // (the borrows end before each change)
+                    for (id, s) in &ids {
+                        let (nx, ny) = (s.0 + dx / z, s.1 + dy / z);
+                        let pos = c.nodes.borrow().iter().position(|(x, _, _)| x == id);
+                        if let Some(i) = pos {
+                            let mut ns = c.nodes.borrow_mut();
+                            ns[i].2.x = nx;
+                            ns[i].2.y = ny;
+                            let (wg, r) = (ns[i].1.clone(), ns[i].2);
+                            drop(ns);
+                            c.place(&wg, &r);
+                        }
+                        if let Some(n) = c.data.borrow_mut().flow.node_mut(id) {
+                            n.x = nx;
+                            n.y = ny;
+                        }
                     }
                     // (the triggers follow the first block)
                     c.restack_triggers();
                     c.edges.queue_draw();
                     c.minimap.queue_draw();
                 }
-                Drag::Connect { at, .. } => {
+                Drag::Connect { at, .. } | Drag::Reconnect { at, .. } | Drag::Band { at, .. } => {
                     *at = c.view.get().to_world((start.0 + dx, start.1 + dy));
                     drop(d);
                     c.edges.queue_draw();
                 }
-                Drag::None => {}
             }
         });
         let w = Rc::downgrade(self);
@@ -698,24 +981,115 @@ impl Canvas {
                 c.click(start);
                 return;
             }
+            let at = c.view.get().to_world((start.0 + dx, start.1 + dy));
             match d {
-                Drag::Move { id, .. } if !id.starts_with(m::TRIGGER_PREFIX) => {
-                    if let Some(r) = c.rect_of(&id) {
-                        c.emit(CanvasEvent::Moved(id, r.x, r.y));
+                Drag::Move { id, ids } => {
+                    let flow = c.data.borrow().flow.clone();
+                    let moved: Vec<String> = ids.iter().map(|(i, _)| i.clone()).collect();
+                    let places: Vec<(String, f64, f64)> = ids.iter().filter_map(|(i, _)| c.rect_of(i).map(|r| (i.clone(), r.x, r.y))).collect();
+                    // a block let go over a sandbox's dashed area goes into it; out of it, back into the flow
+                    let areas: Vec<(String, Rect)> = flow.nodes.iter().filter(|n| n.kind == "sandbox" && !moved.contains(&n.id)).filter_map(|n| c.rect_of(&n.id).map(|r| (n.id.clone(), r))).collect();
+                    let mut into = Vec::new();
+                    for n in flow.nodes.iter().filter(|n| moved.contains(&n.id) && n.kind != "sandbox") {
+                        // (the blocks inside a sandbox that moves along stay in it)
+                        if n.parent.as_ref().is_some_and(|p| moved.contains(p)) {
+                            continue;
+                        }
+                        let Some(r) = c.rect_of(&n.id) else { continue };
+                        let to = m::sandbox_at(&areas, (r.x + r.w / 2.0, r.y + r.h / 2.0)).map(str::to_string);
+                        if to != n.parent {
+                            into.push((n.id.clone(), to));
+                        }
+                    }
+                    c.emit(CanvasEvent::Moved(places, into));
+                    // (a block moved alone is the chosen one: Delete, Duplicate and the inspector act on it)
+                    let chosen = { let d = c.data.borrow(); d.selected.as_deref() == Some(id.as_str()) || d.chosen.contains(&id) };
+                    if !chosen && !id.starts_with(m::TRIGGER_PREFIX) {
+                        *c.edge.borrow_mut() = None;
+                        c.emit(CanvasEvent::Select(Some(id)));
                     }
                 }
                 Drag::Connect { from, .. } => {
-                    let at = c.view.get().to_world((start.0 + dx, start.1 + dy));
                     let target = m::hit_node(&c.rects(), at).map(str::to_string);
                     c.edges.queue_draw();
                     if let Some(t) = target.filter(|t| *t != from && !t.starts_with(m::TRIGGER_PREFIX)) {
                         c.emit(CanvasEvent::Connect(from, t));
                     }
                 }
+                Drag::Reconnect { edge, .. } => {
+                    let target = m::hit_node(&c.rects(), at).map(str::to_string);
+                    c.edges.queue_draw();
+                    if let Some(t) = target.filter(|t| *t != edge.source && *t != edge.target && !t.starts_with(m::TRIGGER_PREFIX)) {
+                        c.emit(CanvasEvent::Reconnect(edge, t));
+                    }
+                }
+                Drag::Band { from, at } => {
+                    let band = Rect { x: from.0.min(at.0), y: from.1.min(at.1), w: (from.0 - at.0).abs(), h: (from.1 - at.1).abs() };
+                    let inside: Vec<String> = c
+                        .rects()
+                        .into_iter()
+                        .filter(|(id, r)| !id.starts_with(m::TRIGGER_PREFIX) && r.x >= band.x && r.y >= band.y && r.x + r.w <= band.x + band.w && r.y + r.h <= band.y + band.h)
+                        .map(|(id, _)| id)
+                        .collect();
+                    c.edges.queue_draw();
+                    *c.edge.borrow_mut() = None;
+                    c.emit(CanvasEvent::SelectMany(inside, c.shift.get()));
+                }
                 _ => {}
             }
         });
         self.root.add_controller(g);
+        let pan = gtk::GestureDrag::new();
+        pan.set_button(gdk::BUTTON_MIDDLE);
+        let w = Rc::downgrade(self);
+        pan.connect_drag_begin(move |_, _, _| {
+            if let Some(c) = w.upgrade() {
+                *c.drag.borrow_mut() = Drag::Pan { start: c.view.get().pan };
+            }
+        });
+        let w = Rc::downgrade(self);
+        pan.connect_drag_update(move |_, dx, dy| {
+            let Some(c) = w.upgrade() else { return };
+            let start = match &*c.drag.borrow() {
+                Drag::Pan { start } => *start,
+                _ => return,
+            };
+            let mut v = c.view.get();
+            v.pan = (start.0 + dx, start.1 + dy);
+            c.set_view(v);
+        });
+        let w = Rc::downgrade(self);
+        pan.connect_drag_end(move |_, _, _| {
+            if let Some(c) = w.upgrade() {
+                *c.drag.borrow_mut() = Drag::None;
+            }
+        });
+        self.root.add_controller(pan);
+        // the right button: the block's menu, or the canvas' (design "seleção e menus")
+        let menu = gtk::GestureClick::new();
+        menu.set_button(gdk::BUTTON_SECONDARY);
+        let w = Rc::downgrade(self);
+        menu.connect_pressed(move |_, _, x, y| {
+            let Some(c) = w.upgrade() else { return };
+            c.root.grab_focus();
+            let world = c.view.get().to_world((x, y));
+            let id = m::hit_node(&c.rects(), world).filter(|i| !i.starts_with(m::TRIGGER_PREFIX)).map(str::to_string);
+            c.emit(CanvasEvent::Menu(id, (x, y), world));
+        });
+        self.root.add_controller(menu);
+        let twice = gtk::GestureClick::new();
+        twice.set_button(gdk::BUTTON_PRIMARY);
+        let w = Rc::downgrade(self);
+        twice.connect_pressed(move |_, n, x, y| {
+            let Some(c) = w.upgrade() else { return };
+            if n == 2 {
+                let world = c.view.get().to_world((x, y));
+                if let Some(id) = m::hit_node(&c.rects(), world).filter(|i| !i.starts_with(m::TRIGGER_PREFIX)).map(str::to_string) {
+                    c.emit(CanvasEvent::Activate(id));
+                }
+            }
+        });
+        self.root.add_controller(twice);
         // the wheel pans; with Ctrl it zooms where the pointer is
         let mov = gtk::EventControllerMotion::new();
         let w = Rc::downgrade(self);
@@ -724,7 +1098,8 @@ impl Canvas {
                 c.pointer.set((x, y));
                 let world = c.view.get().to_world((x, y));
                 let rects = c.rects();
-                let cursor = if m::hit_port(&rects, world, 7.0 / c.view.get().zoom).is_some() {
+                let r = 7.0 / c.view.get().zoom;
+                let cursor = if m::hit_port(&rects, world, r).is_some() || c.hit_edge_end(world, r).is_some() {
                     "crosshair"
                 } else if m::hit_node(&rects, world).is_some() {
                     "grab"
@@ -799,7 +1174,11 @@ impl Canvas {
         let rects = self.rects();
         if let Some(id) = m::hit_node(&rects, world) {
             *self.edge.borrow_mut() = None;
-            self.emit(CanvasEvent::Select(Some(id.to_string())));
+            if self.shift.get() && !id.starts_with(m::TRIGGER_PREFIX) {
+                self.emit(CanvasEvent::Toggle(id.to_string()));
+            } else {
+                self.emit(CanvasEvent::Select(Some(id.to_string())));
+            }
             return;
         }
         let tol = 6.0 / self.view.get().zoom;

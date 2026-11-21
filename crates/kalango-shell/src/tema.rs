@@ -560,6 +560,15 @@ mod fluxos_cores {
         let unknown: Vec<String> = re(&ESTILO[start..]).into_iter().filter(|c| !m.contains_key(c)).collect();
         assert!(unknown.is_empty(), "colours the light theme does not map: {unknown:?}");
     }
+
+    /// GTK's CSS has no `:empty` (or other web-only pseudo-classes): it logs "Unknown name of pseudo-class" and drops
+    /// the rule. Hide such widgets in code (superficies::hide_when_empty).
+    #[test]
+    fn the_style_sheet_uses_only_gtk_pseudo_classes() {
+        for bad in [":empty", ":first-of-type", ":last-of-type", ":nth-of-type", ":has("] {
+            assert!(!ESTILO.contains(bad), "style.css uses {bad}, which GTK does not know");
+        }
+    }
 }
 
 #[cfg(test)]

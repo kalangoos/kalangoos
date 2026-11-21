@@ -14,3 +14,13 @@ opt-level = 3
 lto = "thin"
 codegen-units = 4
 strip = true
+
+# the dev session (sessao/rodar.sh): optimised enough to feel like the real thing, but incremental and without LTO,
+# so rebuilding the shell after a change takes seconds instead of minutes; images, the suite and measurements use release
+[profile.sessao]
+inherits = "release"
+opt-level = 2
+lto = false
+codegen-units = 16
+incremental = true
+strip = false

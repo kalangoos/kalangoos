@@ -116,6 +116,20 @@ pub fn listen(page: &Rc<FlowPage>) {
         }
         match topic {
             "run.step" => refetch(&p, &run),
+            // a For each on its next item: the loop back counts up (design "próximo anexo (1 de 2)")
+            "run.item" => {
+                let (i, n) = (d["index"].as_u64().unwrap_or(0) as usize, d["total"].as_u64().unwrap_or(0) as usize);
+                p.progress.borrow_mut().insert(d["node"].as_str().unwrap_or("").to_string(), (i, n));
+                p.canvas.set_data(p.canvas_data());
+            }
+            // a sandbox's machine: ready, then deleted or kept
+            "run.sandbox" => {
+                let node = d["node"].as_str().unwrap_or("").to_string();
+                if !node.is_empty() {
+                    p.sandbox_notes.borrow_mut().insert(node, m::sandbox_note(d));
+                    p.canvas.set_data(p.canvas_data());
+                }
+            }
             "run.waiting" => {
                 if let Some(l) = p.live.borrow_mut().as_mut() {
                     l.waiting = Some(Waiting {
@@ -173,6 +187,9 @@ pub fn follow(page: &Rc<FlowPage>, run: &str) {
     *page.live.borrow_mut() = Some(Live { run_id: run.to_string(), started: now(), status: "pending".into(), ..Default::default() });
     page.show_mode("editar");
     *page.selected.borrow_mut() = None;
+    page.chosen.borrow_mut().clear();
+    page.progress.borrow_mut().clear();
+    page.sandbox_notes.borrow_mut().clear();
     refetch(page, run);
     // what already waits (a run opened from Execuções)
     let (w, run2) = (Rc::downgrade(page), run.to_string());
@@ -643,6 +660,7 @@ impl RunsView {
         side.append(&ss);
         let footer = caixa(Orientation::Horizontal, 8, "fluxo-insp-rodape");
         footer.set_homogeneous(true);
+        crate::superficies::hide_when_empty(&footer);
         side.append(&footer);
         root.append(&side);
         let rv = Rc::new(RunsView {

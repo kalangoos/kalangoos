@@ -347,6 +347,7 @@ impl Direita {
         // Agent mode: the conversation (its own scrolling, the composer stays at the bottom); before the first
         // message it shows the pending requests and the timeline (`agente`)
         let conversa = Conversa::new();
+        conversa.modo_lateral();
         paginas.add_named(&conversa.raiz, Some("agente"));
         let agente = conversa.vazio.clone();
         raiz.append(&paginas);
@@ -411,6 +412,22 @@ impl Direita {
 
     pub fn ligar(self: &Rc<Self>, shell: &Rc<Shell>) {
         *self.shell.borrow_mut() = Rc::downgrade(shell);
+        // the agent picker's other choices go to the agents center: run a flow, create or manage agents
+        let s = Rc::downgrade(shell);
+        *self.conversa.on_picked_other.borrow_mut() = Some(Box::new(move |x| {
+            let Some(s) = s.upgrade() else { return };
+            match x {
+                crate::agent_picker::Picked::Run(a) => {
+                    s.abrir_central(None);
+                    if let Some(c) = s.central() {
+                        c.executar_fluxo(a["config"]["flow_id"].as_str().unwrap_or(""));
+                    }
+                }
+                crate::agent_picker::Picked::Create => s.abrir_central(Some("novo-agente")),
+                crate::agent_picker::Picked::Manage => s.abrir_central(Some("agentes")),
+                crate::agent_picker::Picked::Agent(_) => {}
+            }
+        }));
         let s = Rc::downgrade(shell);
         self.conversa.on_busy(move |activity| {
             if let Some(s) = s.upgrade() {
@@ -1446,7 +1463,7 @@ impl Direita {
 
     fn render_agente(self: &Rc<Self>) {
         let w = Rc::downgrade(self);
-        em_segundo_plano(|| (servicos::kalangod_pendentes(), servicos::kalangod_linha_do_tempo(12)), move |(pend, linha)| {
+        em_segundo_plano(|| (servicos::kalangod_pendentes(), servicos::kalangod_linha_do_tempo(60)), move |(pend, linha)| {
             let Some(d) = w.upgrade() else { return };
             // under the conversation greeting: what waits for you and what was done
             let mut blocos: Vec<gtk::Widget> = Vec::new();
@@ -1480,23 +1497,127 @@ impl Direita {
                 if l.is_empty() {
                     c.append(&rotulo(tr("No actions recorded yet."), "fraco"));
                 }
-                for e in l.iter().take(12) {
-                    let st = e["status"].as_str().unwrap_or("");
-                    let ic = match st {
-                        "ok" | "simulado" => "emblem-ok-symbolic",
-                        "desfeito" => "edit-undo-symbolic",
-                        "negado" | "bloqueado" => "action-unavailable-symbolic",
-                        "erro" => "dialog-error-symbolic",
-                        _ => "view-list-symbolic",
-                    };
-                    let quando = e["time"].as_i64().map(tempo_relativo).unwrap_or_default();
-                    c.append(&linha_info(ic, e["summary"].as_str().unwrap_or(e["tool"].as_str().unwrap_or("")), &format!("{} · {st} · {quando}", e["tool"].as_str().unwrap_or("")), None));
+                // (the same tool in a row is one line: "Pesquisou na web · 9 buscas", open to see each)
+                for g in group_timeline(l).iter().take(12) {
+                    c.append(&linha_do_tempo(&l[g.first..g.first + g.len]));
                 }
                 blocos.push(c.upcast());
             }
             d.montar(&d.agente, blocos, true);
         });
     }
+}
+
+/// Consecutive entries of the timeline of one tool and one outcome, shown as one line. `first` is the index of its
+/// first entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimelineGroup {
+    pub tool: String,
+    pub first: usize,
+    pub len: usize,
+}
+
+/// The lines of the timeline (entries newest first, as kalangod gives them): the same tool, one after another and
+/// ending the same way, is one line ("Pesquisou na web · 9 buscas"). A failure, a denial or an undone action does
+/// not hide among the ones that went well: it starts its own line.
+pub fn group_timeline(entries: &[Value]) -> Vec<TimelineGroup> {
+    let mut out: Vec<TimelineGroup> = Vec::new();
+    for (i, e) in entries.iter().enumerate() {
+        let tool = e["tool"].as_str().unwrap_or("");
+        let status = e["status"].as_str().unwrap_or("");
+        let joins = out.last().is_some_and(|g| g.tool == tool && !tool.is_empty() && entries[g.first + g.len - 1]["status"].as_str().unwrap_or("") == status);
+        match out.last_mut() {
+            Some(g) if joins => g.len += 1,
+            _ => out.push(TimelineGroup { tool: tool.to_string(), first: i, len: 1 }),
+        }
+    }
+    out
+}
+
+/// A line's title and count chip for `n` entries of a tool: one entry is its own summary; many that went well are what
+/// the tool did ("Leu 4 arquivos"), with a chip where the design counts them ("9 buscas"); many that failed or were
+/// denied are the tool and their count.
+pub fn timeline_words(tool: &str, n: usize, summary: &str, done: bool) -> (String, Option<String>) {
+    if n <= 1 {
+        return (if summary.is_empty() { tool.to_string() } else { summary.to_string() }, None);
+    }
+    if !done {
+        return (tool.to_string(), Some(n.to_string()));
+    }
+    // (the words of the chat's steps, chat_blocks.rs: one place says what each tool did)
+    let label = crate::chat_blocks::step_label(tool, n, crate::chat_blocks::StepState::Done);
+    if label == tool {
+        return (tool.to_string(), Some(n.to_string()));
+    }
+    (label, crate::chat_blocks::step_chip(tool, n, false))
+}
+
+/// One line of the timeline: a group of entries (one, or many of the same tool, open to list them).
+fn linha_do_tempo(itens: &[Value]) -> gtk::Widget {
+    let e = &itens[0];
+    let st = e["status"].as_str().unwrap_or("");
+    let ic = match st {
+        "ok" | "simulado" => "emblem-ok-symbolic",
+        "desfeito" => "edit-undo-symbolic",
+        "negado" | "bloqueado" => "action-unavailable-symbolic",
+        "erro" => "dialog-error-symbolic",
+        _ => "view-list-symbolic",
+    };
+    let tool = e["tool"].as_str().unwrap_or("");
+    let quando = e["time"].as_i64().map(tempo_relativo).unwrap_or_default();
+    let (titulo, chip) = timeline_words(tool, itens.len(), e["summary"].as_str().unwrap_or(""), matches!(st, "ok" | "simulado"));
+    let linha = linha_info(ic, &titulo, &format!("{tool} · {st} · {quando}"), None);
+    if itens.len() == 1 {
+        return linha.upcast();
+    }
+    // the count beside the title, and a chevron that turns when the list opens
+    if let Some(col) = linha.first_child().and_then(|i| i.next_sibling()).and_downcast::<gtk::Box>() {
+        if let Some(t) = col.first_child() {
+            let topo = caixa(Orientation::Horizontal, 8, "");
+            col.remove(&t);
+            topo.append(&t);
+            if let Some(c) = &chip {
+                let l = rotulo(c, "linha-tempo-chip");
+                l.set_valign(Align::Center);
+                topo.append(&l);
+            }
+            col.prepend(&topo);
+        }
+    }
+    let seta = ui_icon("seta-direita", MUTED, 14);
+    seta.set_valign(Align::Center);
+    linha.append(&seta);
+    let lista = caixa(Orientation::Vertical, 2, "linha-tempo-itens");
+    for x in itens {
+        let r = caixa(Orientation::Horizontal, 8, "");
+        let t = rotulo(x["summary"].as_str().unwrap_or(tool), "linha-tempo-item");
+        t.set_halign(Align::Start);
+        t.set_hexpand(true);
+        t.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        t.set_max_width_chars(34);
+        r.append(&t);
+        r.append(&rotulo(&x["time"].as_i64().map(tempo_relativo).unwrap_or_default(), "fraco"));
+        lista.append(&r);
+    }
+    let rv = gtk::Revealer::new();
+    rv.set_transition_type(gtk::RevealerTransitionType::SlideDown);
+    rv.set_transition_duration(220);
+    rv.set_child(Some(&lista));
+    let b = gtk::Button::new();
+    b.add_css_class("linha-tempo-grupo");
+    b.set_child(Some(&linha));
+    let r2 = rv.clone();
+    b.connect_clicked(move |_| {
+        let abrir = !r2.reveals_child();
+        r2.set_transition_duration(if abrir { 220 } else { 160 });
+        r2.set_reveal_child(abrir);
+        // (the chevron turns 90° with the list)
+        crate::conversa::set_icon(&seta, if abrir { "seta-baixo" } else { "seta-direita" }, MUTED);
+    });
+    let caixa_g = caixa(Orientation::Vertical, 0, "");
+    caixa_g.append(&b);
+    caixa_g.append(&rv);
+    caixa_g.upcast()
 }
 
 /// The summary card shows from this many unread notices.
@@ -2477,4 +2598,45 @@ fn quebra(l: gtk::Label) -> gtk::Label {
     l.set_xalign(0.0);
     l.set_hexpand(true);
     l
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn e(tool: &str, status: &str) -> Value {
+        json!({"tool": tool, "status": status, "summary": format!("{tool} {status}"), "time": 0})
+    }
+
+    #[test]
+    fn the_same_tool_in_a_row_is_one_line() {
+        let l = vec![e("web.buscar", "ok"), e("web.buscar", "ok"), e("web.buscar", "ok"), e("web.ler", "ok"), e("web.buscar", "ok")];
+        let g = group_timeline(&l);
+        assert_eq!(g, vec![
+            TimelineGroup { tool: "web.buscar".into(), first: 0, len: 3 },
+            TimelineGroup { tool: "web.ler".into(), first: 3, len: 1 },
+            TimelineGroup { tool: "web.buscar".into(), first: 4, len: 1 },
+        ]);
+        assert!(group_timeline(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_failure_or_a_denial_starts_its_own_line() {
+        let l = vec![e("arquivos.mover", "ok"), e("arquivos.mover", "erro"), e("arquivos.mover", "ok"), e("arquivos.mover", "ok"), e("arquivos.mover", "negado")];
+        let lens: Vec<usize> = group_timeline(&l).iter().map(|g| g.len).collect();
+        assert_eq!(lens, [1, 1, 2, 1]);
+        // entries without a tool never join
+        assert_eq!(group_timeline(&[json!({}), json!({})]).len(), 2);
+    }
+
+    #[test]
+    fn a_line_says_what_the_tool_did() {
+        assert_eq!(timeline_words("arquivos.mover", 1, "Moveu nota.txt", true), ("Moveu nota.txt".to_string(), None));
+        assert_eq!(timeline_words("web.buscar", 9, "x", true), (tr("Searched the web").to_string(), Some(trf("{n} searches", &[("n", "9".into())]))));
+        assert_eq!(timeline_words("arquivos.mover", 3, "x", true).0, trf("Moved {n} items", &[("n", "3".into())]));
+        assert_eq!(timeline_words("outra.coisa", 4, "x", true), ("outra.coisa".to_string(), Some("4".to_string())));
+        // (what failed is not told as done)
+        assert_eq!(timeline_words("arquivos.mover", 2, "x", false), ("arquivos.mover".to_string(), Some("2".to_string())));
+    }
 }

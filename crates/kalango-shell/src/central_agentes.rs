@@ -152,6 +152,8 @@ pub struct AgentsPage {
     main: gtk::Stack,
     holder: gtk::Box,
     narrow: Cell<bool>,
+    /// the room the window gives the page (Central's measure)
+    room: Cell<i32>,
     import_btn: gtk::Button,
     new_btn: gtk::Button,
     header_error: gtk::Label,
@@ -249,13 +251,16 @@ impl AgentsPage {
         raiz.set_measure_overlay(&meter, false);
 
         let p = Rc::new(AgentsPage {
-            raiz, nav: RefCell::default(), tabs, tab: RefCell::new(String::new()), bodies, sides, row, main, holder, narrow: Cell::new(false), import_btn: import_btn.clone(), new_btn: new_btn.clone(),
+            raiz, nav: RefCell::default(), tabs, tab: RefCell::new(String::new()), bodies, sides, row, main, holder, narrow: Cell::new(false), room: Cell::new(i32::MAX), import_btn: import_btn.clone(), new_btn: new_btn.clone(),
             header_error, library, gallery, tools,
         });
         *page.borrow_mut() = Rc::downgrade(&p);
         let w = Rc::downgrade(&p);
         meter.connect_resize(move |_, width, _| {
             if let Some(p) = w.upgrade() {
+                // (the page may be wider than the window's room — clipped while the window narrows — so the room
+                // the window gives counts too)
+                let width = width.min(p.room.get());
                 glib::idle_add_local_once(move || p.set_width(width));
             }
         });
@@ -330,6 +335,12 @@ impl AgentsPage {
         if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
             eprintln!("debug central: agentes aba {id}");
         }
+    }
+
+    /// The room the window gives the page: below the wide layout's minimum the page folds (frame 12).
+    pub fn set_room(self: &Rc<Self>, width: i32) {
+        self.room.set(width);
+        self.set_width(width);
     }
 
     /// Reads the data again (coming back from the editor).
@@ -429,6 +440,9 @@ pub struct Library {
     query: gtk::Entry,
     filter: RefCell<String>,
     seg: Segmented,
+    /// the kinds as one choice, in a narrow window
+    kinds: gtk::DropDown,
+    search_box: gtk::Box,
     order: gtk::DropDown,
     by: gtk::DropDown,
     grid: gtk::FlowBox,
@@ -504,6 +518,23 @@ impl Library {
         );
         seg.root.add_css_class("fx-seg-filtros");
         bar.append(&seg.root);
+        // (a narrow window, frame 12: the kinds fold into one choice, "Todos ▾")
+        let kind_ids = ["all", "assistants", "teams", "flows", "remotes"];
+        let kinds = ui::dropdown(&[tr("All kinds").to_string(), tr("Assistants").to_string(), tr("Teams").to_string(), tr("Flows").to_string(), tr("Remotes").to_string()], 0);
+        kinds.add_css_class("fx-ordem");
+        kinds.set_hexpand(false);
+        kinds.set_visible(false);
+        let l3 = lib.clone();
+        kinds.connect_selected_notify(move |d| {
+            let Some(l) = l3.borrow().upgrade() else { return };
+            let id = kind_ids.get(d.selected() as usize).copied().unwrap_or("all");
+            if *l.filter.borrow() != id {
+                *l.filter.borrow_mut() = id.to_string();
+                l.seg.set(id);
+                l.render();
+            }
+        });
+        bar.append(&kinds);
         let sp = caixa(Orientation::Horizontal, 0, "");
         sp.set_hexpand(true);
         bar.append(&sp);
@@ -598,7 +629,7 @@ impl Library {
 
         let l = Rc::new(Library {
             body, side, nav: RefCell::default(), on_pick: RefCell::default(), banner, banner_title, banner_sub, undo: undo.clone(), undo_armed: Cell::new(false), query: query.clone(),
-            filter: RefCell::new("all".into()), seg, order: order.clone(), by: by.clone(), grid, empty, items: RefCell::default(), flows: RefCell::default(), runs: RefCell::default(),
+            filter: RefCell::new("all".into()), seg, kinds, search_box: sb.clone(), order: order.clone(), by: by.clone(), grid, empty, items: RefCell::default(), flows: RefCell::default(), runs: RefCell::default(),
             custom_tools: RefCell::default(), system_tools: RefCell::default(), chosen: RefCell::default(), enabled: RefCell::default(), loading: Cell::new(0), s_tile, s_name, s_sub,
             s_switch: s_switch.clone(), s_desc, s_facts, s_uses_title, s_uses, s_runs, s_content, s_empty, s_error, s_buttons, filling: Cell::new(false),
         });
@@ -670,8 +701,17 @@ impl Library {
     }
 
     fn set_width(&self, width: i32) {
-        // the window's band: smaller cards on narrow windows
-        let _ = width;
+        // the window's band (frame 12): narrow, the kinds are one choice and the order goes, so the row fits
+        let narrow = width < NARROW;
+        self.seg.root.set_visible(!narrow);
+        self.order.set_visible(!narrow);
+        self.kinds.set_visible(narrow);
+        self.search_box.set_hexpand(narrow);
+        self.search_box.set_size_request(if narrow { 160 } else { 260 }, -1);
+        let ids = ["all", "assistants", "teams", "flows", "remotes"];
+        if let Some(i) = ids.iter().position(|k| *k == self.filter.borrow().as_str()) {
+            self.kinds.set_selected(i as u32);
+        }
     }
 
     /// Everything again from the service: agents, flows, runs and tools.
@@ -770,8 +810,7 @@ impl Library {
     }
 
     fn last_run(&self, it: &Item) -> Option<Value> {
-        let f = it.flow_id.as_deref()?;
-        self.runs.borrow().iter().find(|r| r["flow_id"].as_str() == Some(f)).cloned()
+        self.runs.borrow().iter().find(|r| run_belongs(r, it)).cloned()
     }
 
     fn render(self: &Rc<Self>) {
@@ -1016,9 +1055,9 @@ impl Library {
         }
         // last runs (the service links runs to flows)
         ui::clear_box(&self.s_runs);
-        let runs: Vec<Value> = it.flow_id.as_deref().map(|f| self.runs.borrow().iter().filter(|r| r["flow_id"].as_str() == Some(f)).take(5).cloned().collect()).unwrap_or_default();
+        let runs: Vec<Value> = self.runs.borrow().iter().filter(|r| run_belongs(r, &it)).take(5).cloned().collect();
         if runs.is_empty() {
-            let l = ui::wrapped(if it.flow_id.is_some() { tr("This flow has not run yet.") } else { tr("Runs show here when the agent runs in a flow or a routine.") }, "central-agente-sub");
+            let l = ui::wrapped(if it.flow_id.is_some() { tr("This flow has not run yet.") } else { tr("Runs show here when the agent runs: in a conversation, a flow or a routine.") }, "central-agente-sub");
             l.set_margin_top(10);
             l.set_margin_bottom(10);
             self.s_runs.append(&l);
@@ -1141,6 +1180,11 @@ fn card_chips(a: &Value, bare_flow: bool) -> Vec<String> {
             v
         }
         "remote" => vec![ui::split_url(c["card_url"].as_str().unwrap_or("")).0, "A2A".into()],
+        // (a task list said "fluxo")
+        "tasks" => {
+            let n = c["tasks"].as_array().map(|t| t.len()).unwrap_or(0);
+            vec![if n == 1 { tr("1 task").to_string() } else { trf("{n} tasks", &[("n", n.to_string())]) }]
+        }
         _ => vec![if bare_flow { tr("flow without agent").to_string() } else { tr("flow").to_string() }],
     }
 }
@@ -1169,9 +1213,32 @@ pub fn export_agent(w: &impl IsA<gtk::Widget>, agent: &Value) {
     });
 }
 
+/// Whether a run is this item's: its flow's (a flow agent, or a flow no agent wraps), or the agent's own (a
+/// conversation: kalango-fluxos' runs carry the agent's id) — chat-used agents said "nunca rodou" before.
+fn run_belongs(r: &Value, it: &Item) -> bool {
+    let flow = it.flow_id.as_deref().is_some_and(|f| r["flow_id"].as_str() == Some(f));
+    flow || (!it.bare_flow && r["agent_id"].as_str() == Some(it.id.as_str()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_task_list_card_counts_its_tasks() {
+        let a = json!({"kind": "tasks", "config": {"tasks": [{"agent": "x"}, {"agent": "y"}]}});
+        assert_eq!(card_chips(&a, false), vec![trf("{n} tasks", &[("n", "2".to_string())])]);
+    }
+
+    #[test]
+    fn a_conversation_run_is_the_agents_own() {
+        let it = |id: &str, flow: Option<&str>, bare: bool| Item { id: id.into(), agent: json!({}), created_by: "person".into(), flow_id: flow.map(str::to_string), bare_flow: bare };
+        let chat = json!({"agent_id": "a1", "flow_id": null});
+        assert!(run_belongs(&chat, &it("a1", None, false)));
+        assert!(!run_belongs(&chat, &it("a2", None, false)));
+        let flow = json!({"agent_id": null, "flow_id": "f1"});
+        assert!(run_belongs(&flow, &it("ag", Some("f1"), false)) && run_belongs(&flow, &it("f1", Some("f1"), true)));
+    }
 
     #[test]
     fn counts_tools_by_origin() {

@@ -16,13 +16,20 @@
 
 mod agent_editor;
 mod agent_prefs;
+mod ajustes_chaves;
+mod ajustes_modelos;
+mod ajustes_rede;
+mod ajustes_sandbox;
 mod agent_screen;
+mod agent_sandbox;
 mod agent_settings;
 mod app_store;
 mod app_store_data;
 mod apps;
 #[allow(dead_code)] // the screens of the agents center use it as they land
 mod fluxos;
+#[allow(dead_code)] // the API of the states, for the screens of the agents center as they land
+mod fluxos_estados;
 mod fluxos_ferramentas;
 // (some helpers serve the editors of the platform, which come next)
 #[allow(dead_code)]
@@ -37,6 +44,7 @@ mod desktop_files;
 mod bloqueio;
 mod limite;
 mod fit_row;
+mod resize_handle;
 mod central;
 mod central_agentes;
 mod central_agentes_modelos;
@@ -131,6 +139,8 @@ mod legendas;
 mod input_settings;
 mod layout_audit;
 mod shortcuts;
+mod agent_icon_picker;
+mod agent_structured;
 mod chat_blocks;
 mod agent_picker;
 mod conversa;
@@ -595,6 +605,10 @@ impl Shell {
             // the media keys: the change and its on-screen indicator
             Some("osd") => osd::comando(&args[1..]),
             // emoji and symbols (Super+.)
+            // the steps' motion, to measure and record it (development session only)
+            Some("passos-demo") if std::env::var_os("KALANGO_SHELL_DEV").is_some() => {
+                crate::chat_blocks::demo_window(app, args.get(1).map(String::as_str).unwrap_or("rodando"))
+            }
             Some("teclado") => osk::toggle(),
             Some("emoji") => {
                 if let Some(app) = gtk::gio::Application::default().and_downcast::<gtk::Application>() {
