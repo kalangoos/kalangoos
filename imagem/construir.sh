@@ -19,6 +19,9 @@
 #   KALANGO_IMAGEM_ISO=1 imagem/construir.sh     a ISO para instalar (target/iso/kalangoos.iso): sem conta nenhuma;
 #                                         liga ao vivo (casper) e abre o instalador; BIOS e UEFI
 set -euo pipefail
+# (what this script makes goes into the system as root's: no group or other write, whatever the builder's own umask
+# — with 002 the layer's folders came out 775 and, copied over the base, left /usr and /usr/bin group-writable)
+umask 022
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 ISO=${KALANGO_IMAGEM_ISO:-0}
@@ -322,6 +325,8 @@ PAC=$(grep -v '^\s*#' imagem/pacotes.txt | tr -s ' \n' ',' | sed 's/^,//; s/,$//
 [ "$ISO" = 1 ] && PAC="$PAC,casper"
 
 # ---- a raiz
+# (and the files copied in, whatever made them: nothing of the system writable by a group or by everyone)
+find "$C" ! -type l -perm /022 -exec chmod go-w {} +
 rm -f "$OUT/kalangoos.tar"
 env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME="$HOME" TMPDIR="$W" /usr/bin/mmdebstrap \
   --mode=unshare --variant=minbase --components=main,universe \

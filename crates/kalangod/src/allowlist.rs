@@ -377,6 +377,23 @@ pub fn writable(candidates: &[PathBuf], allowed: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
+/// The commands of a shell script, word by word, as far as installing goes: split at `;`, `&&`, `||`, `|` and
+/// newlines, quotes taken off, `env VAR=x` and `VAR=x` in front skipped (enough to find `pip install --user` in it;
+/// not a shell parser — what it misses still runs inside the allowlist, where an install outside the folders fails).
+fn shell_commands(script: &str) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    for part in script.split([';', '\n', '|', '&']) {
+        let mut words: Vec<String> = part.split_whitespace().map(|w| w.trim_matches(|c| c == '"' || c == '\'').to_string()).filter(|w| !w.is_empty()).collect();
+        while words.first().is_some_and(|w| w == "env" || w == "sudo" || w == "exec" || w == "command" || (w.contains('=') && !w.starts_with('-'))) {
+            words.remove(0);
+        }
+        if !words.is_empty() {
+            out.push(words);
+        }
+    }
+    out
+}
+
 /// A command that installs for the person, outside the work folders: what it is and where it writes (the folders
 /// that exist). Asked once, for that command only.
 pub struct Install {
@@ -392,6 +409,14 @@ pub struct Install {
 
 pub fn installs_for_user(prog: &str, args: &[String], home: &Path) -> Option<Install> {
     let base = Path::new(prog).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // a shell's script: each command in it (`sh -c "cd x && npm i -g y"`)
+    if matches!(base.as_str(), "sh" | "bash" | "dash" | "zsh") {
+        let script = args.iter().position(|a| a == "-c" || a == "-lc" || a == "-ic").and_then(|i| args.get(i + 1))?;
+        return shell_commands(script).into_iter().find_map(|words| {
+            let (p, rest) = words.split_first()?;
+            installs_for_user(p, rest, home)
+        });
+    }
     let has = |a: &str| args.iter().any(|x| x == a);
     let h = |p: &str| home.join(p);
     let local = |v: &[&str]| -> Vec<PathBuf> { v.iter().map(|p| h(p)).collect() };
@@ -419,7 +444,8 @@ pub fn installs_for_user(prog: &str, args: &[String], home: &Path) -> Option<Ins
         ("pip install --user", libs, vec![])
     } else if base == "pipx" && args.first().is_some_and(|a| a == "install") {
         ("pipx install", local(&[".local/pipx", ".local/share/pipx", ".local/state/pipx", ".local/bin"]), vec![])
-    } else if matches!(base.as_str(), "npm" | "pnpm" | "yarn" | "bun") && (has("-g") || has("--global") || args.first().is_some_and(|a| a == "global")) {
+    } else if matches!(base.as_str(), "npm" | "pnpm" | "yarn" | "bun") && (has("-g") || has("--global") || has("--global=true") || has("--location=global")
+        || args.windows(2).any(|w| w[0] == "--location" && w[1] == "global") || args.first().is_some_and(|a| a == "global")) {
         ("npm -g", local(&[".npm-global", ".local/lib/node_modules", ".local/bin", ".local/share/pnpm", ".config/yarn/global", ".bun/install/global", ".bun/bin"]), vec![])
     } else if base == "cargo" && args.first().is_some_and(|a| a == "install") {
         unset = &["CARGO_HOME"];
@@ -784,20 +810,34 @@ fn dir_size(p: &Path) -> u64 {
 }
 
 /// Removes a folder whose contents may be read only (Go makes its module cache so): write permission back on each
-/// folder first, links never followed.
+/// folder first, through its file descriptor (opened without following links, so a folder swapped for a link while
+/// this runs gives nothing to change), then the folder removed (`remove_dir_all` does not follow links either).
 fn remove_tree(p: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut stack = vec![p.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        let Ok(md) = d.symlink_metadata() else { continue };
-        if md.is_dir() {
-            let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(md.permissions().mode() | 0o700));
-            if let Ok(rd) = std::fs::read_dir(&d) {
-                stack.extend(rd.flatten().map(|e| e.path()));
-            }
+    use nix::fcntl::OFlag;
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let top = nix::fcntl::open(p, flags, nix::sys::stat::Mode::empty()).map_err(std::io::Error::from)?;
+    let top = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(top) };
+    unlock_tree(top, 0);
+    std::fs::remove_dir_all(p)
+}
+
+fn unlock_tree(fd: std::os::fd::OwnedFd, depth: usize) {
+    use nix::fcntl::OFlag;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let Ok(st) = nix::sys::stat::fstat(fd.as_raw_fd()) else { return };
+    let _ = nix::sys::stat::fchmod(fd.as_raw_fd(), nix::sys::stat::Mode::from_bits_truncate((st.st_mode & 0o7777) | 0o700));
+    if depth > 64 {
+        return;
+    }
+    let Ok(mut dir) = nix::dir::Dir::from_fd(match nix::unistd::dup(fd.as_raw_fd()) { Ok(d) => d, Err(_) => return }) else { return };
+    let names: Vec<std::ffi::CString> = dir.iter().flatten().filter(|e| e.file_type() != Some(nix::dir::Type::Symlink))
+        .map(|e| e.file_name().to_owned()).filter(|n| n.as_bytes() != b"." && n.as_bytes() != b"..").collect();
+    for n in names {
+        let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+        if let Ok(child) = nix::fcntl::openat(Some(fd.as_raw_fd()), n.as_c_str(), flags, nix::sys::stat::Mode::empty()) {
+            unlock_tree(unsafe { std::os::fd::OwnedFd::from_raw_fd(child) }, depth + 1);
         }
     }
-    std::fs::remove_dir_all(p)
 }
 
 /// Removes the caches `caches_to_prune` names (each reached without links, inside the person's own agents' cache
@@ -942,6 +982,27 @@ mod tests {
     }
 
     #[test]
+    fn removing_a_tree_unlocks_read_only_folders_and_follows_no_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let outside = d.path().join("fora");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let t = d.path().join("cache");
+        std::fs::create_dir_all(t.join("go-mod/x/y")).unwrap();
+        std::fs::write(t.join("go-mod/x/y/f"), "x").unwrap();
+        std::os::unix::fs::symlink(&outside, t.join("go-mod/link")).unwrap();
+        for p in ["go-mod/x/y", "go-mod/x", "go-mod"] {
+            std::fs::set_permissions(t.join(p), std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        remove_tree(&t).unwrap();
+        assert!(!t.exists());
+        // the folder a link pointed to keeps its mode
+        assert_eq!(std::fs::metadata(&outside).unwrap().permissions().mode() & 0o777, 0o555);
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
     fn caches_go_with_their_grant_by_age_and_by_size() {
         let p = |s: &str| PathBuf::from(s);
         let e = |scope: &str, roots: &[&str], last: u64| CacheEntry { uid: 1000, home: p("/h"), scope: scope.into(), roots: roots.iter().map(|r| p(r)).collect(), last };
@@ -987,6 +1048,13 @@ mod tests {
         assert!(installs_for_user("pip", &a(&["install", "-r", "req.txt"]), home).is_none());
         assert!(installs_for_user("npm", &a(&["install", "-g", "x"]), home).is_some());
         assert!(installs_for_user("npm", &a(&["install", "x"]), home).is_none());
+        for g in [&["install", "--location=global", "x"][..], &["i", "--global=true", "x"], &["install", "--location", "global", "x"]] {
+            assert!(installs_for_user("npm", &a(g), home).is_some(), "{g:?}");
+        }
+        // inside a shell's script
+        assert!(installs_for_user("/bin/sh", &a(&["-c", "cd proj && FOO=1 pip install --user requests; echo ok"]), home).is_some());
+        assert!(installs_for_user("bash", &a(&["-lc", "npm i -g x | tee log"]), home).is_some());
+        assert!(installs_for_user("sh", &a(&["-c", "pip install -r req.txt && cargo build"]), home).is_none());
         let c = installs_for_user("cargo", &a(&["install", "ripgrep"]), home).unwrap();
         assert!(c.keep.contains(&home.join(".cargo/env")));
         assert_eq!(c.unset, &["CARGO_HOME"]);
