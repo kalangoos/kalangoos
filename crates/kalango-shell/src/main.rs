@@ -14,17 +14,32 @@
 //!   kalango-shell conversar TEXTO uma conversa nova na Central de agentes, com esse pedido
 //!   kalango-shell sair            encerra o shell
 
+mod agent_editor;
 mod agent_prefs;
 mod agent_screen;
 mod agent_settings;
 mod app_store;
 mod app_store_data;
 mod apps;
+#[allow(dead_code)] // the screens of the agents center use it as they land
+mod fluxos;
+mod fluxos_ferramentas;
+// (some helpers serve the editors of the platform, which come next)
+#[allow(dead_code)]
+mod fluxos_ui;
+mod fluxo_canvas;
+mod fluxo_construtor;
+mod fluxo_execucoes;
+mod fluxo_inspetor;
+mod fluxo_modelo;
 mod arquivos;
 mod desktop_files;
 mod bloqueio;
 mod limite;
+mod fit_row;
 mod central;
+mod central_agentes;
+mod central_agentes_modelos;
 mod central_ajustes;
 mod central_conector_novo;
 mod central_conversas;
@@ -116,6 +131,8 @@ mod legendas;
 mod input_settings;
 mod layout_audit;
 mod shortcuts;
+mod chat_blocks;
+mod agent_picker;
 mod conversa;
 mod encaixe;
 mod energia;
@@ -374,6 +391,13 @@ impl Shell {
                 }
             }
             Some("central") => self.abrir_central(args.get(1).map(String::as_str)),
+            // a flow of kalango-fluxos in the builder (scripts, tests)
+            Some("fluxo") if args.len() > 1 => {
+                self.abrir_central(None);
+                if let Some(c) = self.central() {
+                    c.abrir_fluxo(&args[1]);
+                }
+            }
             Some("instalar-agente") => {
                 if let Some(f) = args.get(1) {
                     self.instalar_agente(std::path::Path::new(f));

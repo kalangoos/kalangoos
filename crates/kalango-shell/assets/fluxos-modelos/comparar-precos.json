@@ -1,0 +1,15 @@
+{
+  "id": "comparar-precos", "category": "pesquisa", "version": 3,
+  "name": "Comparar preços", "kind": "sequential", "icon": "lista", "tone": "azul", "chip": "Web",
+  "summary": "Busca, compara e devolve uma tabela.",
+  "meta": ["3 subagentes", "Web", "só leitura"],
+  "intro": "Uma equipe em sequência: cada subagente recebe o resultado do anterior.",
+  "steps": ["O buscador procura o produto em lojas", "O comparador normaliza preço, frete e prazo", "O redator escreve a tabela final"],
+  "permissions": [{"icon": "globo", "text": "Buscar e ler páginas da web", "level": "leitura"}],
+  "agents": [
+    {"id": "$a1", "name": "Buscador", "description": "Procura o produto em lojas.", "kind": "assistant", "config": {"instruction": "Procure o produto pedido em até 4 lojas e liste preço, frete e prazo de cada uma.", "tools": [{"name": "web.buscar", "permission": "free"}, {"name": "web.ler", "permission": "free"}], "output_key": "ofertas"}},
+    {"id": "$a2", "name": "Comparador", "description": "Normaliza preço, frete e prazo.", "kind": "assistant", "config": {"instruction": "Com {ofertas}, calcule o total de cada loja (preço + frete) e ordene do menor para o maior.", "output_key": "tabela"}},
+    {"id": "$a3", "name": "Redator", "description": "Escreve a tabela final.", "kind": "assistant", "config": {"instruction": "Escreva {tabela} como uma tabela curta e diga qual compensa e por quê.", "output_key": "resposta"}},
+    {"id": "$main", "name": "Comparar preços", "description": "Busca → compara → resume em uma tabela.", "kind": "sequential", "config": {"sub_agents": ["$a1", "$a2", "$a3"], "output_key": "resposta"}}
+  ]
+}

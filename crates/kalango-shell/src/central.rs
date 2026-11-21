@@ -126,10 +126,17 @@ pub struct Central {
     permissoes: Rc<crate::central_permissoes::Permissoes>,
     memoria: Rc<crate::central_memoria::Memoria>,
     rotinas: Rc<crate::central_rotinas::PaginaRotinas>,
+    /// a flow of kalango-fluxos (reached from Rotinas; the rail shows Rotinas, the bar "Rotinas › its name")
+    fluxo: Rc<crate::fluxo_construtor::FlowPage>,
+    migalha: gtk::Button,
     linha_tempo: Rc<crate::central_linha::Linha>,
     uso: Rc<crate::central_uso::PaginaUso>,
     ajustes: Rc<crate::central_ajustes::Ajustes>,
     conversas: Rc<crate::central_conversas::Conversas>,
+    /// "Agentes": Em execução, Meus agentes, Prontos para usar, Ferramentas
+    agentes: Rc<crate::central_agentes::AgentsPage>,
+    /// an agent of kalango-fluxos being edited (the rail shows Agents)
+    agente_editor: Rc<crate::agent_editor::AgentEditor>,
     /// "Criar agente (por descrição)": reached from "+ criar agente"; the rail shows Agents
     novo_agente: Rc<crate::new_agent::NewAgentPage>,
     /// "Instalar agente": a third-party agent's manifest, its permissions adjusted before installing
@@ -233,7 +240,16 @@ impl Central {
         let principal = caixa(Orientation::Vertical, 0, "");
         principal.set_hexpand(true);
         let barra_f = caixa(Orientation::Horizontal, 10, "central-barra");
+        let migalha = gtk::Button::new();
+        migalha.add_css_class("central-migalha");
+        let mc = caixa(Orientation::Horizontal, 8, "");
+        mc.append(&rotulo(tr("Routines"), ""));
+        mc.append(&rotulo("›", "central-migalha-seta"));
+        migalha.set_child(Some(&mc));
+        migalha.set_visible(false);
+        barra_f.append(&migalha);
         let titulo = rotulo(tr("Agents"), "central-titulo-janela");
+        titulo.set_ellipsize(gtk::pango::EllipsizeMode::End);
         barra_f.append(&titulo);
         let espaco = caixa(Orientation::Horizontal, 0, "");
         espaco.set_hexpand(true);
@@ -295,14 +311,10 @@ impl Central {
         paginas.set_hhomogeneous(false);
         paginas.set_transition_type(gtk::StackTransitionType::Crossfade);
         paginas.set_transition_duration(140);
-        let conteudo = caixa(Orientation::Horizontal, 0, "");
-        conteudo.set_vexpand(true);
         let corpo = caixa(Orientation::Vertical, 18, "central-corpo");
         corpo.set_hexpand(true);
         let t = caixa(Orientation::Vertical, 2, "");
-        let h = rotulo(tr("In progress"), "central-titulo");
-        h.set_xalign(0.0);
-        t.append(&h);
+        // (the page's tab says "Em execução": no title of its own)
         let subtitulo = rotulo("", "desk-metrica-sub");
         subtitulo.set_xalign(0.0);
         t.append(&subtitulo);
@@ -340,13 +352,17 @@ impl Central {
         rolagem.set_vexpand(true);
         rolagem.set_child(Some(&cartoes));
         corpo.append(&rolagem);
-        conteudo.append(&corpo);
         let painel = caixa(Orientation::Vertical, 14, "central-passos");
         painel.set_size_request(380, -1);
+        painel.set_hexpand(false);
         let cab = caixa(Orientation::Horizontal, 6, "");
         cab.append(&ui_icon("menu", "#8E8F99", 13));
         let linha_titulo = rotulo("", "desk-rotulo");
         linha_titulo.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        // (the row's room: measured alone, "PASSOS" was cut to "PASS…"; the panel keeps its width — explicit
+        // hexpand false — so the label's hexpand does not widen it)
+        linha_titulo.set_hexpand(true);
+        linha_titulo.set_xalign(0.0);
         cab.append(&linha_titulo);
         painel.append(&cab);
         let linha = caixa(Orientation::Vertical, 6, "");
@@ -355,14 +371,20 @@ impl Central {
         logs.add_css_class("desk-link");
         logs.set_halign(Align::Start);
         painel.append(&logs);
-        conteudo.append(&painel);
-        paginas.add_named(&conteudo, Some("agentes"));
+        // (the Agents page: tabs Em execução | Meus agentes | Prontos para usar | Ferramentas; the body and the
+        // steps panel above are "Em execução")
+        let agentes = crate::central_agentes::AgentsPage::new(largura, &corpo, &painel);
+        paginas.add_named(&agentes.raiz, Some("agentes"));
+        let agente_editor = crate::agent_editor::AgentEditor::new(largura);
+        paginas.add_named(&agente_editor.root, Some("agente"));
         let permissoes = crate::central_permissoes::Permissoes::new(shell, largura);
         paginas.add_named(&permissoes.raiz, Some("permissoes"));
         let memoria = crate::central_memoria::Memoria::new(shell, largura);
         paginas.add_named(&memoria.raiz, Some("memoria"));
         let rotinas = crate::central_rotinas::PaginaRotinas::new(shell, largura);
         paginas.add_named(&rotinas.raiz, Some("rotinas"));
+        let fluxo = crate::fluxo_construtor::FlowPage::new();
+        paginas.add_named(&fluxo.root, Some("fluxo"));
         let linha_tempo = crate::central_linha::Linha::new(shell, largura);
         paginas.add_named(&linha_tempo.raiz, Some("linha"));
         let uso = crate::central_uso::PaginaUso::new(shell, largura);
@@ -391,7 +413,7 @@ impl Central {
         janela.set_child(Some(&sobre));
 
         let c = Rc::new(Central {
-            janela, paginas, trilho: botoes_trilho, titulo, pedido: pedido.clone(), permissoes, memoria, rotinas, linha_tempo, uso, ajustes, conversas, novo_agente, instalar_agente, trilho_box: trilho.clone(), alca: alca.clone(), linha_sep, tique: Cell::new(0), atual: RefCell::new("agentes"), shell: RefCell::new(Rc::downgrade(shell)), subtitulo, cartoes, linha_titulo, linha,
+            janela, paginas, trilho: botoes_trilho, titulo, pedido: pedido.clone(), permissoes, memoria, rotinas, fluxo, migalha: migalha.clone(), linha_tempo, uso, ajustes, conversas, agentes, agente_editor, novo_agente, instalar_agente, trilho_box: trilho.clone(), alca: alca.clone(), linha_sep, tique: Cell::new(0), atual: RefCell::new("agentes"), shell: RefCell::new(Rc::downgrade(shell)), subtitulo, cartoes, linha_titulo, linha,
             escolhida: Cell::new(0), pendentes: RefCell::default(), assinatura: RefCell::default(),
         });
         // the window carries the Agents app id (the dock, Alt+Tab and the overview show it as that app)
@@ -422,6 +444,63 @@ impl Central {
                 c.pagina(id);
             }
         });
+        // the chat's "Executar" on a flow: the run, live
+        let w = Rc::downgrade(&c);
+        c.conversas.ao_executar(move |id| {
+            if let Some(c) = w.upgrade() {
+                c.executar_fluxo(id);
+            }
+        });
+        // where the pages of the agents platform send the person
+        let w = Rc::downgrade(&c);
+        let nav: crate::central_agentes::Nav = Rc::new(move |g| {
+            let Some(c) = w.upgrade() else { return };
+            match g {
+                crate::central_agentes::Go::Page(id) => c.pagina(id),
+                crate::central_agentes::Go::Agent { agent, new, chat } => {
+                    c.pagina("agente");
+                    c.agente_editor.open(&agent, new, chat);
+                }
+                crate::central_agentes::Go::Chat(agent) => {
+                    c.pagina("conversas");
+                    c.conversas.com_agente(agent);
+                }
+                crate::central_agentes::Go::RunFlow(id) => c.executar_fluxo(&id),
+                crate::central_agentes::Go::Tool { .. } | crate::central_agentes::Go::ImportOpenApi => {
+                    if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+                        eprintln!("debug central: editor ainda sem página");
+                    }
+                }
+            }
+        });
+        c.agentes.set_nav(nav.clone());
+        c.agente_editor.set_nav(nav);
+        // the editor's agent in the toolbar: "Agentes › Organizador"
+        let w = Rc::downgrade(&c);
+        *c.agente_editor.on_title.borrow_mut() = Some(Rc::new(move |nome| {
+            if let Some(c) = w.upgrade().filter(|c| c.paginas.visible_child_name().as_deref() == Some("agente")) {
+                c.titulo.set_text(&format!("{} › {nome}", tr("Agents")));
+            }
+        }));
+        let w = Rc::downgrade(&c);
+        migalha.connect_clicked(move |_| {
+            if let Some(c) = w.upgrade() {
+                c.pagina("rotinas");
+            }
+        });
+        let w = Rc::downgrade(&c);
+        c.rotinas.ao_abrir_fluxo(move |id| {
+            if let Some(c) = w.upgrade() {
+                c.abrir_fluxo(id);
+            }
+        });
+        let w = Rc::downgrade(&c);
+        *c.fluxo.go.borrow_mut() = Some(Rc::new(move |id: &str| {
+            if let Some(c) = w.upgrade() {
+                let id = id.to_string();
+                glib::idle_add_local_once(move || c.pagina(&id));
+            }
+        }));
         let w = Rc::downgrade(&c);
         *c.novo_agente.ir.borrow_mut() = Some(Box::new(move |id| {
             if let Some(c) = w.upgrade() {
@@ -454,6 +533,8 @@ impl Central {
         let w = Rc::downgrade(&c);
         medidor.connect_resize(move |_, largura, _| {
             if let Some(c) = w.upgrade() {
+                // (the flow builder folds its palette and inspector in a narrow window)
+                c.fluxo.set_narrow(largura < 1180);
                 glib::idle_add_local_once(move || c.conversas.largura_janela(largura));
             }
         });
@@ -590,7 +671,8 @@ impl Central {
     pub fn pagina(self: &Rc<Self>, id: &str) {
         // (the new agent's page belongs to Agents on the rail)
         let novo = id == "novo-agente";
-        let id_trilho = if novo || id == "instalar-agente" { "agentes" } else { id };
+        let fluxo = id == "fluxo";
+        let id_trilho = if novo || id == "instalar-agente" || id == "agente" { "agentes" } else if fluxo { "rotinas" } else { id };
         let Some((pid, nome, _, true)) = PAGINAS.iter().find(|p| p.0 == id_trilho) else { return };
         // ("again" only while the window is on screen: a closed window reopened on this page starts as its band wants
         // — suite run 53, §80 found the list opened as if the rail's button had been pressed)
@@ -612,7 +694,12 @@ impl Central {
         self.linha_sep.set_visible(!conversas);
         // (the side bar as the window's band wants it; the rail's own button, on this page already, opens it)
         self.conversas.na_pagina(conversas, conversas && ja_aqui);
+        self.migalha.set_visible(fluxo);
+        if fluxo {
+            self.titulo.set_text(&self.fluxo.name.borrow());
+        } else {
         self.titulo.set_text(if novo { tr("New agent") } else if id == "instalar-agente" { tr("Install agent") } else if id == "agentes" { tr("Agents") } else { tr(nome) });
+        }
         if novo {
             self.novo_agente.reset();
         }
@@ -634,9 +721,50 @@ impl Central {
             "conversas" => self.conversas.mostrar(),
             "uso" => self.uso.render(),
             "ajustes" => self.ajustes.recarregar(),
+            "agentes" => self.agentes.reload(),
             _ => {}
         }
         posicao_debug("busca", self.pedido.upcast_ref());
+    }
+
+    /// Runs a flow now and follows it live (its page, on Execuções).
+    pub fn executar_fluxo(self: &Rc<Self>, id: &str) {
+        if id.is_empty() {
+            return;
+        }
+        self.abrir_fluxo(id);
+        // (once it is loaded: loading draws the editor again, over the live run)
+        let w = Rc::downgrade(self);
+        let mut tries = 0;
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            let Some(c) = w.upgrade() else { return glib::ControlFlow::Break };
+            tries += 1;
+            if c.fluxo.is_loaded() || tries > 100 {
+                c.fluxo.run("");
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
+    /// Opens a flow of kalango-fluxos in the builder (`kalango-shell fluxo ID`, or "Editar fluxo" in Rotinas).
+    pub fn abrir_fluxo(self: &Rc<Self>, id: &str) {
+        self.fluxo.open(id);
+        self.pagina("fluxo");
+        // (the bar names the flow once the service answers)
+        let w = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            let Some(c) = w.upgrade() else { return glib::ControlFlow::Break };
+            if *c.atual.borrow() != "rotinas" || !c.migalha.is_visible() {
+                return glib::ControlFlow::Break;
+            }
+            let n = c.fluxo.name.borrow().clone();
+            if n.is_empty() {
+                return glib::ControlFlow::Continue;
+            }
+            c.titulo.set_text(&n);
+            glib::ControlFlow::Break
+        });
     }
 
     pub fn abrir(self: &Rc<Self>) {

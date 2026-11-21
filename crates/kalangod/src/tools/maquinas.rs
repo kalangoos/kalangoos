@@ -30,6 +30,8 @@ pub fn tools() -> Vec<Tool> {
             || obj(json!({"id": id_prop(), "acao": {"type": "string", "enum": ["listar", "tirar", "voltar", "apagar"]}, "nome": {"type": "string"}, "tag": {"type": "string"}}), &["id", "acao"]), snapshot),
         t("vm.criar", n_("Creates a virtual machine, optionally starting from an installation disc (ISO) of yours"), Usuario, Escreve, true,
             || obj(json!({"nome": {"type": "string"}, "iso": {"type": "string", "description": "caminho de um .iso seu"}, "sistema": {"type": "string"}, "cpus": {"type": "integer", "minimum": 1}, "memoria_mb": {"type": "integer", "minimum": 256}, "disco_gb": {"type": "integer", "minimum": 1}}), &["nome"]), criar),
+        t("vm.clonar", n_("Makes a disposable copy of a template machine for an agent's sandbox, already running from a snapshot (no folder of yours goes along)"), Usuario, Escreve, false,
+            || obj(json!({"id": id_prop(), "nome": {"type": "string"}, "snapshot": {"type": "string"}, "rede": {"type": "string", "enum": ["nat", "nenhuma"]}}), &["id"]), clonar),
         t("vm.pastas", n_("Shares a folder of yours with a virtual machine (read only unless asked), stops sharing, or lists"), Usuario, Escreve, true,
             || obj(json!({"id": id_prop(), "acao": {"type": "string", "enum": ["listar", "compartilhar", "parar"]}, "caminho": {"type": "string"}, "etiqueta": {"type": "string"}, "somente_leitura": {"type": "boolean"}}), &["id", "acao"]), pastas),
         t("vm.copiar_arquivo", n_("Copies a file of yours into a running virtual machine, or out of it into your folders (up to 64 MB)"), Usuario, Escreve, false,
@@ -127,6 +129,10 @@ fn call(c: &Ctx, name: &str, a: &Value) -> Result<Out, String> {
     Ok(Out { value, summary, inverse })
 }
 
+fn clonar(c: &Ctx, a: &Value) -> Result<Out, String> {
+    call(c, "vm.clonar", a)
+}
+
 fn listar(c: &Ctx, a: &Value) -> Result<Out, String> {
     call(c, "vm.listar", a)
 }
@@ -186,7 +192,7 @@ mod tests {
     #[test]
     fn every_vm_tool_has_a_contract() {
         let all = tools();
-        assert_eq!(all.len(), 13);
+        assert_eq!(all.len(), 14);
         for t in &all {
             assert!(t.name.starts_with("vm."));
             assert_eq!((t.schema)()["type"], "object");

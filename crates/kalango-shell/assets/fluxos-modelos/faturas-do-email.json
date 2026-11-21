@@ -1,0 +1,27 @@
+{
+  "id": "faturas-do-email", "category": "email", "featured": true, "version": 3,
+  "name": "Faturas do e-mail", "kind": "flow", "icon": "raio", "tone": "teal", "chip": "Correio",
+  "summary": "Guarda faturas que chegam no Correio numa pasta e pergunta se quer um lembrete de pagamento.",
+  "meta": ["5 blocos", "Correio, Arquivos, Calendário", "pede 1 aprovação"],
+  "intro": "Antes de usar, você ajusta e vê exatamente o que ele vai poder fazer. Nada roda até você ligar.",
+  "steps": ["Quando chega e-mail com PDF no Correio", "O agente local diz se é fatura", "Guarda cada PDF em ~/Documentos/Faturas", "Pergunta se cria um lembrete no calendário"],
+  "permissions": [
+    {"icon": "enviar", "text": "Ler mensagens do Correio", "level": "leitura"},
+    {"icon": "pasta", "text": "Escrever em ~/Documentos/Faturas", "level": "usuario"},
+    {"icon": "relogio", "text": "Criar eventos no calendário", "level": "pergunta"}
+  ],
+  "agents": [
+    {"id": "$main", "name": "Classificador de faturas", "description": "Diz se uma mensagem é fatura e de quanto.", "kind": "assistant",
+     "config": {"instruction": "Você recebe uma mensagem de e-mail com anexos.\nResponda só \"fatura\" quando for uma conta a pagar, com o valor e o vencimento, ou \"outra\" quando não for.", "tools": [], "model_mode": "auto"}}
+  ],
+  "flow": {"nodes": [
+    {"id": "classificar", "position": {"x": 0, "y": 0}, "type": "agent", "data": {"agent_id": "$main", "save_as": "tipo"}},
+    {"id": "guardar", "position": {"x": 0, "y": 120}, "type": "system_action", "data": {"tool": "arquivos.mover", "arguments": {"origem": "{anexo}", "destino": "~/Documentos/Faturas"}}},
+    {"id": "perguntar", "position": {"x": 0, "y": 240}, "type": "approval", "data": {"question": "Criar um lembrete de pagamento?", "details": "{tipo}"}},
+    {"id": "avisar", "position": {"x": 0, "y": 360}, "type": "notify", "data": {"title": "Fatura guardada", "body": "{tipo}"}},
+    {"id": "fim", "position": {"x": 0, "y": 480}, "type": "end"}
+  ], "edges": [
+    {"source": "classificar", "target": "guardar"}, {"source": "guardar", "target": "perguntar"},
+    {"source": "perguntar", "target": "avisar"}, {"source": "avisar", "target": "fim"}
+  ]}
+}

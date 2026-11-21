@@ -146,6 +146,32 @@ fn command_text(tool: &str, args: &Value) -> String {
     if text.chars().count() > 900 { format!("{}…", text.chars().take(900).collect::<String>()) } else { text }
 }
 
+/// Tools of the agents platform (kalangod's tools/plataforma.rs) whose approval shows a preview.
+fn is_platform_tool(tool: &str) -> bool {
+    matches!(tool, "agentes.criar" | "agentes.editar" | "fluxos.criar" | "fluxos.editar" | "ferramentas.criar_http" | "mcp.registrar")
+}
+
+/// The preview lines as markup: the first line in bold, "· item" lines as they are, and the lines saying what was
+/// removed or tightened (everything after the items) in the error colour.
+fn platform_markup(reason: &str) -> String {
+    let esc = |t: &str| glib::markup_escape_text(t).to_string();
+    let mut out = Vec::new();
+    let mut seen_item = false;
+    for (i, l) in reason.lines().enumerate() {
+        if i == 0 {
+            out.push(format!("<b>{}</b>", esc(l)));
+        } else if l.starts_with("· ") {
+            seen_item = true;
+            out.push(esc(l));
+        } else if seen_item {
+            out.push(format!("<span foreground=\"#E06C75\">{}</span>", esc(l)));
+        } else {
+            out.push(esc(l));
+        }
+    }
+    out.join("\n")
+}
+
 impl Ui {
     fn mostrar(self: &Rc<Self>, lista: &[Value]) {
         let Some(p) = lista.first() else {
@@ -209,10 +235,20 @@ impl Ui {
         } else {
             trf("The agent {agent} wants to change the system with “{tool}”:", &[("agent", agente), ("tool", tool.to_string())])
         });
-        self.comando.set_text(&command_text(tool, &p["args"]));
+        // the agents platform: kalangod's reason is the exact preview of what will exist (already fitted to the
+        // agent's ceiling): it is shown instead of the raw arguments, with what was removed in red
+        let plataforma = is_platform_tool(tool);
+        if plataforma {
+            self.comando.set_markup(&platform_markup(p["reason"].as_str().unwrap_or("")));
+        } else {
+            self.comando.set_text(&command_text(tool, &p["args"]));
+        }
         let descricao = p["descricao"].as_str().unwrap_or("").to_string();
         let mut escopo = vec![descricao];
-        if nivel == "total" {
+        if plataforma {
+            escopo.push(tr("marked “created by the agent”").into());
+            escopo.push(tr("can be undone from the timeline").into());
+        } else if nivel == "total" {
             escopo.push(trf("full access for {n} min", &[("n", "15".into())]));
             escopo.push(tr("protected folders stay out of reach").into());
         } else {
@@ -221,7 +257,8 @@ impl Ui {
         }
         self.escopo.set_text(&escopo.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "));
         // "always" covers only this same request, and never full access (it is always temporary)
-        self.sempre.set_visible(nivel == "sistema");
+        // (and never for what an agent creates: each agent, flow or connector is seen before it exists)
+        self.sempre.set_visible(nivel == "sistema" && !plataforma);
         self.mostrar_comum(p);
     }
 
@@ -368,6 +405,19 @@ fn decision_sound(approved: bool) {
 
 thread_local! {
     static DEMO: RefCell<Option<Rc<Ui>>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+mod platform_tests {
+    use super::{is_platform_tool, platform_markup};
+
+    #[test]
+    fn previews_of_the_platform() {
+        assert!(is_platform_tool("agentes.criar") && !is_platform_tool("pacotes.remover"));
+        let m = platform_markup("criar o agente \"A & B\"\ninstruções: x\n· web.ler — rodar livre\narquivos.apagar removida");
+        assert!(m.starts_with("<b>criar o agente &quot;A &amp; B&quot;</b>"), "{m}");
+        assert!(m.ends_with("<span foreground=\"#E06C75\">arquivos.apagar removida</span>"), "{m}");
+    }
 }
 
 fn demo_pedido() -> Value {

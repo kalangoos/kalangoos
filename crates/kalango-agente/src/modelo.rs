@@ -45,13 +45,85 @@ pub const VISION_MODEL: &str = "LFM3-VL-2B-Q4_K_M.gguf";
 pub const VISION_PROJECTOR: &str = "mmproj-LFM3-VL-2B-Q8_0.gguf";
 const VISION_CONTEXT: u32 = 32_768;
 
-/// Which local model: text (the agent), audio (speech to text) or vision (what is in a picture). Each has its own
-/// server and socket.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Omni: LFM3-Omni (text, image and audio in one model), when the person installed it.
+pub const OMNI_MODEL: &str = "LFM3-Omni-2B-Q4_K_M.gguf";
+pub const OMNI_PROJECTOR: &str = "mmproj-LFM3-Omni-2B-Q8_0.gguf";
+const OMNI_CONTEXT: u32 = 32_768;
+/// Decision models (d1): answer typed questions with calibrated probabilities in one pass, without generating text
+/// (llama-server's /v1/systemone). d1-2B reads text and images; d1-Omni-2B also audio.
+pub const DECISION_MODEL: &str = "d1-2B-Q4_K_M.gguf";
+pub const DECISION_PROJECTOR: &str = "mmproj-d1-2B-Q8_0.gguf";
+pub const DECISION_OMNI_MODEL: &str = "d1-Omni-2B-Q8_0.gguf";
+pub const DECISION_OMNI_PROJECTOR: &str = "mmproj-d1-Omni-2B-Q8_0.gguf";
+/// A decision prompt is evaluated in one batch: it must fit in the micro-batch.
+const DECISION_CONTEXT: u32 = 16_384;
+
+/// Which local model: text (the agent), audio (speech to text and text to speech), vision (what is in a picture),
+/// omni (all three in one) or a decision model. Each has its own server and socket.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Text,
     Audio,
     Vision,
+    Omni,
+    Decision,
+    DecisionOmni,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 6] = [Kind::Text, Kind::Audio, Kind::Vision, Kind::Omni, Kind::Decision, Kind::DecisionOmni];
+
+    /// The name used on the command line and by other programs (kalango-fluxos).
+    pub fn id(self) -> &'static str {
+        match self {
+            Kind::Text => "texto",
+            Kind::Audio => "audio",
+            Kind::Vision => "visao",
+            Kind::Omni => "omni",
+            Kind::Decision => "decisao",
+            Kind::DecisionOmni => "decisao-omni",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Kind> {
+        Kind::ALL.into_iter().find(|k| k.id() == id)
+    }
+
+    /// (model file, projector file)
+    fn files(self) -> (&'static str, Option<&'static str>) {
+        match self {
+            Kind::Text => (DEFAULT_MODEL, None),
+            Kind::Audio => (AUDIO_MODEL, Some(AUDIO_PROJECTOR)),
+            Kind::Vision => (VISION_MODEL, Some(VISION_PROJECTOR)),
+            Kind::Omni => (OMNI_MODEL, Some(OMNI_PROJECTOR)),
+            Kind::Decision => (DECISION_MODEL, Some(DECISION_PROJECTOR)),
+            Kind::DecisionOmni => (DECISION_OMNI_MODEL, Some(DECISION_OMNI_PROJECTOR)),
+        }
+    }
+
+    pub fn socket(self) -> PathBuf {
+        match self {
+            Kind::Text => socket_path(),
+            Kind::Audio => audio_socket_path(),
+            Kind::Vision => vision_socket_path(),
+            Kind::Omni => runtime_dir().join("modelo-omni.sock"),
+            Kind::Decision => runtime_dir().join("modelo-decisao.sock"),
+            Kind::DecisionOmni => runtime_dir().join("modelo-decisao-omni.sock"),
+        }
+    }
+
+    /// Whether its files are installed.
+    pub fn installed(self) -> bool {
+        let (m, p) = self.files();
+        let model_ok = if self == Kind::Text { model_path().is_some() } else { find_model(m).is_some() };
+        model_ok && p.is_none_or(|p| find_model(p).is_some())
+    }
+
+    /// What the files take on disk (≈ what the model takes in memory), in bytes.
+    pub fn size(self) -> u64 {
+        let (m, p) = self.files();
+        [Some(m), p].into_iter().flatten().filter_map(find_model).filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum()
+    }
 }
 
 /// One assistant turn: text and/or tool calls.
@@ -233,11 +305,15 @@ impl Model {
         Self::ensure_kind(Kind::Vision, on_status)
     }
 
+    /// Any kind, by its id (the command `kalango-agente modelo <id>`).
+    pub fn ensure_named(kind: Kind, on_status: &dyn Fn(&str)) -> Result<Model, String> {
+        Self::ensure_kind(kind, on_status)
+    }
+
     fn ensure_kind(kind: Kind, on_status: &dyn Fn(&str)) -> Result<Model, String> {
         let file = match kind {
             Kind::Text => model_path(),
-            Kind::Audio => find_model(AUDIO_MODEL),
-            Kind::Vision => find_model(VISION_MODEL),
+            k => find_model(k.files().0),
         };
         let name = file.as_ref().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string())).unwrap_or_else(|| "LFM3".into());
         if kind == Kind::Text {
@@ -246,11 +322,7 @@ impl Model {
                 return if healthy(&endpoint) { Ok(Model { endpoint, name }) } else { Err(trf("the model at {url} is not answering", &[("url", url)])) };
             }
         }
-        let sock = match kind {
-            Kind::Text => socket_path(),
-            Kind::Audio => audio_socket_path(),
-            Kind::Vision => vision_socket_path(),
-        };
+        let sock = kind.socket();
         let endpoint = Endpoint::Unix(sock.clone());
         if healthy(&endpoint) {
             usado(&sock);
@@ -266,19 +338,34 @@ impl Model {
                 file.ok_or_else(|| trf("the vision model is not installed ({file} in ~/.local/share/kalango/modelos)", &[("file", VISION_MODEL.into())]))?,
                 Some(find_model(VISION_PROJECTOR).ok_or_else(|| trf("the vision model is not installed ({file} in ~/.local/share/kalango/modelos)", &[("file", VISION_PROJECTOR.into())]))?),
             ),
+            k => {
+                let (m, p) = k.files();
+                let missing = |f: &str| trf("the model is not installed ({file} in ~/.local/share/kalango/modelos)", &[("file", f.to_string())]);
+                (file.ok_or_else(|| missing(m))?, p.map(|p| find_model(p).ok_or_else(|| missing(p))).transpose()?)
+            }
         };
+        // one heavy model at a time when memory is tight: idle extra servers make room first
+        if kind != Kind::Text {
+            make_room(kind, on_status);
+        }
         let bin = server_binary().ok_or_else(|| tr("llama-server not found").to_string())?;
         on_status(match kind {
             Kind::Text => tr("starting the local model…"),
             Kind::Audio => tr("starting the voice model…"),
             Kind::Vision => tr("starting the vision model…"),
+            Kind::Omni => tr("starting the omni model…"),
+            Kind::Decision | Kind::DecisionOmni => tr("starting the decision model…"),
         });
         let (log_name, ctx) = match kind {
             Kind::Text => ("modelo.log", text_context(mem_total_kib())),
             Kind::Audio => ("modelo-audio.log", AUDIO_CONTEXT),
             Kind::Vision => ("modelo-visao.log", VISION_CONTEXT),
+            Kind::Omni => ("modelo-omni.log", OMNI_CONTEXT),
+            Kind::Decision => ("modelo-decisao.log", DECISION_CONTEXT),
+            Kind::DecisionOmni => ("modelo-decisao-omni.log", DECISION_CONTEXT),
         };
-        let mut child = start_server(&bin, &model, projector.as_deref(), &sock, ctx, log_name)?;
+        let decision = matches!(kind, Kind::Decision | Kind::DecisionOmni);
+        let mut child = start_server(&bin, &model, projector.as_deref(), &sock, ctx, log_name, decision)?;
         if kind != Kind::Text {
             let _ = std::fs::write(sock.with_extension("pid"), child.id().to_string());
             // (a mark left by a server of an earlier run would make this new one look idle: the next engine run
@@ -410,7 +497,7 @@ pub fn encerrar_ociosos() {
     extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
     }
-    for sock in [audio_socket_path(), vision_socket_path()] {
+    for sock in Kind::ALL.into_iter().filter(|k| *k != Kind::Text).map(Kind::socket) {
         let pidf = sock.with_extension("pid");
         let Some(pid) = std::fs::read_to_string(&pidf).ok().and_then(|s| s.trim().parse::<i32>().ok()) else { continue };
         let cmd = std::fs::read(format!("/proc/{pid}/cmdline")).map(|b| String::from_utf8_lossy(&b).replace('\0', " ")).unwrap_or_default();
@@ -422,6 +509,48 @@ pub fn encerrar_ociosos() {
             unsafe { kill(pid, 15) };
             let _ = std::fs::remove_file(&pidf);
             let _ = std::fs::remove_file(sock.with_extension("usado"));
+        }
+    }
+}
+
+/// Whether the server of `kind` answers now (without starting it).
+pub fn running(kind: Kind) -> bool {
+    healthy(&Endpoint::Unix(kind.socket()))
+}
+
+/// MemAvailable from /proc/meminfo, in KiB.
+fn mem_available_kib() -> u64 {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|m| m.lines().find(|l| l.starts_with("MemAvailable:")).and_then(|l| l.split_whitespace().nth(1)?.parse().ok()))
+        .unwrap_or(u64::MAX)
+}
+
+/// Whether `need` more bytes fit while keeping a margin for the desktop (1 GiB plus the model's cache).
+pub fn fits(need: u64) -> bool {
+    mem_available_kib().saturating_mul(1024) > need.saturating_mul(2) + (1 << 30)
+}
+
+/// Before starting `kind`: when its files do not fit in the free memory, ends the other extra servers this engine
+/// started (never the text model, which the agent always uses) — one heavy model at a time.
+fn make_room(kind: Kind, on_status: &dyn Fn(&str)) {
+    if fits(kind.size()) {
+        return;
+    }
+    extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    for other in Kind::ALL.into_iter().filter(|k| *k != Kind::Text && *k != kind) {
+        let sock = other.socket();
+        let pidf = sock.with_extension("pid");
+        let Some(pid) = std::fs::read_to_string(&pidf).ok().and_then(|s| s.trim().parse::<i32>().ok()) else { continue };
+        let cmd = std::fs::read(format!("/proc/{pid}/cmdline")).map(|b| String::from_utf8_lossy(&b).replace('\0', " ")).unwrap_or_default();
+        if cmd.contains("llama-server") && cmd.contains(&sock.display().to_string()) {
+            on_status(&trf("little free memory: ending the {kind} model first", &[("kind", other.id().to_string())]));
+            unsafe { kill(pid, 15) };
+            let _ = std::fs::remove_file(&pidf);
+            let _ = std::fs::remove_file(sock.with_extension("usado"));
+            std::thread::sleep(Duration::from_millis(500));
         }
     }
 }
@@ -462,7 +591,7 @@ fn registrar_uso(modelo: &str, v: &Value) {
 /// Starts llama-server in the background, detached from this process (it serves later requests too), on the
 /// Unix socket only. The whole context; --fit puts on the GPU as many layers and as much of the cache as the free
 /// memory allows and leaves the rest on the CPU.
-fn start_server(bin: &Path, model: &Path, projector: Option<&Path>, sock: &Path, ctx: u32, log_name: &str) -> Result<std::process::Child, String> {
+fn start_server(bin: &Path, model: &Path, projector: Option<&Path>, sock: &Path, ctx: u32, log_name: &str, decision: bool) -> Result<std::process::Child, String> {
     use std::os::unix::fs::PermissionsExt;
     let dir = sock.parent().ok_or("socket without folder")?;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -478,6 +607,10 @@ fn start_server(bin: &Path, model: &Path, projector: Option<&Path>, sock: &Path,
         .stdin(Stdio::null()).stdout(out.try_clone().map_err(|e| e.to_string())?).stderr(out);
     if let Some(p) = projector {
         cmd.arg("--mmproj").arg(p);
+    }
+    if decision {
+        // a decision prompt is evaluated in one batch (images and audio included)
+        cmd.args(["--batch-size", &ctx.to_string(), "--ubatch-size", &ctx.to_string()]);
     }
     // its own session, so closing the terminal or the shell does not take the model down
     use std::os::unix::process::CommandExt;

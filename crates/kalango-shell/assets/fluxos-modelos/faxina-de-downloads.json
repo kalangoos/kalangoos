@@ -1,0 +1,18 @@
+{
+  "id": "faxina-de-downloads", "category": "arquivos", "version": 2,
+  "name": "Faxina de Downloads", "kind": "assistant", "icon": "pasta", "tone": "teal", "chip": "Arquivos",
+  "summary": "Separa por tipo e mês; pergunta antes de apagar.",
+  "meta": ["assistente", "Arquivos", "pede aprovação para apagar"],
+  "intro": "Um assistente que arruma a pasta Downloads. Você escolhe a pasta de destino antes de ligar.",
+  "steps": ["Lista o que há em ~/Downloads", "Separa os arquivos por tipo e por mês", "Pergunta antes de apagar instaladores antigos", "Escreve um resumo na Linha do tempo"],
+  "permissions": [
+    {"icon": "pasta", "text": "Ler e mover arquivos em ~/Downloads", "level": "usuario"},
+    {"icon": "lixeira", "text": "Mandar instaladores antigos para a lixeira", "level": "pergunta"}
+  ],
+  "agents": [
+    {"id": "$main", "name": "Faxina de Downloads", "description": "Arruma a pasta Downloads por tipo e data e avisa o que mudou.", "kind": "assistant",
+     "config": {"instruction": "Você organiza a pasta Downloads da pessoa.\nSepare os arquivos por tipo em {pasta_destino} e por mês.\nInstaladores (.deb, .AppImage) com mais de 30 dias: pergunte antes de apagar.\nNo fim, escreva um resumo curto com {total_movidos} arquivos.",
+      "tools": [{"name": "arquivos.listar", "permission": "free"}, {"name": "arquivos.mover", "permission": "free"}, {"name": "arquivos.apagar", "permission": "ask"}],
+      "settings": {"temperature": 0.2}, "model_mode": "auto"}}
+  ]
+}

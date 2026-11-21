@@ -1,0 +1,22 @@
+{
+  "id": "resumo-da-semana", "category": "escrita", "version": 2,
+  "name": "Resumo da semana", "kind": "flow", "icon": "doc", "tone": "lilas", "chip": "Horário",
+  "summary": "Toda sexta junta notas e agenda num texto.",
+  "meta": ["3 blocos", "Arquivos, Calendário", "sem aprovações"],
+  "intro": "Um fluxo com um redator local. Ligue um gatilho de horário (sexta, 18:00) depois de salvar.",
+  "steps": ["Toda sexta às 18:00", "O redator lê as notas e a agenda da semana", "Salva o resumo em ~/Documentos/Resumos"],
+  "permissions": [
+    {"icon": "doc", "text": "Ler notas em ~/Documentos", "level": "leitura"},
+    {"icon": "pasta", "text": "Escrever em ~/Documentos/Resumos", "level": "usuario"}
+  ],
+  "agents": [
+    {"id": "$main", "name": "Redator da semana", "description": "Escreve o resumo da semana a partir das notas e da agenda.", "kind": "assistant",
+     "config": {"instruction": "Leia as notas da semana e os eventos da agenda.\nEscreva um resumo curto em tópicos: o que foi feito, o que ficou pendente e o que vem na próxima semana.",
+      "tools": [{"name": "arquivos.listar", "permission": "free"}, {"name": "arquivos.ler", "permission": "free"}], "model_mode": "auto"}}
+  ],
+  "flow": {"nodes": [
+    {"id": "redigir", "position": {"x": 0, "y": 0}, "type": "agent", "data": {"agent_id": "$main", "message": "Resuma a semana.", "save_as": "resumo"}},
+    {"id": "avisar", "position": {"x": 0, "y": 120}, "type": "notify", "data": {"title": "Resumo da semana pronto", "body": "{resumo}"}},
+    {"id": "fim", "position": {"x": 0, "y": 240}, "type": "end"}
+  ], "edges": [{"source": "redigir", "target": "avisar"}, {"source": "avisar", "target": "fim"}]}
+}

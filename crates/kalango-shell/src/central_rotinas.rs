@@ -10,7 +10,7 @@ use crate::Shell;
 use gtk::prelude::*;
 use gtk::{glib, Align, Orientation};
 use kalango_i18n::{tr, trf};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 /// The form's "when": (label, days or a trigger without time).
@@ -64,6 +64,9 @@ pub struct PaginaRotinas {
     proximas: gtk::Box,
     sugestoes: gtk::Box,
     preenchendo: Cell<bool>,
+    /// the flows of kalango-fluxos, above the simple routines
+    flows: gtk::Box,
+    open_flow: RefCell<Option<Rc<dyn Fn(&str)>>>,
 }
 
 impl PaginaRotinas {
@@ -91,6 +94,16 @@ impl PaginaRotinas {
         nova.set_child(Some(&nc));
         nova.set_valign(Align::Start);
         nova.set_margin_top(6);
+        let new_flow = gtk::Button::new();
+        new_flow.add_css_class("central-botao");
+        new_flow.add_css_class("ao-lado");
+        let nfc = caixa(Orientation::Horizontal, 6, "");
+        nfc.append(&ui_icon("raio", "#E2E2E6", 14));
+        nfc.append(&rotulo(tr("New flow"), ""));
+        new_flow.set_child(Some(&nfc));
+        new_flow.set_valign(Align::Start);
+        new_flow.set_margin_top(6);
+        topo.append(&new_flow);
         topo.append(&nova);
         corpo.append(&topo);
         // the inline form
@@ -140,11 +153,16 @@ impl PaginaRotinas {
         form.set_child(Some(&fc));
         corpo.append(&form);
         let lista = caixa(Orientation::Vertical, 8, "");
-        lista.set_margin_top(16);
+        lista.set_margin_top(8);
+        let flows = caixa(Orientation::Vertical, 8, "");
+        flows.set_margin_top(16);
+        let ambas = caixa(Orientation::Vertical, 0, "");
+        ambas.append(&flows);
+        ambas.append(&lista);
         let rolagem = gtk::ScrolledWindow::new();
         rolagem.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
         rolagem.set_vexpand(true);
-        rolagem.set_child(Some(&lista));
+        rolagem.set_child(Some(&ambas));
         corpo.append(&rolagem);
         raiz.append(&corpo);
 
@@ -180,6 +198,13 @@ impl PaginaRotinas {
 
         let p = Rc::new(PaginaRotinas {
             raiz, shell: Rc::downgrade(shell), lista, nova: nova.clone(), form, nome, pedido, quando, hora, espaco, form_erro, proximas, sugestoes, preenchendo: Cell::new(false),
+            flows, open_flow: RefCell::default(),
+        });
+        let w = Rc::downgrade(&p);
+        new_flow.connect_clicked(move |_| {
+            if let Some(p) = w.upgrade() {
+                p.create_flow();
+            }
         });
         let w = Rc::downgrade(&p);
         nova.connect_clicked(move |_| {
@@ -285,7 +310,171 @@ impl PaginaRotinas {
         self.render();
     }
 
+    /// What opens a flow in the builder (the center sets it).
+    pub fn ao_abrir_fluxo(&self, f: impl Fn(&str) + 'static) {
+        *self.open_flow.borrow_mut() = Some(Rc::new(f));
+    }
+
+    fn open(&self, id: &str) {
+        let f = self.open_flow.borrow().clone();
+        if let Some(f) = f {
+            f(id);
+        }
+    }
+
+    /// "Novo fluxo": a flow with a first message block, opened in the builder.
+    fn create_flow(self: &Rc<Self>) {
+        let flow = serde_json::json!({"nodes": [{"id": "message_1", "position": {"x": 40, "y": 60}, "type": "message", "data": {"content": tr("Hello! This flow is new: drag blocks onto the canvas.")}}], "edges": []});
+        let w = Rc::downgrade(self);
+        crate::fluxos::call("flows.save", serde_json::json!({"name": tr("New flow"), "flow": flow}), move |r| {
+            if let (Some(p), Ok(v)) = (w.upgrade(), r) {
+                if let Some(id) = v["id"].as_str() {
+                    p.open(id);
+                }
+            }
+        });
+    }
+
+    /// The flows of kalango-fluxos (each with its trigger, its last run and a switch), above the routines.
+    fn render_flows(self: &Rc<Self>) {
+        let w = Rc::downgrade(self);
+        crate::fluxos::call("flows.list", serde_json::json!({}), move |r| {
+            let Some(p) = w.upgrade() else { return };
+            let flows = match r {
+                Ok(v) => v.as_array().cloned().unwrap_or_default(),
+                Err(_) => {
+                    while let Some(x) = p.flows.first_child() {
+                        p.flows.remove(&x);
+                    }
+                    return;
+                }
+            };
+            let w = Rc::downgrade(&p);
+            crate::fluxos::call("triggers.list", serde_json::json!({}), move |t| {
+                let Some(p) = w.upgrade() else { return };
+                let triggers = t.unwrap_or_default().as_array().cloned().unwrap_or_default();
+                let w = Rc::downgrade(&p);
+                crate::fluxos::call("runs.list", serde_json::json!({"limit": 200}), move |r| {
+                    let Some(p) = w.upgrade() else { return };
+                    let runs = r.unwrap_or_default().as_array().cloned().unwrap_or_default();
+                    p.fill_flows(&flows, &triggers, &runs);
+                });
+            });
+        });
+    }
+
+    fn fill_flows(self: &Rc<Self>, flows: &[serde_json::Value], triggers: &[serde_json::Value], runs: &[serde_json::Value]) {
+        while let Some(x) = self.flows.first_child() {
+            self.flows.remove(&x);
+        }
+        if flows.is_empty() {
+            return;
+        }
+        let cab = rotulo(tr("FLOWS"), "central-painel-agente");
+        cab.set_xalign(0.0);
+        self.flows.append(&cab);
+        for f in flows {
+            let id = f["id"].as_str().unwrap_or("").to_string();
+            let on = f["enabled"].as_bool().unwrap_or(true);
+            let card = caixa(Orientation::Horizontal, 14, "rotinas-item");
+            card.add_css_class("fluxo-item");
+            if !on {
+                card.add_css_class("pausada");
+            }
+            let ic = caixa(Orientation::Horizontal, 0, "rotinas-icone");
+            ic.set_size_request(36, 36);
+            ic.set_valign(Align::Center);
+            ic.set_hexpand(false);
+            let g = ui_icon("raio", "#C9CAD1", 16);
+            g.set_hexpand(true);
+            g.set_halign(Align::Center);
+            ic.append(&g);
+            card.append(&ic);
+            let col = caixa(Orientation::Vertical, 4, "");
+            col.set_hexpand(true);
+            col.set_valign(Align::Center);
+            let l1 = caixa(Orientation::Horizontal, 8, "");
+            l1.append(&rotulo(f["name"].as_str().unwrap_or(""), "rotinas-nome"));
+            let trig = triggers.iter().find(|t| t["flow_id"] == serde_json::json!(id)).map(|t| crate::fluxo_modelo::trigger_summary(&t["config"])).unwrap_or_else(|| tr("by hand").to_string());
+            let chip = rotulo(&trig, "rotinas-chip");
+            chip.set_valign(Align::Center);
+            l1.append(&chip);
+            col.append(&l1);
+            let l2 = caixa(Orientation::Horizontal, 0, "");
+            l2.append(&rotulo(&format!("{}  ·  {}  ·  ", tr("Flow"), if on { tr("active") } else { tr("paused") }), "central-agente-sub"));
+            let last = runs.iter().find(|r| r["flow_id"] == serde_json::json!(id));
+            let (t, class) = match last {
+                Some(r) => {
+                    let (st, class) = crate::fluxo_construtor::run_status_text(r["status"].as_str().unwrap_or(""));
+                    let st = if class == "ok" { "ok".to_string() } else { st };
+                    (format!("{}: {} · {st}", tr("last"), crate::fluxo_construtor::when_text(r["created_at"].as_i64().unwrap_or(0))), class)
+                }
+                None => (tr("never ran").to_string(), ""),
+            };
+            let u = rotulo(&t, "rotinas-ultima");
+            u.add_css_class(match class {
+                "ok" => "ok",
+                "falhou" => "falhou",
+                "aguarda" => "aguarda",
+                _ => "central-agente-sub",
+            });
+            u.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            l2.append(&u);
+            col.append(&l2);
+            card.append(&col);
+            let edit = gtk::Button::new();
+            edit.add_css_class("central-botao");
+            edit.add_css_class("ao-lado");
+            let ec = caixa(Orientation::Horizontal, 6, "");
+            ec.append(&ui_icon("lapis", "#E2E2E6", 14));
+            ec.append(&rotulo(tr("Edit flow"), ""));
+            edit.set_child(Some(&ec));
+            edit.set_valign(Align::Center);
+            let (w, id2) = (Rc::downgrade(self), id.clone());
+            edit.connect_clicked(move |_| {
+                if let Some(p) = w.upgrade() {
+                    p.open(&id2);
+                }
+            });
+            card.append(&edit);
+            let sw = gtk::Switch::new();
+            sw.add_css_class("central-switch");
+            sw.set_active(on);
+            sw.set_valign(Align::Center);
+            let (w, id2) = (Rc::downgrade(self), id.clone());
+            sw.connect_state_set(move |_, v| {
+                let w = w.clone();
+                crate::fluxos::call("flows.enable", serde_json::json!({"id": id2, "on": v}), move |_| {
+                    if let Some(p) = w.upgrade() {
+                        p.render_flows();
+                    }
+                });
+                glib::Propagation::Proceed
+            });
+            card.append(&sw);
+            // a click on the card (not on its switch or button) opens it too
+            let clique = gtk::GestureClick::new();
+            let (w, id2) = (Rc::downgrade(self), id.clone());
+            clique.connect_released(move |g, _, x, y| {
+                if g.widget().and_then(|w| w.pick(x, y, gtk::PickFlags::DEFAULT)).is_some_and(|p| p.is::<gtk::Switch>() || p.ancestor(gtk::Button::static_type()).is_some() || p.ancestor(gtk::Switch::static_type()).is_some()) {
+                    return;
+                }
+                if let Some(p) = w.upgrade() {
+                    p.open(&id2);
+                }
+            });
+            card.add_controller(clique);
+            self.flows.append(&card);
+            crate::central::posicao_debug(&format!("fluxo {}", f["name"].as_str().unwrap_or("")), edit.upcast_ref());
+        }
+        let cab = rotulo(tr("SIMPLE ROUTINES"), "central-painel-agente");
+        cab.set_xalign(0.0);
+        cab.set_margin_top(10);
+        self.flows.append(&cab);
+    }
+
     pub fn render(self: &Rc<Self>) {
+        self.render_flows();
         let Some(shell) = self.shell.upgrade() else { return };
         let r = Rotinas::carregar();
         let rodando: Vec<u64> = shell.agendador().map(|a| a.rodando.borrow().keys().copied().collect()).unwrap_or_default();

@@ -1230,8 +1230,24 @@ fn main() {
         return;
     }
 
+    // `modelo [texto|audio|visao|omni|decisao|decisao-omni]`: starts that local model if needed and says where it
+    // is; `modelo lista` (with --json) lists every kind with whether it is installed, running and its size —
+    // kalango-fluxos uses both, so only this engine starts llama-servers
     if rest.first() == Some(&"modelo") {
-        match modelo::Model::ensure(&|s| eprintln!("· {s}")) {
+        if rest.get(1) == Some(&"lista") {
+            let v: Vec<serde_json::Value> = modelo::Kind::ALL.iter().map(|k| serde_json::json!({
+                "tipo": k.id(), "instalado": k.installed(), "bytes": k.size(),
+                "socket": k.socket().display().to_string(), "rodando": modelo::running(*k),
+            })).collect();
+            println!("{}", serde_json::Value::Array(v));
+            return;
+        }
+        let kind = match rest.get(1) {
+            None => modelo::Kind::Text,
+            Some(id) => modelo::Kind::from_id(id).unwrap_or_else(|| fail(trf("unknown model kind {kind}", &[("kind", id.to_string())]))),
+        };
+        match modelo::Model::ensure_named(kind, &|s| eprintln!("· {s}")) {
+            Ok(m) if json => println!("{}", serde_json::json!({"tipo": "pronto", "modelo": m.name, "socket": kind.socket().display().to_string()})),
             Ok(m) => println!("{}", trf("local model {name} ready at {url}", &[("url", m.location()), ("name", m.name)])),
             Err(e) => fail(e),
         }

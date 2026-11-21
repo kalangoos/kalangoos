@@ -81,6 +81,7 @@ fn plain(s: &str) -> String {
 
 /// The block (the header row first in `rows`).
 pub fn new(rows: &[Vec<String>]) -> gtk::Widget {
+    let raw = rows;
     let rows: Vec<Vec<String>> = rows.iter().map(|r| r.iter().map(|c| plain(c)).collect()).collect();
     let sh = shape(&rows);
     let n_rows = rows.len().saturating_sub(1);
@@ -133,6 +134,11 @@ pub fn new(rows: &[Vec<String>]) -> gtk::Widget {
         for (c, cell) in row.iter().enumerate() {
             let class = if r == 0 { "tabela-th" } else if c == 0 { "tabela-nome" } else { "tabela-td" };
             let l = rotulo(cell, class);
+            // a cell with an address: its link opens (the rest of the table is plain text)
+            if let Some(src) = raw.get(r).and_then(|x| x.get(c)).filter(|x| x.contains("http://") || x.contains("https://") || x.contains("mailto:")) {
+                l.set_markup(&crate::markdown::inline(src));
+                crate::markdown::open_links(&l);
+            }
             let num = c > 0 && sh.numeric.get(c).copied().unwrap_or(false);
             l.set_xalign(if num { 1.0 } else { 0.0 });
             l.set_hexpand(c == 0);

@@ -30,6 +30,73 @@ fn pairs(s: &str, delim: &str, open: &str, close: &str) -> String {
     out
 }
 
+/// Private-use characters around a link's number while the rest of the line is escaped and formatted.
+const LINK_MARK: char = '\u{E000}';
+const LINK_END: char = '\u{E001}';
+
+/// Whether an address can be opened from a chat (the web and e-mail; never file:, javascript: or other schemes).
+fn is_link(url: &str) -> bool {
+    (url.starts_with("https://") || url.starts_with("http://") || url.starts_with("mailto:")) && !url.chars().any(char::is_whitespace)
+}
+
+/// The text with each link replaced by a marker, and the links (text, address) in order.
+fn take_links(s: &str) -> (String, Vec<(String, String)>) {
+    let mut out = String::new();
+    let mut links: Vec<(String, String)> = Vec::new();
+    let mut push = |out: &mut String, text: &str, url: &str| {
+        out.push_str(&format!("{LINK_MARK}{}{LINK_END}", links.len()));
+        links.push((text.to_string(), url.to_string()));
+    };
+    let mut rest = s;
+    while !rest.is_empty() {
+        // [text](url)
+        if rest.starts_with('[') {
+            if let Some(b) = rest.find("](") {
+                if let Some(c) = rest[b..].find(')') {
+                    let (text, url) = (&rest[1..b], &rest[b + 2..b + c]);
+                    if !text.contains('[') {
+                        if is_link(url) {
+                            // a text that looks like another address shows the real one instead
+                            let looks_like_address = text.contains("://") || text.starts_with("www.");
+                            push(&mut out, if looks_like_address && text != url { url } else { text }, url);
+                        } else {
+                            // (not something to open: its text alone)
+                            out.push_str(text);
+                        }
+                        rest = &rest[b + c + 1..];
+                        continue;
+                    }
+                }
+            }
+        }
+        // <https://…>
+        if rest.starts_with('<') {
+            if let Some(c) = rest.find('>') {
+                let url = &rest[1..c];
+                if is_link(url) {
+                    push(&mut out, url.trim_start_matches("mailto:"), url);
+                    rest = &rest[c + 1..];
+                    continue;
+                }
+            }
+        }
+        // a bare address (the punctuation that ends a sentence is not part of it)
+        if rest.starts_with("https://") || rest.starts_with("http://") {
+            let end = rest.find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '`')).unwrap_or(rest.len());
+            let url = rest[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '\'', '*']);
+            if url.len() > "https://".len() {
+                push(&mut out, url, url);
+                rest = &rest[url.len()..];
+                continue;
+            }
+        }
+        let ch = rest.chars().next().unwrap_or(' ');
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+    (out, links)
+}
+
 /// One line of markdown as Pango markup.
 pub fn inline(s: &str) -> String {
     let mut out = String::new();
@@ -40,24 +107,19 @@ pub fn inline(s: &str) -> String {
             // behind it: a run of names stays a sentence, on either theme)
             out.push_str(&format!("<span foreground=\"{}\">{}</span>", crate::tema::destaque_texto(), escape(part)));
         } else {
-            // links [text](url) → text
-            let mut t = String::new();
-            let mut rest = part;
-            while let Some(a) = rest.find('[') {
-                match (rest[a..].find("]("), rest[a..].find(')')) {
-                    (Some(b), Some(c)) if b < c => {
-                        t.push_str(&rest[..a]);
-                        t.push_str(&rest[a + 1..a + b]);
-                        rest = &rest[a + c + 1..];
-                    }
-                    _ => break,
-                }
-            }
-            t.push_str(rest);
+            // links — [text](url), <https://…> and bare addresses — leave a marker; the text around them is escaped and
+            // formatted, then each marker becomes a clickable <a> (so **[x](y)** stays bold)
+            let (t, links) = take_links(part);
             let e = escape(&t);
             // bold is **…** (as the models write it): "__" inside names — processos__listar — stays text
             let e = pairs(&e, "**", "<b>", "</b>");
-            out.push_str(&pairs(&e, "*", "<i>", "</i>"));
+            let e = pairs(&e, "*", "<i>", "</i>");
+            let mut e = e;
+            for (k, (text, url)) in links.iter().enumerate() {
+                // (the real address on hover: the text never hides where it goes)
+                e = e.replace(&format!("{LINK_MARK}{k}{LINK_END}"), &format!("<a href=\"{0}\" title=\"{0}\">{1}</a>", escape(url), escape(text)));
+            }
+            out.push_str(&e);
         }
     }
     if s.matches('`').count() % 2 == 1 {
@@ -77,7 +139,26 @@ fn label(markup: &str, class: &str) -> gtk::Label {
     l.set_selectable(true);
     l.set_can_focus(false);
     l.add_css_class(class);
+    if markup.contains("<a href=") {
+        open_links(&l);
+    }
     l
+}
+
+/// A label's links open as every address in the shell does: in the default browser (or mail app). Only what
+/// `is_link` accepts is ever opened.
+pub fn open_links(l: &gtk::Label) {
+    l.set_has_tooltip(true);
+    l.connect_activate_link(|_, uri| {
+        if is_link(uri) {
+            if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+                eprintln!("debug link: {uri}");
+            }
+            let ctx = gtk::gdk::Display::default().map(|d| d.app_launch_context());
+            let _ = gtk::gio::AppInfo::launch_default_for_uri(uri, ctx.as_ref());
+        }
+        glib::Propagation::Stop
+    });
 }
 
 /// A table: one block with its table and chart views (table_block.rs).
@@ -456,7 +537,17 @@ mod tests {
         assert_eq!(inline("a **b** c"), "a <b>b</b> c");
         assert_eq!(inline("<script> & *x*"), "&lt;script&gt; &amp; <i>x</i>");
         assert!(inline("rode `rm -rf <x>`").contains("rm -rf &lt;x&gt;"));
-        assert_eq!(inline("veja [o site](http://x)"), "veja o site");
+        assert_eq!(inline("veja [o site](http://x.org)"), "veja <a href=\"http://x.org\" title=\"http://x.org\">o site</a>");
+        assert_eq!(inline("fonte: <https://a.b/c?d=1&e=2>."), "fonte: <a href=\"https://a.b/c?d=1&amp;e=2\" title=\"https://a.b/c?d=1&amp;e=2\">https://a.b/c?d=1&amp;e=2</a>.");
+        assert_eq!(inline("em https://x.org/a, depois"), "em <a href=\"https://x.org/a\" title=\"https://x.org/a\">https://x.org/a</a>, depois");
+        assert_eq!(inline("**[forte](https://x.org)**"), "<b><a href=\"https://x.org\" title=\"https://x.org\">forte</a></b>");
+        // only the web and e-mail open: other schemes are their text
+        assert_eq!(inline("[aqui](javascript:alert(1))"), "aqui)");
+        assert_eq!(inline("[a](file:///etc/passwd)"), "a");
+        // a text that looks like an address cannot hide another one
+        assert!(inline("[https://banco.com.br](https://outro.example)").contains(">https://outro.example</a>"));
+        // a quote in the address cannot break out of the attribute
+        assert!(!inline("<https://x.org/\"onclick>").contains("\"onclick"));
         assert_eq!(inline("2 * 3 = 6"), "2 * 3 = 6");
         assert_eq!(inline("um ` solto"), "um ` solto");
         // underscores inside names are not bold
