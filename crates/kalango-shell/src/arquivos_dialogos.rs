@@ -898,6 +898,9 @@ impl Arquivos {
         let todos: Vec<PathBuf> = std::fs::read_dir(&lx).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
         let n = todos.len();
         self.apagar_de_vez(&todos);
+        if n > 0 {
+            crate::configuracoes_som::tocar("trash-empty");
+        }
         if depurando() {
             eprintln!("debug arquivos: lixeira esvaziada ({n})");
         }

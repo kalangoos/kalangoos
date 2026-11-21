@@ -283,8 +283,11 @@ impl Linha {
         crate::lateral::em_segundo_plano(move || crate::servicos::kalangod_chamar(ferramenta, args), move |r| {
             let Some(l) = w.upgrade() else { return };
             l.ocupado.set(false);
-            if let Err(e) = &r {
-                l.explica.set_text(&trf("Not undone: {why}", &[("why", e.clone())]));
+            match &r {
+                Ok(_) => {
+                    crate::configuracoes_som::tocar("kalango-undo");
+                }
+                Err(e) => l.explica.set_text(&trf("Not undone: {why}", &[("why", e.clone())])),
             }
             if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
                 eprintln!("debug central: desfazer ({ferramenta}) {}", if r.is_ok() { "ok" } else { "recusado" });

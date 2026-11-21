@@ -454,9 +454,13 @@ impl Screen {
         }
         let action = self.action.borrow().clone();
         let install = self.install.get();
-        // a moment to read the last line, then the action (the session that is only a test stays, its screen goes)
+        // the shutdown's sound (not unattended: the night's restart under the lock screen is quiet), and a moment to
+        // read the last line — as long as the sound, never longer than SESSION_END_WAIT — then the action (the
+        // session that is only a test stays, its screen goes)
+        let sound = if self.unattended.borrow().is_none() { crate::configuracoes_som::tocar("system-shutdown") } else { None };
+        let wait = sound.map(|d| d.min(crate::configuracoes_som::SESSION_END_WAIT)).unwrap_or_default().max(Duration::from_millis(700));
         let w = Rc::downgrade(self);
-        glib::timeout_add_local_once(Duration::from_millis(700), move || {
+        glib::timeout_add_local_once(wait, move || {
             crate::energia::Energia::power(&action, install);
             if let Some(s) = w.upgrade() {
                 if crate::energia::dev() {

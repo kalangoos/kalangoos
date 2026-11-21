@@ -445,7 +445,10 @@ impl Tool {
         if debug() {
             eprintln!("debug captura: foto {} ({}x{}){}", path.display(), pb.width(), pb.height(), if salvo { "" } else { " — não salva" });
         }
-        // the flash, then the tool goes
+        // the flash and the shutter's sound, then the tool goes
+        if salvo {
+            crate::configuracoes_som::tocar("screen-capture");
+        }
         self.flash.definir(Canal::Opacidade, 0.85);
         self.flash.ir(Canal::Opacidade, 0.0, RAPIDA);
         let w = Rc::downgrade(self);

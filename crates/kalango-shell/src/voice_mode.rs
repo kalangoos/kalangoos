@@ -155,6 +155,7 @@ impl VoiceMode {
             }
         }
         self.phase.set(Phase::Listening);
+        crate::configuracoes_som::tocar("kalango-voice-start");
         self.text.borrow_mut().clear();
         self.levels.borrow_mut().iter_mut().for_each(|l| *l = 0.0);
         self.transcript.set_text(tr("Listening…"));
@@ -191,6 +192,7 @@ impl VoiceMode {
         self.stop_timer();
         let Some(rec) = self.recording.borrow_mut().take() else { return };
         self.phase.set(Phase::Transcribing);
+        crate::configuracoes_som::tocar("kalango-voice-stop");
         self.transcript.set_text(tr("Writing what you said…"));
         self.hint.set_text("");
         let w = Rc::downgrade(self);

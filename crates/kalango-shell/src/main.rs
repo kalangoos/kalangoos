@@ -67,6 +67,7 @@ mod print_dialog;
 mod privacy_now;
 mod access_dialog;
 mod shutdown_screen;
+mod system_sounds;
 mod focus_session;
 mod screen_share;
 mod screenshot_tool;
@@ -926,6 +927,13 @@ fn iniciar(app: &gtk::Application) -> Rc<Shell> {
             });
         }
     });
+    // the system's sounds: the start's or the login's (once a session), the charger's, and the approval screen's
+    // decisions (it asks the shell over D-Bus: that screen loads no audio code)
+    system_sounds::watch_power_source();
+    if let Some(app) = gtk::gio::Application::default() {
+        system_sounds::export_action(&app);
+    }
+    system_sounds::at_session_start();
     eprintln!("kalango-shell: pronto ({} apps, {} na dock)", shell.todos.len(), shell.fixados.borrow().len());
     shell
 }

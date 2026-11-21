@@ -1,0 +1,7 @@
+[Sound Theme]
+Name=KalangoOS
+Comment=Sons do sistema do KalangoOS
+Directories=stereo
+
+[stereo]
+OutputProfile=stereo

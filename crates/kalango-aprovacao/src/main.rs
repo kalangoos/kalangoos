@@ -18,7 +18,7 @@
 
 use gtk::prelude::*;
 use kalango_i18n::{tr, trf};
-use gtk::{gdk, glib, Align, Application, ApplicationWindow, Box as GBox, Button, Label, Orientation};
+use gtk::{gdk, gio, glib, Align, Application, ApplicationWindow, Box as GBox, Button, Label, Orientation};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
@@ -289,6 +289,7 @@ impl Ui {
         let Some(id) = self.atual.borrow().as_ref().and_then(|p| p["id"].as_u64()) else { return };
         if std::env::var_os("KALANGO_APROVACAO_DEMO").is_some() {
             eprintln!("demo: #{id} {}", if sempre { "aprovado (sempre)" } else if aprovar { "aprovado" } else { "negado" });
+            decision_sound(aprovar);
             // some e volta com o próximo pedido, como acontece de verdade
             let me: Rc<Ui> = DEMO.with(|d| d.borrow().clone().unwrap());
             me.mostrar(&[]);
@@ -300,7 +301,10 @@ impl Ui {
             return;
         }
         match rpc("kalango/decidir", json!({"id": id, "aprovar": aprovar, "sempre": sempre})) {
-            Ok(_) => self.set_buttons(false),
+            Ok(_) => {
+                self.set_buttons(false);
+                decision_sound(aprovar);
+            }
             Err(e) => {
                 eprintln!("kalango-aprovacao: decisão recusada: {e}");
                 self.erro.set_text(&e);
@@ -308,6 +312,30 @@ impl Ui {
             }
         }
     }
+}
+
+/// org.gtk.Actions.Activate's arguments for an action with a string parameter: `(sava{sv})`.
+fn activate_params(action: &str, param: &str) -> glib::Variant {
+    let empty: std::collections::HashMap<String, glib::Variant> = Default::default();
+    glib::Variant::tuple_from_iter([
+        action.to_variant(),
+        glib::Variant::array_from_iter_with_type(glib::VariantTy::VARIANT, [param.to_variant().to_variant()]),
+        empty.to_variant(),
+    ])
+}
+
+/// The decision's sound, played by the shell (this screen loads no audio code: nothing more runs inside it): the
+/// shell's app action `play-sound`, over the session bus, fire-and-forget.
+fn decision_sound(approved: bool) {
+    let id = if approved { "kalango-agent-approved" } else { "kalango-agent-denied" };
+    let app = std::env::var("KALANGO_SHELL_APP_ID").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "os.kalango.Shell".into());
+    let path = format!("/{}", app.replace('.', "/"));
+    let Ok(c) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else { return };
+    c.call(Some(&app), &path, "org.gtk.Actions", "Activate", Some(&activate_params("play-sound", id)), None, gio::DBusCallFlags::NO_AUTO_START, 2000, gio::Cancellable::NONE, |r| {
+        if let Err(e) = r {
+            eprintln!("kalango-aprovacao: som da decisão: {e}");
+        }
+    });
 }
 
 thread_local! {
@@ -485,4 +513,16 @@ fn main() -> glib::ExitCode {
         std::mem::forget(app.hold());
     });
     app.run_with_args::<&str>(&[])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_sound_request_has_the_actions_signature() {
+        let v = activate_params("play-sound", "kalango-agent-approved");
+        assert_eq!(v.type_().as_str(), "(sava{sv})");
+        assert_eq!(v.child_value(1).child_value(0).as_variant().and_then(|x| x.get::<String>()).as_deref(), Some("kalango-agent-approved"));
+    }
 }

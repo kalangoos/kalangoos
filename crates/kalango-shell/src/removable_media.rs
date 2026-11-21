@@ -567,6 +567,10 @@ fn eject(d: &Drive, done: impl FnOnce(Result<(), String>) + 'static) {
     }
     let r = std::fs::write(&mark, b"").map_err(|e| e.to_string());
     TEST_SEEN.with(|s| s.borrow_mut().remove(&d.root));
+    // (a real drive ejected powers off: the volume monitor's "disconnected" plays it)
+    if r.is_ok() {
+        removed(&d.name);
+    }
     done(r);
 }
 
@@ -576,6 +580,7 @@ thread_local! {
 
 /// A drive arrived: what is remembered for it, else the card.
 fn arrived(d: Drive) {
+    crate::configuracoes_som::tocar("device-added");
     if let Some(a) = remembered(&d.id) {
         if debug() {
             eprintln!("debug midia: conectado {} (sempre {})", d.name, a.key());
@@ -589,6 +594,14 @@ fn arrived(d: Drive) {
     }
 }
 
+/// A drive was unplugged (or ejected and powered off).
+fn removed(name: &str) {
+    if debug() {
+        eprintln!("debug midia: removido {name}");
+    }
+    crate::configuracoes_som::tocar("device-removed");
+}
+
 fn is_removable(m: &gio::Mount) -> bool {
     m.drive().is_some_and(|d| d.is_removable() || d.is_media_removable()) || m.can_eject()
 }
@@ -598,6 +611,12 @@ pub fn start() {
     if let Some(dir) = std::env::var_os("KALANGO_MIDIA_TESTE").map(PathBuf::from) {
         // the session test: each subfolder that appears is a drive
         glib::timeout_add_local(Duration::from_millis(500), move || {
+            // a "drive" whose folder went away was removed
+            let gone: Vec<PathBuf> = TEST_SEEN.with(|s| s.borrow().iter().filter(|p| !p.exists()).cloned().collect());
+            for p in gone {
+                TEST_SEEN.with(|s| s.borrow_mut().remove(&p));
+                removed(&p.file_name().unwrap_or_default().to_string_lossy());
+            }
             for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
                 let p = e.path();
                 if !p.is_dir() || TEST_SEEN.with(|s| s.borrow().contains(&p)) || p.with_extension("ejetado").exists() {
@@ -628,6 +647,11 @@ pub fn start() {
                 }
             }
         });
+    });
+    vm.connect_drive_disconnected(|_, d| {
+        if d.is_removable() || d.is_media_removable() {
+            removed(&d.name());
+        }
     });
     vm.connect_mount_added(|_, m| {
         if !is_removable(m) || m.is_shadowed() {

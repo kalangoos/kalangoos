@@ -455,6 +455,8 @@ sleep 0.4
 xdotool click 1
 for _ in $(seq 40); do kill -0 $CP 2>/dev/null || break; sleep 0.25; done
 ok "a tela de aprovação aparece e \"Sempre\" aprova a mudança" 'grep -q "\"isError\": false" "$OUT/sempre1.json"'
+for _ in $(seq 20); do grep -aq "debug som: tocaria kalango-agent-approved " "$T/shell.log" && break; sleep 0.25; done
+ok "Sons: a decisão na tela de aprovação toca kalango-agent-approved (pelo shell, por D-Bus)" 'grep -aq "debug som: tocaria kalango-agent-approved " "$T/shell.log"'
 ANTES=$(grep -ac "debug aprovação: sempre em" "$T/aprovacao.log")
 timeout 10 python3 "$CHAMAR" "$T/mcp.sock" pacotes.instalar '{"nomes": ["cowsay"]}' > "$OUT/sempre2.json" 2>&1
 sleep 1
@@ -929,6 +931,7 @@ for _ in $(seq 40); do PID_AP=$(KALANGOD_SOCKET="$T/mcp.sock" "$ROOT/target/rele
 [ -n "$PID_AP" ] && KALANGOD_SOCKET="$T/mcp.sock" "$ROOT/target/release/kalangod" aprovar "$PID_AP" >/dev/null 2>&1
 for _ in $(seq 40); do grep -a "debug central: linha do tempo (" "$T/shell.log" | tail -1 | grep -q "1 desfeitas" && break; sleep 0.5; done
 ok "Linha do tempo: o Desfazer da ação do agente devolve o arquivo (com aprovação)" '[ -e "$X/area/relatorio.txt" ] && [ ! -e "$X/area/pasta/relatorio.txt" ] && grep -a "debug central: linha do tempo (" "$T/shell.log" | tail -1 | grep -q "1 desfeitas"'
+ok "Sons: o Desfazer feito toca kalango-undo" 'grep -aq "debug som: tocaria kalango-undo " "$T/shell.log"'
 "$N" msg action close-window
 sleep 0.8
 
@@ -1098,6 +1101,7 @@ read -r LBX LBY < <(lugar "liberar final")
 xdotool mousemove --window "$W" $((JX + LBX)) $((JY + LBY)) click 1
 for _ in $(seq 120); do python3 -c "import json,sys; ev=[json.loads(l) for l in open(sys.argv[1])]; sys.exit(not any(e.get('tipo')=='resultado' and e.get('nome')=='arquivos.listar' and e.get('ok') for e in ev))" "$X/data/kalango/conversas/$CL/eventos.jsonl" 2>/dev/null && break; sleep 1; done
 ok "Falhas: “Ação bloqueada” libera a pasta e o pedido continua" 'grep -qs "\"tipo\":\"bloqueio\"" "$X/data/kalango/conversas/$CL/eventos.jsonl" && grep -q "area/fora" "$X/config/kalango/agente-permissoes.json" && python3 -c "import json,sys; ev=[json.loads(l) for l in open(sys.argv[1])]; sys.exit(not any(e.get(\"tipo\")==\"resultado\" and e.get(\"nome\")==\"arquivos.listar\" and e.get(\"ok\") for e in ev))" "$X/data/kalango/conversas/$CL/eventos.jsonl"'
+ok "Sons: a ação bloqueada toca kalango-agent-failed" 'grep -aq "debug som: tocaria kalango-agent-failed " "$T/shell.log"'
 AG pasta "~" ativa
 "$N" msg action close-window
 sleep 0.8
@@ -1119,6 +1123,7 @@ read -r PPX PPY < <(lugar "pedido permitir")
 xdotool mousemove --window "$W" "$PPX" "$PPY" click 1
 for _ in $(seq 60); do [ -e "$X/area/pasta/nota-aviso.txt" ] && break; sleep 0.5; done
 ok "Notificação de aprovação: com a conversa fora da tela, a ilha pede e o Permitir dela responde" 'grep -aq "debug aviso pedido: permitido" "$T/shell.log" && [ -e "$X/area/pasta/nota-aviso.txt" ] && [ ! -e "$X/area/nota-aviso.txt" ]'
+ok "Sons: o pedido de aprovação toca kalango-agent-approval e o Permitir, kalango-agent-approved" 'grep -aq "debug som: tocaria kalango-agent-approval " "$T/shell.log" && grep -aq "debug som: tocaria kalango-agent-approved " "$T/shell.log"'
 AG coluna escrever livre
 
 # 94. The conversation's blocks (design "Chat · blocos de mensagem"): code in an answer is a block with its language,
@@ -1670,6 +1675,7 @@ xdotool mousemove --window "$W" "$MX" "$MY" click 1
 for _ in $(seq 20); do [ "$(grep -ac "debug arquivos: $A/destino (" "$T/shell.log")" -gt "$N_DEST" ] && break; sleep 0.3; done
 ok "Cópia longa: termina inteira e o aviso \"Mostrar na pasta\" abre o Arquivos onde ela foi parar" \
   '[ "$(stat -c %s "$A/destino/grande.bin")" = "$(stat -c %s "$A/grande.bin")" ] && [ "$(grep -ac "debug arquivos: $A/destino (" "$T/shell.log")" -gt "$N_DEST" ]'
+ok "Sons: a cópia longa terminada toca complete" 'grep -aq "debug som: tocaria complete " "$T/shell.log"'
 rm -f "$A/grande.bin" "$A/destino/grande.bin"
 "$N" msg action close-window
 fechar_apps
@@ -2358,6 +2364,7 @@ foto_x alerta-bateria
 for _ in $(seq 20); do grep -q "powerprofilesctl set power-saver" "$ENLOG" && grep -aq "debug alerta: bateria → economia" "$T/shell.log" && break; sleep 0.3; done
 ok "Alertas: bateria em 5% fora da tomada — o aviso fica até ser respondido e \"Economia máxima\" escolhe Economia" \
   'grep -aq "debug alerta: Bateria em 5% — cerca de 6 minutos" "$T/shell.log" && grep -aq "debug alerta: bateria → economia" "$T/shell.log"'
+ok "Sons: a bateria em 5% toca battery-low, e sair da tomada, power-unplug" 'grep -aq "debug som: tocaria battery-low " "$T/shell.log" && grep -aq "debug som: tocaria power-unplug " "$T/shell.log"'
 python3 -c 'import json,sys; p=sys.argv[1]; e=json.load(open(p)); e.pop("bateria", None); json.dump(e, open(p, "w"))' "$OUT/energia.json"
 mkdir -p "$X/cache/teste-alerta" && head -c 2000000 /dev/zero > "$X/cache/teste-alerta/lixo.bin"
 echo 3000000000 > "$OUT/disco-livre"
@@ -2465,6 +2472,7 @@ sleep 0.5
 foto_x pendrive
 ok "Pendrive: o cartão sob a área de status, com as 2 fotos que Imagens ainda não tem" \
   'grep -aq "debug midia: conectado Kingston" "$T/shell.log" && grep -aq "debug midia: 2 fotos novas em Kingston" "$T/shell.log" && grep -aq "debug midia: ações abrir, importar, organizar" "$T/shell.log"'
+ok "Sons: o pendrive conectado toca device-added" 'grep -aq "debug som: tocaria device-added " "$T/shell.log"'
 read -r EX EY < <(grep -a "debug midia: ejetar em" "$T/shell.log" | tail -1 | awk '{print $(NF-1), $NF}')
 clicar "$EX" "$EY"
 for _ in $(seq 20); do grep -aq "debug midia: não ejetou Kingston" "$T/shell.log" && break; sleep 0.3; done
@@ -2484,6 +2492,7 @@ read -r EX EY < <(grep -a "debug midia: ejetar em" "$T/shell.log" | tail -1 | aw
 clicar "$EX" "$EY"
 for _ in $(seq 20); do grep -aq "debug midia: pode remover Cartao SD" "$T/shell.log" && break; sleep 0.3; done
 ok "Pendrive: \"Ejetar\" diz que pode remover só depois de ejetado" 'grep -aq "debug midia: pode remover Cartao SD" "$T/shell.log" && [ -e "$MID/Cartao SD.ejetado" ]'
+ok "Sons: o cartão ejetado toca device-removed" 'grep -aq "debug som: tocaria device-removed " "$T/shell.log"'
 # 61. The system's file chooser (designs "Abrir arquivo" and "Salvar como"): the Text Editor's Ctrl+O opens it (the
 #     shell's own apps call it directly); a double click opens the file in the editor (its text filter takes Markdown
 #     too). Save as: the compact form, the name from the text's first words ready to type over, a tag set on the file
@@ -2708,6 +2717,7 @@ for _ in $(seq 20); do grep -aq "debug captura: foto " "$T/shell.log" && break; 
 FOTO=$(ls "$OUT/capturas/Imagens/Capturas de tela/"*.png 2>/dev/null | head -1)
 echo "  (foto: ${FOTO##*/} $(python3 -c "from PIL import Image; import sys; print(Image.open(sys.argv[1]).size)" "$FOTO" 2>/dev/null))"
 ok "Captura: \"Capturar\" salva a área em Imagens/Capturas de tela" '[ -s "$FOTO" ] && grep -aq "debug captura: foto .*(300x250)" "$T/shell.log"'
+ok "Sons: a captura salva toca screen-capture" 'grep -aq "debug som: tocaria screen-capture " "$T/shell.log"'
 sem_avisos 2>/dev/null || sleep 3
 "$N" msg action spawn -- "$T/kalango-shell" captura
 for _ in $(seq 30); do [ "$(grep -ac "debug captura: aberta" "$T/shell.log")" -ge 2 ] && break; sleep 0.3; done
@@ -4272,6 +4282,7 @@ sleep 0.8
 xdotool keydown --window "$W" alt; sleep 1.5; xdotool keyup --window "$W" alt
 for _ in $(seq 120); do grep -aq "debug voz: transcrito «" "$T/shell.log" && break; sleep 0.5; done
 ok "segurar o Super é o modo voz: ouve e o modelo local transcreve" 'grep -aq "debug voz: ouvindo" "$T/shell.log" && grep -aq "debug voz: transcrito «" "$T/shell.log"'
+ok "Sons: o modo voz toca kalango-voice-start ao segurar e kalango-voice-stop ao soltar" 'grep -aq "debug som: tocaria kalango-voice-start " "$T/shell.log" && grep -aq "debug som: tocaria kalango-voice-stop " "$T/shell.log"'
 xdotool key --window "$W" Escape
 sleep 0.8
 xdotool keydown --window "$W" alt; sleep 0.9; xdotool key --window "$W" F9; xdotool keyup --window "$W" alt
@@ -4373,6 +4384,7 @@ read -r FX FY < <(grep -a "debug central: desligando mesmo assim em" "$T/shell.l
 clicar "$FX" "$FY"
 for _ in $(seq 20); do [ "$(grep -ac "teste\] .desligar. não foi executado" "$T/shell.log")" -gt "$P0" ] && break; sleep 0.3; done
 ok "Desligando: \"Desligar mesmo assim\" segue sem esperar" 'grep -aq "debug desligando: desligando mesmo assim" "$T/shell.log" && [ "$(grep -ac "teste\] .desligar. não foi executado" "$T/shell.log")" -gt "$P0" ]'
+ok "Sons: desligar toca system-shutdown, e a sessão começou com o som de ligar (uma vez)" 'grep -aq "debug som: tocaria system-shutdown " "$T/shell.log" && [ "$(grep -ac "debug som: tocaria \(system-bootup\|desktop-login\) " "$T/shell.log")" = 1 ]'
 fechar_apps
 
 terminou=1

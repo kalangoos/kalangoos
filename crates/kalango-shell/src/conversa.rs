@@ -340,6 +340,16 @@ fn decimal(v: f64) -> String {
     }
 }
 
+/// The sound when a request ends: it failed (unless a block already said so), or it was answered out of sight. Stopped
+/// requests, and answers the person watched, are quiet.
+fn turn_sound(outcome: Option<&str>, answered: bool, failed_already: bool, out_of_sight: bool) -> Option<&'static str> {
+    match outcome {
+        Some("falhou") if !failed_already => Some("kalango-agent-failed"),
+        None if answered && out_of_sight => Some("kalango-agent-done"),
+        _ => None,
+    }
+}
+
 fn elapsed(d: Duration) -> String {
     let s = d.as_secs_f64();
     if s < 60.0 {
@@ -547,6 +557,8 @@ struct Turn {
     desfecho: Option<(&'static str, String)>,
     /// the agent's plan for this request (its widget, steps and how many are done), redrawn as it advances
     plan: Option<(gtk::Widget, Vec<String>, usize)>,
+    /// the failure's sound played already (a block)
+    failed_sound: bool,
 }
 
 /// The agents' task history (the agents center's "Concluído" and "Falhou"): one JSON line per request that ended,
@@ -1181,7 +1193,7 @@ impl Conversa {
         a.entrar((0.0, 8.0), 1.0);
         let body = caixa(Orientation::Vertical, 10, "");
         self.lista.append(&body);
-        Turn { steps_block, steps_icon, steps_title, revealer, list, steps: Vec::new(), body, started: Instant::now(), answered: false, answer: String::new(), seen: false, desfecho: None, plan: None }
+        Turn { steps_block, steps_icon, steps_title, revealer, list, steps: Vec::new(), body, started: Instant::now(), answered: false, answer: String::new(), seen: false, desfecho: None, plan: None, failed_sound: false }
     }
 
     /// Sends a line to the engine, starting it first if needed (one process per conversation).
@@ -1431,6 +1443,7 @@ impl Conversa {
 
     /// Sends the person's answer to a tool that asks first.
     fn answer(&self, id: u64, answer: &str) {
+        crate::system_sounds::play_agent(if answer == "negar" { "kalango-agent-denied" } else { "kalango-agent-approved" });
         let mut eng = self.engine.borrow_mut();
         if let Some(e) = eng.as_mut() {
             let _ = writeln!(e.stdin, "{}", json!({"resposta": answer, "id": id})).and_then(|_| e.stdin.flush());
@@ -1568,9 +1581,10 @@ impl Conversa {
 
     /// The agent needs the person (an approval, a question): a sound, if they want it (Agents › Settings ›
     /// Notifications).
-    fn chamar_atencao(&self) {
-        if !self.replaying.get() && crate::agent_prefs::load().sound {
-            crate::configuracoes_som::tocar("dialog-question");
+    /// The agent needs the person: an approval (`kalango-agent-approval`) or a question (`kalango-agent-request`).
+    fn chamar_atencao(&self, approval: bool) {
+        if !self.replaying.get() {
+            crate::system_sounds::play_agent(if approval { "kalango-agent-approval" } else { "kalango-agent-request" });
         }
     }
 
@@ -1849,7 +1863,7 @@ impl Conversa {
             }
             "ferramenta" => self.step_start(v),
             "pedido" => {
-                self.chamar_atencao();
+                self.chamar_atencao(true);
                 self.permission_card(v)
             }
             "uso" => self.tokens.set(v["tokens"].as_u64().unwrap_or(0)),
@@ -1880,10 +1894,16 @@ impl Conversa {
                 }
                 self.cartao_suspeito(v["motivo"].as_str().unwrap_or(""), v["trecho"].as_str().unwrap_or(""), v["fonte"].as_str().unwrap_or(""));
             }
-            "bloqueio" => self.cartao_bloqueio(v["alvo"].as_str().unwrap_or(""), v["regra"].as_str().unwrap_or("")),
+            "bloqueio" => {
+                // (one sound a request, however many times the kernel's rules stop it)
+                if !self.replaying.get() && self.turn.borrow_mut().as_mut().is_some_and(|t| !std::mem::replace(&mut t.failed_sound, true)) {
+                    crate::system_sounds::play_agent("kalango-agent-failed");
+                }
+                self.cartao_bloqueio(v["alvo"].as_str().unwrap_or(""), v["regra"].as_str().unwrap_or(""))
+            }
             "sem_rede" => self.cartao_sem_rede(v["url"].as_str().unwrap_or("")),
             "duvida" => {
-                self.chamar_atencao();
+                self.chamar_atencao(false);
                 if let Some(t) = self.turn.borrow_mut().as_mut() {
                     t.answered = true;
                 }
@@ -2081,7 +2101,13 @@ impl Conversa {
             // done out of sight — the person watched it and left, or it took long — a notice (Agents › Settings ›
             // Notifications › When a task finishes); a request made from another screen (the memory's field) is
             // answered where it was made
-            if t.answered && !self.replaying.get() && !self.na_tela() && (t.seen || t.started.elapsed() >= Duration::from_secs(20)) {
+            let out_of_sight = !self.replaying.get() && !self.na_tela() && (t.seen || t.started.elapsed() >= Duration::from_secs(20));
+            if !self.replaying.get() {
+                if let Some(id) = turn_sound(t.desfecho.as_ref().map(|d| d.0), t.answered, t.failed_sound, out_of_sight) {
+                    crate::system_sounds::play_agent(id);
+                }
+            }
+            if t.answered && out_of_sight {
                 let pedido: String = self.current.borrow().chars().take(60).collect();
                 let resposta: String = t.answer.replace("**", "").replace('`', "").lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(160).collect();
                 if let Some(s) = crate::shell_atual() {
@@ -2566,6 +2592,16 @@ impl Drop for Conversa {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_s_end_sounds_as_it_ended() {
+        assert_eq!(turn_sound(None, true, false, true), Some("kalango-agent-done"));
+        assert_eq!(turn_sound(None, true, false, false), None);
+        assert_eq!(turn_sound(Some("falhou"), false, false, false), Some("kalango-agent-failed"));
+        assert_eq!(turn_sound(Some("falhou"), true, true, true), None);
+        assert_eq!(turn_sound(Some("parado"), false, false, true), None);
+        assert_eq!(turn_sound(None, false, false, true), None);
+    }
 
     #[test]
     fn model_names_and_arguments() {

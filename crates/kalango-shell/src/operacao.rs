@@ -593,6 +593,10 @@ impl Operacoes {
             if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
                 eprintln!("debug operacao: terminou ({} erros, {})", erros.len(), if p.cancelado.load(Ordering::Relaxed) { "cancelada" } else { "completa" });
             }
+            // done (a copy that took a while, so the person may be elsewhere), or with errors; cancelled is quiet
+            if !p.cancelado.load(Ordering::Relaxed) {
+                crate::configuracoes_som::tocar(if erros.is_empty() { "complete" } else { "dialog-error" });
+            }
             self.atual_op.borrow_mut().take();
             self.recolher();
             if let Some(i) = self.ilha.borrow().as_ref() {
