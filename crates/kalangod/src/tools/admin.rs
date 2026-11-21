@@ -703,15 +703,70 @@ fn task_run(c: &Ctx, a: &Value) -> Result<Out, String> {
         Some(p) => Some(crate::sandbox::check_path(p, c.peer, &c.rule.allowed_paths, &c.cfg.protected_paths)?),
         None => Some(c.peer.home.clone()),
     };
-    let escrita: Vec<std::path::PathBuf> = c.rule.allowed_paths.iter().map(|p| crate::policy::expand(p, &c.peer.home))
-        .chain(SISTEMA_ESCRITA.iter().map(Into::into)).collect();
-    let landlock = Landlock { leitura: SISTEMA_LEITURA.iter().map(Into::into).collect(), escrita, portas: None };
+    // the allowed folders, cut around the protected ones (nothing) and, unless the person lets agents change them,
+    // around the files that run at login (read only): Landlock grants, it cannot except (startup.rs, `carve`)
+    let roots: Vec<std::path::PathBuf> = c.rule.allowed_paths.iter().map(|p| crate::policy::expand(p, &c.peer.home)).collect();
+    let protected: Vec<std::path::PathBuf> = c.cfg.protected_paths.iter().map(|p| crate::policy::expand(p, &c.peer.home)).collect();
+    let startup: Vec<std::path::PathBuf> = crate::startup::paths(c.cfg, c.peer);
+    let auto = crate::startup::mode(c.cfg, c.peer) == crate::startup::Mode::Allow;
+    // (Landlock goes by path: a hard link of a startup file elsewhere would be the same file, writable under the other
+    // name; while the person wants to be asked, commands wait until it is gone)
+    if !auto {
+        if let Some(f) = crate::startup::hardlinked(c.peer, c.cfg) {
+            return Err(trf("{file} runs when you log in and has another name (a hard link) elsewhere: commands are refused until that link is removed (the file tools still work, asking first)",
+                &[("file", crate::startup::tilde(&f, &c.peer.home))]));
+        }
+    }
+    let cut = crate::startup::carve(&roots, &protected, if auto { &[] } else { &startup });
+    let landlock = Landlock { leitura: SISTEMA_LEITURA.iter().map(Into::into).chain(cut.read).collect(), escrita: cut.write.into_iter().chain(SISTEMA_ESCRITA.iter().map(Into::into)).collect(),
+        listar: cut.list, portas: None };
     let lim = c.cfg.limites.narrowed(a);
-    let v = limits::run_task(Pedido { programa: prog, argumentos: &args, uid: c.peer.uid, gid: c.peer.gid, limites: lim, landlock: Some(landlock), seccomp: None, ambiente: None, pasta, dry_run: false })?;
+    // with the changes let through, what the command changes in them still goes to the timeline, with undo
+    let before = auto.then(|| crate::startup::snapshot(c.peer, c.cfg, &roots));
+    // (no local sockets: nothing the command asks for over D-Bus or systemd runs outside its cgroup — see Seccomp)
+    let v = limits::run_task(Pedido { programa: prog, argumentos: &args, uid: c.peer.uid, gid: c.peer.gid, limites: lim, landlock: Some(landlock),
+        seccomp: Some(limits::Seccomp { sem_rede: false, sem_unix: true }), ambiente: None, pasta, dry_run: false })?;
+    if let Some(before) = before {
+        record_startup_changes(c, prog, &before, &crate::startup::snapshot(c.peer, c.cfg, &roots));
+    }
     let resumo = if v["estourou_memoria"] == true { tr("stopped: over the memory limit").to_string() }
         else if v["estourou_tempo"] == true { tr("stopped: over the time limit").to_string() }
         else { trf("finished with code {code}", &[("code", v["codigo"].to_string())]) };
     Ok(Out::read(v, format!("{prog}: {resumo}")))
+}
+
+/// Each startup file a command changed, as its own timeline record with undo (the earlier text is kept out of the
+/// agents' reach, as `arquivos.escrever` keeps it), marked so the agents center tells the person.
+fn record_startup_changes(c: &Ctx, prog: &str, before: &std::collections::BTreeMap<String, Option<String>>, after: &std::collections::BTreeMap<String, Option<String>>) {
+    for (path, old, new) in crate::startup::changes(before, after) {
+        let shown = crate::startup::tilde(std::path::Path::new(&path), &c.peer.home);
+        let inverse = match &old {
+            // (a link, recorded by where it pointed, is not put back as a file)
+            Some(o) if !o.starts_with('→') => {
+                let dir = c.cfg.state_dir.join("copias").join(c.peer.uid.to_string());
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let copy = dir.join(format!("{}-inicio-{}-{}", crate::timeline::now(), std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+                (std::fs::create_dir_all(&dir).is_ok() && std::fs::write(&copy, o).is_ok())
+                    .then(|| json!({"ferramenta": "arquivos.restaurar", "argumentos": {"caminho": path, "copia": copy}}))
+            }
+            Some(_) => None,
+            None => Some(json!({"ferramenta": "arquivos.apagar_criado", "argumentos": {"caminho": path}})),
+        };
+        let summary = match (&old, &new) {
+            (None, _) => trf("a command created {path}, which runs when you log in", &[("path", shown.clone())]),
+            (_, None) => trf("a command removed {path}, which ran when you logged in", &[("path", shown.clone())]),
+            _ => trf("a command changed {path}, which runs when you log in", &[("path", shown.clone())]),
+        };
+        c.timeline.append(crate::timeline::Entry {
+            id: 0, time: 0, caller: format!("{} ({})", c.rule.name, c.peer.exe), uid: c.peer.uid, pid: c.peer.pid, tool: "tarefas.executar".into(), level: "usuario".into(),
+            args: json!({"programa": prog, "arquivo": path}), status: "ok".into(), summary, inverse, restore_point: None, miniatura: None,
+            startup: Some({
+                let d = crate::startup::line_diff(old.as_deref().unwrap_or(""), new.as_deref().unwrap_or(""), 3, 400);
+                json!({"arquivos": [shown], "automatico": true, "comando": true, "resumo": crate::startup::diff_summary(&d),
+                    "linhas": d.iter().map(|l| json!({"t": l.kind.to_string(), "l": l.text})).collect::<Vec<_>>()})
+            }),
+        });
+    }
 }
 
 /// Usada por `sistema.executar` (nível total): root, sem Landlock, mas ainda com limites.

@@ -28,6 +28,10 @@ pub struct Entry {
     /// `tela/`, read back through `kalango/miniatura` by its owner only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub miniatura: Option<String>,
+    /// The action changed a file that runs at the person's next login: `{"arquivos": [...], "automatico": bool}`
+    /// ("automatico": the person lets these changes go ahead without asking, so the agents center tells them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup: Option<Value>,
 }
 
 pub struct Timeline {

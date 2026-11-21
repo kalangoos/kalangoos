@@ -38,7 +38,7 @@ pub fn check_path(raw: &str, peer: &Peer, allowed: &[String], protected: &[Strin
 /// Where `p` really leads: every symbolic link on the way is followed, also one whose target does not exist yet
 /// (`canonicalize` fails on a dangling link, and writing through it creates its target: a link in Documents to a
 /// protected file not created yet must still count as that file). The parts that do not exist are kept as given.
-fn resolve_existing(p: &Path) -> PathBuf {
+pub fn resolve_existing(p: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::from("/");
     let mut pending: std::collections::VecDeque<std::ffi::OsString> = p.components().filter_map(|c| match c {
@@ -90,6 +90,75 @@ pub fn check_change_path(raw: &str, peer: &Peer, allowed: &[String], protected: 
     Ok(p)
 }
 
+/// What a file tool's helper may do at one of this call's own paths (besides the cut of the allowed folders).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grant {
+    /// read and write this existing file
+    File,
+    /// create entries in this folder (and write what it creates there)
+    Create,
+    /// remove entries from this folder (or move them out)
+    Remove,
+}
+
+/// The Landlock rules of a file tool's helper. A call that only reads (list, read) gets the allowed folders cut like a
+/// command's (`startup::carve`), read-only, with nothing in the protected folders. A call that changes something gets
+/// exactly its own paths, each with only what the operation needs there (`Grant`): the file it writes, the folder it
+/// creates in, the folder it removes from. A startup path gets a grant only when the startup gate approved this very
+/// call for it (`approved`). Landlock rules hold for everything below a folder, so a grant on the home's top folder
+/// (a file created or removed there) also reaches into ~/.config — the helper's own operation is then fixed by name
+/// and folder descriptor (`open_dir_nofollow`), which no link can redirect.
+pub fn file_rules(peer: &Peer, cfg: &crate::policy::Config, allowed: &[String], targets: &[(PathBuf, Grant)], approved: &[PathBuf], extra: &[(PathBuf, Grant)]) -> Value {
+    let roots: Vec<PathBuf> = allowed.iter().map(|a| expand(a, &peer.home)).collect();
+    let protected: Vec<PathBuf> = cfg.protected_paths.iter().map(|p| expand(p, &peer.home)).collect();
+    let ask = crate::startup::mode(cfg, peer) == crate::startup::Mode::Ask;
+    // a call that changes something gets nothing but its own paths (it reads nothing else); one that reads (list, read)
+    // gets the cut of the allowed folders, read-only
+    let cut = if targets.is_empty() {
+        let c = crate::startup::carve(&roots, &protected, &[]);
+        crate::startup::Carved { read: c.write.into_iter().chain(c.read).collect(), list: c.list, write: vec![] }
+    } else {
+        crate::startup::Carved::default()
+    };
+    let approved: Vec<PathBuf> = approved.iter().map(|a| resolve_existing(a)).collect();
+    let (mut file, mut create, mut remove) = (Vec::new(), Vec::new(), Vec::new());
+    for (t, g) in targets.iter().chain(extra) {
+        let r = resolve_existing(t);
+        let is_extra = extra.iter().any(|(e, _)| e == t);
+        // (a folder a call creates in or removes from is checked by the files it touches; the file itself here)
+        let startup_target = ask && !is_extra && *g == Grant::File && crate::startup::startup_base(&r.display().to_string(), peer, cfg).is_some();
+        if startup_target && !approved.iter().any(|a| is_within(&r, a) || is_within(a, &r)) {
+            continue;
+        }
+        match g {
+            Grant::File if r.exists() => file.push(r),
+            Grant::File => {}
+            Grant::Create => create.push(nearest_existing(&r)),
+            Grant::Remove => remove.push(r),
+        }
+    }
+    let real_roots: Vec<PathBuf> = roots.iter().map(|r| resolve_existing(r)).chain(extra.iter().map(|(e, _)| resolve_existing(e))).collect();
+    json!({"escrita": cut.write.into_iter().chain(file).collect::<Vec<_>>(), "leitura": cut.read, "listar": cut.list,
+        "criar": create, "remover": remove, "raizes": real_roots})
+}
+
+/// The folder itself, or the nearest one above it that exists (a write creates the rest).
+fn nearest_existing(p: &Path) -> PathBuf {
+    let mut d = p.to_path_buf();
+    while !d.exists() {
+        match d.parent() {
+            Some(x) => d = x.to_path_buf(),
+            None => break,
+        }
+    }
+    d
+}
+
+/// As `run_as_user`, with `file_rules` instead of whole roots.
+pub fn run_with_rules(peer: &Peer, rules: Value, op: Value) -> Result<Value, String> {
+    run_helper(peer, json!({ "regras": rules, "op": op }))
+}
+
 /// Executa `op` num filho com o UID do chamador e Landlock nas pastas `roots`.
 /// This program, to start its helpers. /proc/self/exe still runs it after its file was replaced (an update, a new
 /// build): current_exe then names a path ending in " (deleted)" and no helper starts — every file tool failed with
@@ -114,6 +183,10 @@ pub fn exe_on_disk() -> Result<PathBuf, String> {
 }
 
 pub fn run_as_user(peer: &Peer, roots: &[PathBuf], op: Value) -> Result<Value, String> {
+    run_helper(peer, json!({ "roots": roots, "op": op }))
+}
+
+fn run_helper(peer: &Peer, input: Value) -> Result<Value, String> {
     let exe = self_exe()?;
     let mut cmd = Command::new(exe);
     cmd.arg("__auxiliar").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -122,7 +195,6 @@ pub fn run_as_user(peer: &Peer, roots: &[PathBuf], op: Value) -> Result<Value, S
         cmd.uid(peer.uid).gid(peer.gid);
     }
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    let input = json!({ "roots": roots, "op": op });
     child.stdin.take().unwrap().write_all(input.to_string().as_bytes()).map_err(|e| e.to_string())?;
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
     let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| format!("auxiliar falhou: {}", String::from_utf8_lossy(&out.stderr).trim()))?;
@@ -138,8 +210,19 @@ pub fn helper_main() -> ! {
     let _ = std::io::stdin().read_to_string(&mut s);
     let res = (|| -> Result<Value, String> {
         let input: Value = serde_json::from_str(&s).map_err(|e| e.to_string())?;
-        let roots: Vec<PathBuf> = serde_json::from_value(input["roots"].clone()).map_err(|e| e.to_string())?;
-        restrict(&roots)?;
+        // the rules cut by kalangod (`file_rules`: the protected folders out, the startup files read-only unless the
+        // person approved this change), or plain roots (the trash's first creation)
+        match input.get("regras") {
+            Some(r) => {
+                let list = |k: &str| -> Vec<PathBuf> { serde_json::from_value(r[k].clone()).unwrap_or_default() };
+                let _ = ROOTS.set(list("raizes"));
+                restrict_rules(&list("escrita"), &list("leitura"), &list("listar"), &list("criar"), &list("remover"))?;
+            }
+            None => {
+                let roots: Vec<PathBuf> = serde_json::from_value(input["roots"].clone()).map_err(|e| e.to_string())?;
+                restrict(&roots)?;
+            }
+        }
         // depois do Landlock (que liga no_new_privs): sem exec, rede, montagem, ptrace, bpf, módulos…
         crate::limits::seccomp_helper()?;
         do_op(&input["op"])
@@ -165,6 +248,115 @@ fn restrict(roots: &[PathBuf]) -> Result<(), String> {
         return Err(kalango_i18n::tr("Landlock unavailable on this kernel: operation refused").into());
     }
     Ok(())
+}
+
+/// As `restrict`, with kalangod's cut of the allowed folders: full access, reading, or only listing a folder's names.
+fn restrict_rules(write: &[PathBuf], read: &[PathBuf], list: &[PathBuf], create: &[PathBuf], remove: &[PathBuf]) -> Result<(), String> {
+    use landlock::BitFlags;
+    let abi = ABI::V3;
+    let mut rs = Ruleset::default().handle_access(AccessFs::from_all(abi)).map_err(|e| e.to_string())?.create().map_err(|e| e.to_string())?;
+    // a folder a call creates in or removes from: new files and folders written as they are made, entries taken out,
+    // and moved between the two (Refer). Both get the same rights: Landlock refuses (EXDEV) a move that would give the
+    // file more rights where it lands than where it was.
+    let make: BitFlags<AccessFs> = AccessFs::MakeReg | AccessFs::MakeDir | AccessFs::WriteFile | AccessFs::Truncate | AccessFs::ReadFile | AccessFs::ReadDir
+        | AccessFs::Refer | AccessFs::RemoveFile | AccessFs::RemoveDir;
+    let take = make;
+    for (paths, access) in [(list, AccessFs::ReadDir.into()), (read, AccessFs::from_read(abi)), (write, AccessFs::from_all(abi)), (create, make), (remove, take)] {
+        for p in paths {
+            if let Ok(fd) = PathFd::new(p) {
+                // (a rule on a file takes only a file's rights)
+                let a = if p.is_dir() { access } else { access & AccessFs::from_file(abi) };
+                rs = rs.add_rule(PathBeneath::new(fd, a)).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    let st = rs.restrict_self().map_err(|e| e.to_string())?;
+    if st.ruleset == RulesetStatus::NotEnforced {
+        return Err(kalango_i18n::tr("Landlock unavailable on this kernel: operation refused").into());
+    }
+    Ok(())
+}
+
+/// The real allowed folders this helper works beneath (kalangod gives them).
+static ROOTS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+
+/// A folder opened without following any link on the way, beneath the allowed folder that holds it (`openat2`
+/// RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH from that folder's own descriptor), created when asked: what is then done
+/// in it happens in that very folder, even if a link is put on the path after kalangod checked it.
+fn open_dir_nofollow(dir: &Path, create: bool) -> Result<std::os::fd::OwnedFd, String> {
+    use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let flags = OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
+    let root = ROOTS.get().and_then(|rs| rs.iter().filter(|r| dir.starts_with(r)).max_by_key(|r| r.as_os_str().len()).cloned());
+    let opened = match &root {
+        Some(r) => {
+            let rfd = openat2(libc::AT_FDCWD, r.as_path(), OpenHow::new().flags(flags).resolve(ResolveFlag::RESOLVE_NO_SYMLINKS))
+                .map(|fd| unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) });
+            match (rfd, dir.strip_prefix(r)) {
+                (Ok(rfd), Ok(rel)) if rel.as_os_str().is_empty() => Ok(std::os::fd::IntoRawFd::into_raw_fd(rfd)),
+                (Ok(rfd), Ok(rel)) => openat2(rfd.as_raw_fd(), rel, OpenHow::new().flags(flags).resolve(ResolveFlag::RESOLVE_NO_SYMLINKS | ResolveFlag::RESOLVE_BENEATH)),
+                (Err(e), _) => Err(e),
+                (_, Err(_)) => Err(nix::errno::Errno::EXDEV),
+            }
+        }
+        None => openat2(libc::AT_FDCWD, dir, OpenHow::new().flags(flags).resolve(ResolveFlag::RESOLVE_NO_SYMLINKS)),
+    };
+    match opened {
+        Ok(fd) => Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) }),
+        Err(nix::errno::Errno::ENOENT) if create => {
+            let (parent, name) = (dir.parent().ok_or_else(|| dir.display().to_string())?, dir.file_name().ok_or_else(|| dir.display().to_string())?);
+            let pfd = open_dir_nofollow(parent, true)?;
+            match nix::sys::stat::mkdirat(Some(pfd.as_raw_fd()), name, nix::sys::stat::Mode::from_bits_truncate(0o755)) {
+                Ok(()) | Err(nix::errno::Errno::EEXIST) => {}
+                Err(e) => return Err(format!("{}: {e}", dir.display())),
+            }
+            open_dir_nofollow(dir, false)
+        }
+        Err(nix::errno::Errno::ELOOP) => Err(kalango_i18n::trf("{path} changed into a link after it was checked: nothing was done", &[("path", dir.display().to_string())])),
+        Err(e) => Err(format!("{}: {e}", dir.display())),
+    }
+}
+
+/// Puts what is in `from` (a staging folder no agent reaches) into `to`, from folder descriptors opened without
+/// following links (`open_dir_nofollow`) and with `renameat2(RENAME_NOREPLACE)`: whatever an agent turned into a link
+/// on the way since the check, nothing is written through it. What already exists at the destination is kept (the
+/// import's "ignore existing"); folders on both sides are merged. Same filesystem (both in the home). Returns how many
+/// entries were put in place.
+pub fn merge_tree(from: &Path, to: &Path) -> Result<usize, String> {
+    use std::os::fd::AsRawFd;
+    let df = open_dir_nofollow(from, false)?;
+    let dt = open_dir_nofollow(to, true)?;
+    let mut n = 0;
+    for e in std::fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))?.flatten() {
+        let name = e.file_name();
+        match nix::fcntl::renameat2(Some(df.as_raw_fd()), name.as_os_str(), Some(dt.as_raw_fd()), name.as_os_str(), nix::fcntl::RenameFlags::RENAME_NOREPLACE) {
+            Ok(()) => n += 1,
+            Err(nix::errno::Errno::EEXIST) => {
+                let both_dirs = e.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                    && nix::sys::stat::fstatat(Some(dt.as_raw_fd()), name.as_os_str(), nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW)
+                        .map(|st| st.st_mode & libc::S_IFMT == libc::S_IFDIR).unwrap_or(false);
+                if both_dirs {
+                    n += merge_tree(&from.join(&name), &to.join(&name))?;
+                }
+            }
+            Err(err) => return Err(format!("{} → {}: {err}", from.join(&name).display(), to.join(&name).display())),
+        }
+    }
+    Ok(n)
+}
+
+/// A file's folder (opened as `open_dir_nofollow`) and its name.
+fn split_nofollow(f: &Path, create: bool) -> Result<(std::os::fd::OwnedFd, std::ffi::OsString), String> {
+    let name = f.file_name().ok_or_else(|| kalango_i18n::tr("path without a name").to_string())?.to_os_string();
+    let dir = open_dir_nofollow(f.parent().unwrap_or(Path::new("/")), create)?;
+    Ok((dir, name))
+}
+
+/// Opens a file in a folder without following a link at the end either (O_NOFOLLOW).
+fn open_in(dir: &std::os::fd::OwnedFd, name: &std::ffi::OsStr, flags: nix::fcntl::OFlag) -> nix::Result<std::fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let fd = nix::fcntl::openat(Some(dir.as_raw_fd()), name, flags | nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_CLOEXEC, nix::sys::stat::Mode::from_bits_truncate(0o644))?;
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
 /// What a file is when it is not text: by its first bytes (the usual pictures, sounds, videos, archives and
@@ -255,20 +447,52 @@ fn do_op(op: &Value) -> Result<Value, String> {
             Ok(json!({ "conteudo": String::from_utf8_lossy(&data[..data.len().min(max)]), "bytes": data.len(), "cortado": cut }))
         }
         "escrever" => {
+            // (kalangod gives the path with its links already followed: the folders on the way and the file itself are
+            // opened without following any, so a link put there after the check makes the write fail)
+            use nix::fcntl::OFlag;
+            use std::io::Write as _;
             let f = p("caminho")?;
-            let before = std::fs::read(&f).ok();
-            if let Some(parent) = f.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            match op.get("conteudo_base64").and_then(|v| v.as_str()) {
+            let (dir, name) = split_nofollow(&f, true)?;
+            let before = open_in(&dir, &name, OFlag::O_RDONLY).ok().and_then(|mut h| {
+                let mut b = Vec::new();
+                h.read_to_end(&mut b).ok().map(|_| b)
+            });
+            let bytes = match op.get("conteudo_base64").and_then(|v| v.as_str()) {
                 Some(b) => {
                     use base64::Engine as _;
-                    let bytes = base64::engine::general_purpose::STANDARD.decode(b).map_err(|e| format!("base64: {e}"))?;
-                    std::fs::write(&f, bytes).map_err(|e| format!("{}: {e}", f.display()))?;
+                    base64::engine::general_purpose::STANDARD.decode(b).map_err(|e| format!("base64: {e}"))?
                 }
-                None => std::fs::write(&f, op["conteudo"].as_str().unwrap_or("")).map_err(|e| format!("{}: {e}", f.display()))?,
-            }
+                None => op["conteudo"].as_str().unwrap_or("").as_bytes().to_vec(),
+            };
+            // (a file that did not exist when kalangod checked is created, never opened: O_EXCL)
+            let flags = if op["novo"] == true { OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL } else { OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC };
+            let mut h = open_in(&dir, &name, flags).map_err(|e| format!("{}: {e}", f.display()))?;
+            h.write_all(&bytes).map_err(|e| format!("{}: {e}", f.display()))?;
             Ok(json!({ "existia": before.is_some(), "anterior": before.map(|b| String::from_utf8_lossy(&b).into_owned()) }))
+        }
+        // the startup files there are (policy::STARTUP_PATHS) with their text: what a command changed in them is seen
+        // by comparing two of these (links are not followed; at most 200 files of 1 MiB)
+        "instantaneo" => {
+            let mut files = serde_json::Map::new();
+            let mut pending: Vec<(PathBuf, usize)> = op["caminhos"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(|s| (PathBuf::from(s), 0))).collect();
+            while let Some((f, depth)) = pending.pop() {
+                let Ok(md) = std::fs::symlink_metadata(&f) else { continue };
+                if md.is_dir() && depth < 4 {
+                    for e in std::fs::read_dir(&f).into_iter().flatten().flatten() {
+                        pending.push((e.path(), depth + 1));
+                    }
+                } else if md.is_file() && files.len() < 200 {
+                    let text = std::fs::File::open(&f).ok().and_then(|h| {
+                        let mut b = Vec::new();
+                        h.take(1 << 20).read_to_end(&mut b).ok().map(|_| String::from_utf8_lossy(&b).into_owned())
+                    });
+                    files.insert(f.display().to_string(), json!(text));
+                } else if md.file_type().is_symlink() {
+                    // (a link is recorded by where it points: a new link is a change too)
+                    files.insert(f.display().to_string(), json!(format!("→ {}", std::fs::read_link(&f).unwrap_or_default().display())));
+                }
+            }
+            Ok(json!({ "arquivos": files }))
         }
         "preparar_lixeira" => {
             let trash = p("lixeira")?;
@@ -279,18 +503,22 @@ fn do_op(op: &Value) -> Result<Value, String> {
         }
                 "apagar_arquivo" => {
             let f = p("caminho")?;
-            std::fs::remove_file(&f).map_err(|e| format!("{}: {e}", f.display()))?;
+            let (dir, name) = split_nofollow(&f, false)?;
+            use std::os::fd::AsRawFd;
+            nix::unistd::unlinkat(Some(dir.as_raw_fd()), name.as_os_str(), nix::unistd::UnlinkatFlags::NoRemoveDir).map_err(|e| format!("{}: {e}", f.display()))?;
             Ok(json!({}))
         }
         "mover" => {
             let (a, b) = (p("de")?, p("para")?);
-            if b.exists() {
+            if std::fs::symlink_metadata(&b).is_ok() {
                 return Err(kalango_i18n::trf("already exists: {path}", &[("path", b.display().to_string())]));
             }
-            if let Some(parent) = b.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            std::fs::rename(&a, &b).map_err(|e| format!("{} → {}: {e}", a.display(), b.display()))?;
+            let (da, na) = split_nofollow(&a, false)?;
+            let (db, nb) = split_nofollow(&b, true)?;
+            use std::os::fd::AsRawFd;
+            // (never over something that appeared there meanwhile)
+            nix::fcntl::renameat2(Some(da.as_raw_fd()), na.as_os_str(), Some(db.as_raw_fd()), nb.as_os_str(), nix::fcntl::RenameFlags::RENAME_NOREPLACE)
+                .map_err(|e| format!("{} → {}: {e}", a.display(), b.display()))?;
             Ok(json!({}))
         }
         "lixeira" => {
@@ -302,13 +530,19 @@ fn do_op(op: &Value) -> Result<Value, String> {
             std::fs::create_dir_all(trash.join("info")).map_err(|e| e.to_string())?;
             let mut target = name.clone();
             let mut n = 1;
-            while trash.join("files").join(&target).exists() {
+            while std::fs::symlink_metadata(trash.join("files").join(&target)).is_ok() {
                 n += 1;
                 target = format!("{name}.{n}");
             }
-            std::fs::rename(&f, trash.join("files").join(&target)).map_err(|e| format!("{}: {e}", f.display()))?;
+            let (da, na) = split_nofollow(&f, false)?;
+            let dt = open_dir_nofollow(&trash.join("files"), false)?;
+            use std::os::fd::AsRawFd;
+            nix::fcntl::renameat2(Some(da.as_raw_fd()), na.as_os_str(), Some(dt.as_raw_fd()), target.as_str(), nix::fcntl::RenameFlags::RENAME_NOREPLACE).map_err(|e| format!("{}: {e}", f.display()))?;
             let info = format!("[Trash Info]\nPath={}\nDeletionDate={}\n", f.display(), op["data"].as_str().unwrap_or(""));
-            std::fs::write(trash.join("info").join(format!("{target}.trashinfo")), info).map_err(|e| e.to_string())?;
+            let di = open_dir_nofollow(&trash.join("info"), false)?;
+            use std::io::Write as _;
+            open_in(&di, std::ffi::OsStr::new(&format!("{target}.trashinfo")), nix::fcntl::OFlag::O_WRONLY | nix::fcntl::OFlag::O_CREAT | nix::fcntl::OFlag::O_TRUNC)
+                .map_err(|e| e.to_string())?.write_all(info.as_bytes()).map_err(|e| e.to_string())?;
             Ok(json!({ "na_lixeira": trash.join("files").join(&target) }))
         }
         _ => Err(kalango_i18n::trf("unknown operation: {kind}", &[("kind", kind.to_string())])),
@@ -345,7 +579,7 @@ mod path_tests {
             ".local/share/kalango/conectores/relogio"] {
             std::fs::create_dir_all(home.join(p)).unwrap();
         }
-        let peer = Peer { pid: 1, uid: 1000, gid: 1000, exe: "/usr/bin/teste".into(), cgroup: String::new(), home, user: "teste".into(), has_tty: false };
+        let peer = Peer { pid: 1, uid: 1000, gid: 1000, exe: "/usr/bin/teste".into(), cgroup: String::new(), passwd_home: home.clone(), home, user: "teste".into(), has_tty: false };
         (d, peer, vec!["~".into()], crate::policy::Config::system_default().protected_paths)
     }
 
@@ -393,6 +627,58 @@ mod path_tests {
         // a link that stays among the person's folders is fine
         symlink(h.join("Documentos"), h.join("docs")).unwrap();
         assert!(check_change_path("~/docs/notas.md", &peer, &allowed, &protected).is_ok());
+    }
+
+    /// The helper writes, moves and deletes without following links on the way (kalangod gives it the real path): a
+    /// folder swapped for a link after the check (to ~/.config/autostart, say) makes the operation fail, nothing is
+    /// written there.
+    #[test]
+    fn the_helper_never_follows_a_link_put_on_the_path() {
+        let (_d, peer, _allowed, _protected) = setup();
+        let h = peer.home.clone();
+        std::fs::create_dir_all(h.join(".config/autostart")).unwrap();
+        symlink(h.join(".config/autostart"), h.join("Documentos/d")).unwrap();
+        let r = do_op(&json!({"tipo": "escrever", "caminho": h.join("Documentos/d/x.desktop"), "conteudo": "evil"}));
+        assert!(r.is_err(), "{r:?}");
+        assert!(!h.join(".config/autostart/x.desktop").exists());
+        // the last part too: a link where the file was
+        symlink(h.join(".config/autostart/y.desktop"), h.join("Documentos/y")).unwrap();
+        assert!(do_op(&json!({"tipo": "escrever", "caminho": h.join("Documentos/y"), "conteudo": "evil"})).is_err());
+        assert!(!h.join(".config/autostart/y.desktop").exists());
+        // moving into a link, and deleting through one
+        std::fs::write(h.join("Documentos/a.txt"), "a").unwrap();
+        assert!(do_op(&json!({"tipo": "mover", "de": h.join("Documentos/a.txt"), "para": h.join("Documentos/d/a.desktop")})).is_err());
+        std::fs::write(h.join(".config/autostart/z.desktop"), "z").unwrap();
+        assert!(do_op(&json!({"tipo": "apagar_arquivo", "caminho": h.join("Documentos/d/z.desktop")})).is_err());
+        assert!(h.join(".config/autostart/z.desktop").exists());
+        // an ordinary write, with the folders made
+        assert!(do_op(&json!({"tipo": "escrever", "caminho": h.join("Documentos/novo/n.txt"), "conteudo": "ok"})).is_ok());
+        assert_eq!(std::fs::read_to_string(h.join("Documentos/novo/n.txt")).unwrap(), "ok");
+    }
+
+    /// The import's merge from its staging folder: what is new goes in, what exists stays, folders merge, and a
+    /// destination folder turned into a link (to autostart) is never written through.
+    #[test]
+    fn the_merge_never_writes_through_a_link() {
+        let (_d, peer, _a, _p) = setup();
+        let h = peer.home.clone();
+        let st = h.join(".local/state/kalango/importar/1");
+        std::fs::create_dir_all(st.join("Fotos")).unwrap();
+        std::fs::write(st.join("novo.txt"), "novo").unwrap();
+        std::fs::write(st.join("velho.txt"), "do outro sistema").unwrap();
+        std::fs::write(st.join("Fotos/a.png"), "a").unwrap();
+        std::fs::create_dir_all(st.join("Links")).unwrap();
+        std::fs::write(st.join("Links/x.desktop"), "[Desktop Entry]").unwrap();
+        let dest = h.join("Documentos/Antigos");
+        std::fs::create_dir_all(dest.join("Fotos")).unwrap();
+        std::fs::write(dest.join("velho.txt"), "da pessoa").unwrap();
+        std::fs::create_dir_all(h.join(".config/autostart")).unwrap();
+        symlink(h.join(".config/autostart"), dest.join("Links")).unwrap();
+        let r = merge_tree(&st, &dest);
+        assert_eq!(std::fs::read_to_string(dest.join("novo.txt")).unwrap(), "novo");
+        assert_eq!(std::fs::read_to_string(dest.join("velho.txt")).unwrap(), "da pessoa", "what exists stays");
+        assert_eq!(std::fs::read_to_string(dest.join("Fotos/a.png")).unwrap(), "a");
+        assert!(!h.join(".config/autostart/x.desktop").exists(), "{r:?}");
     }
 
     #[test]

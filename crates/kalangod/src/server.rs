@@ -53,7 +53,10 @@ pub fn serve(cfg: Config) -> std::io::Result<()> {
 }
 
 fn handle(st: Arc<State>, stream: UnixStream) -> std::io::Result<()> {
-    let peer = Peer::from_stream(&stream)?;
+    let mut peer = Peer::from_stream(&stream)?;
+    if let Some(h) = &st.cfg.home {
+        peer.home = h.clone();
+    }
     let mut out = stream.try_clone()?;
     for line in BufReader::new(stream).lines() {
         let line = line?;
@@ -65,7 +68,10 @@ fn handle(st: Arc<State>, stream: UnixStream) -> std::io::Result<()> {
             Err(e) => Some(err(Value::Null, -32700, &kalango_i18n::trf("invalid JSON: {e}", &[("e", e.to_string())]))),
         };
         if let Some(r) = reply {
-            writeln!(out, "{r}")?;
+            // (one write: a Value written straight to the socket goes a few bytes per system call)
+            let mut line = r.to_string();
+            line.push('\n');
+            out.write_all(line.as_bytes())?;
             out.flush()?;
         }
     }
@@ -145,7 +151,7 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
                     id: 0, time: 0, caller: rule.name.clone(), uid: peer.uid, pid: peer.pid, tool: format!("controle_remoto.{acao}"),
                     level: "sistema".into(), args: params.clone(), status: if res.is_ok() { "ok".into() } else { "negado".into() },
                     summary: match &res { Ok(_) => kalango_i18n::trf("remote control {acao} for process {pid}", &[("acao", acao.to_string()), ("pid", pid.to_string())]), Err(e) => e.clone() },
-                    inverse: None, restore_point: None, miniatura: None,
+                    inverse: None, restore_point: None, miniatura: None, startup: None,
                 });
             }
             match res {
@@ -163,7 +169,7 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
                         id: 0, time: 0, caller: rule.name.clone(), uid: peer.uid, pid: peer.pid, tool: "tela.fim".into(), level: "usuario".into(),
                         args: json!({"motivo": why.word(), "janela": w, "acoes": n}), status: "ok".into(),
                         summary: kalango_i18n::trf("screen control of “{w}” ended after {n} actions: {why}", &[("w", w.clone()), ("n", n.to_string()), ("why", why.text())]),
-                        inverse: None, restore_point: None, miniatura: None,
+                        inverse: None, restore_point: None, miniatura: None, startup: None,
                     });
                 }
             };
@@ -310,6 +316,16 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
                 Err(e) => err(id, -32005, &e),
             }
         }
+        // whether a call would be asked on the approval screen for changing a file that runs at login: the agents'
+        // engine then does not ask in the conversation too (the same question twice, there with an "always")
+        "kalango/inicio" => {
+            let name = params.get("ferramenta").and_then(Value::as_str).unwrap_or("");
+            let a = params.get("argumentos").cloned().unwrap_or(json!({}));
+            let hit = startup_files(st, peer, rule, name, &a);
+            let files: Vec<String> = hit.iter().map(|(_, b)| crate::startup::tilde(b, &peer.home)).collect();
+            let ask = !hit.is_empty() && crate::startup::mode(&st.cfg, peer) == crate::startup::Mode::Ask;
+            ok(id, json!({"pede": ask, "arquivos": files}))
+        }
         // the folders no agent reaches (the agents center shows them as "never")
         "kalango/protegidas" => ok(id, json!({"pastas": st.cfg.protected_paths})),
         // the person's "always" answers, and taking one back
@@ -327,15 +343,73 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
 
 #[allow(clippy::too_many_arguments)]
 fn log(st: &State, peer: &Peer, rule: &CallerRule, tool: &str, level: Level, args: &Value, status: &str, summary: &str, inverse: Option<Value>, rp: Option<String>) -> u64 {
-    log_with(st, peer, rule, tool, level, args, status, summary, inverse, rp, None)
+    log_with(st, peer, rule, tool, level, args, status, summary, inverse, rp, None, None)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn log_with(st: &State, peer: &Peer, rule: &CallerRule, tool: &str, level: Level, args: &Value, status: &str, summary: &str, inverse: Option<Value>, rp: Option<String>, miniatura: Option<String>) -> u64 {
+fn log_with(st: &State, peer: &Peer, rule: &CallerRule, tool: &str, level: Level, args: &Value, status: &str, summary: &str, inverse: Option<Value>, rp: Option<String>, miniatura: Option<String>, startup: Option<Value>) -> u64 {
     st.timeline.append(Entry {
         id: 0, time: 0, caller: format!("{} ({})", rule.name, peer.exe), uid: peer.uid, pid: peer.pid,
-        tool: tool.into(), level: level.name().into(), args: args.clone(), status: status.into(), summary: summary.into(), inverse, restore_point: rp, miniatura,
+        tool: tool.into(), level: level.name().into(), args: args.clone(), status: status.into(), summary: summary.into(), inverse, restore_point: rp, miniatura, startup,
     })
+}
+
+/// The startup files (`startup.rs`) a call would change, when it may change them at all (a path the tool refuses
+/// anyway is not asked about): (the files as the person reads them, the paths as given).
+fn startup_files(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value) -> Vec<(String, std::path::PathBuf)> {
+    let hit = crate::startup::touched(name, args, peer, &st.cfg);
+    let refused = crate::startup::changed_paths(name, args).iter().any(|raw| crate::sandbox::check_change_path(raw, peer, &rule.allowed_paths, &st.cfg.protected_paths).is_err());
+    if refused { vec![] } else { hit }
+}
+
+/// Files that run at the person's next login: a change asks every time, with the exact diff and never "always",
+/// unless the person chose to let these changes through (read here from their protected settings, never from the
+/// request). Ok(Some((mark, approved))): the timeline marks the action as such, and the file helper may write the
+/// `approved` paths (only those: the rest of the startup files stay read-only for it).
+/// Every way a startup file is changed comes through here: a tool call, and the inverse an undo runs.
+fn startup_gate(st: &State, peer: &Peer, rule: &CallerRule, tool: &tools::Tool, name: &str, args: &Value) -> Result<Option<(Value, Vec<std::path::PathBuf>)>, String> {
+    let hit = startup_files(st, peer, rule, name, args);
+    if hit.is_empty() {
+        return Ok(None);
+    }
+    let files: Vec<String> = hit.iter().map(|(raw, base)| crate::startup::shown(raw, base, &peer.home)).collect();
+    let auto = crate::startup::mode(&st.cfg, peer) == crate::startup::Mode::Allow;
+    let roots: Vec<std::path::PathBuf> = rule.allowed_paths.iter().map(|a| crate::policy::expand(a, &peer.home)).collect();
+    let copies = st.cfg.state_dir.join("copias").join(peer.uid.to_string());
+    let detail = crate::startup::approval_detail(name, args, &hit, peer, &roots, &copies);
+    let approved: Vec<std::path::PathBuf> = crate::startup::changed_paths(name, args).iter()
+        .map(|raw| crate::policy::normalize(&crate::policy::expand(raw, &peer.home))).collect();
+    // (the timeline keeps what changed, for the agents center to show)
+    let mark = |auto: bool| json!({"arquivos": files, "automatico": auto, "resumo": detail["resumo"], "linhas": detail["linhas"]});
+    if !auto {
+        let p = Pending {
+            id: 0, tool: name.into(), level: "inicio".into(), args: args.clone(), caller: format!("{} ({})", rule.name, peer.exe), uid: peer.uid, pid: peer.pid,
+            reason: kalango_i18n::trf("change {files}, which runs when you log in", &[("files", files.join(", "))]),
+            descricao: kalango_i18n::tr(tool.description).into(), efeito: match tool.effect { crate::policy::Effect::Leitura => "leitura", crate::policy::Effect::Escreve => "escreve", crate::policy::Effect::Destrutiva => "destrutiva" }.into(),
+            reversivel: tool.reversible, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: Some(detail.clone()), no_always: true,
+        };
+        match st.approvals.request(p, Duration::from_secs(st.cfg.approval_timeout_s)) {
+            Outcome::Approved => {}
+            Outcome::Denied => {
+                log_with(st, peer, rule, name, tool.level, args, "negado", kalango_i18n::tr("the person denied"), None, None, None, Some(mark(false)));
+                return Err(kalango_i18n::tr("the person denied this change to a file that runs when they log in").into());
+            }
+            Outcome::Timeout => {
+                log_with(st, peer, rule, name, tool.level, args, "negado", kalango_i18n::tr("no answer from the person"), None, None, None, Some(mark(false)));
+                return Err(kalango_i18n::tr("no approval within the time limit").into());
+            }
+        }
+    }
+    Ok(Some((mark(auto), approved)))
+}
+
+/// The inverse an undo of record `id` would run (tool, arguments), when it would ask on the startup screen: then that
+/// screen is the only question (the generic "system change" one, with its "always", is not asked as well).
+fn undo_asks_startup(st: &State, peer: &Peer, rule: &CallerRule, args: &Value) -> bool {
+    let Some(e) = args.get("id").and_then(Value::as_u64).and_then(|id| st.timeline.get(id)) else { return false };
+    let Some(inv) = e.inverse else { return false };
+    let (tname, targs) = (inv["ferramenta"].as_str().unwrap_or(""), &inv["argumentos"]);
+    !startup_files(st, peer, rule, tname, targs).is_empty() && crate::startup::mode(&st.cfg, peer) == crate::startup::Mode::Ask
 }
 
 /// Fluxo de uma chamada: nível → aprovação → ponto de restauração → execução → registro.
@@ -350,7 +424,7 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
         let p = Pending {
             id: 0, tool: name.into(), level: level.into(), args: args.clone(), caller: format!("{} ({})", rule.name, peer.exe), uid: peer.uid, pid: peer.pid, reason,
             descricao: kalango_i18n::tr(tool.description).into(), efeito: match tool.effect { crate::policy::Effect::Leitura => "leitura", crate::policy::Effect::Escreve => "escreve", crate::policy::Effect::Destrutiva => "destrutiva" }.into(),
-            reversivel: tool.reversible, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None,
+            reversivel: tool.reversible, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: None, no_always: false,
         };
         match st.approvals.request(p, timeout) {
             Outcome::Approved => Ok(()),
@@ -368,6 +442,8 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
         Level::Total if !st.approvals.has_total_grant(peer.uid) => approve("total", format!("nível total por {} min", st.cfg.total_grant_s / 60))?,
         // the person answered "always" to exactly this request before: it goes ahead (still with a restore point and
         // recorded in the timeline)
+        // an undo that puts back (or deletes) a startup file asks on the startup screen, with the diff, in undo()
+        Level::Sistema if name == "linha_do_tempo.desfazer" && undo_asks_startup(st, peer, rule, args) => {}
         Level::Sistema if st.approvals.is_standing(peer.uid, &peer.exe, name, args) => {}
         Level::Sistema => approve("sistema", "mudança no sistema".into())?,
         // the agents platform: creating or changing an agent, a flow, a tool or a connector always asks, showing
@@ -396,6 +472,7 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
         }
         _ => {}
     }
+    let (startup, startup_ok) = startup_gate(st, peer, rule, &tool, name, args)?.map(|(m, a)| (Some(m), a)).unwrap_or_default();
     // the screen: an action needs the person's session (asked on the approval screen for the window it aims at)
     if name.starts_with("tela.") {
         let ask = |p: Pending| {
@@ -425,7 +502,7 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
                     id: 0, tool: "rede_local".into(), level: "rede local".into(), args: endereco, caller: format!("{} ({})", rule.name, peer.exe), uid: peer.uid, pid: peer.pid,
                     reason: kalango_i18n::trf("open {url}, on your local network", &[("url", args["url"].as_str().unwrap_or("").to_string())]),
                     descricao: kalango_i18n::tr("Reach an address of your local network (a router, a printer, a NAS)").into(), efeito: "leitura".into(),
-                    reversivel: true, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None,
+                    reversivel: true, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: None, no_always: false,
                 };
                 match st.approvals.request(pedido, timeout) {
                     Outcome::Approved => {}
@@ -462,13 +539,13 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
     if name == "linha_do_tempo.desfazer_desde" {
         return undo_since(st, peer, rule, args, rp);
     }
-    let ctx = Ctx { cfg: &st.cfg, peer, rule, timeline: &st.timeline, lan: lan.clone(), state: Some(st) };
+    let ctx = Ctx { cfg: &st.cfg, peer, rule, timeline: &st.timeline, lan: lan.clone(), state: Some(st), startup_ok };
     match (tool.run)(&ctx, args) {
         Ok(Out { value, summary, inverse }) => {
             let status = if st.cfg.dry_run && tool.level >= Level::Sistema { "simulado" } else { "ok" };
             let mini = value.get("miniatura").and_then(Value::as_str).map(str::to_string);
             // (the timeline keeps what the action was, not the picture's bytes)
-            let n = log_with(st, peer, rule, name, tool.level, args, status, &summary, inverse.clone(), rp.clone(), mini);
+            let n = log_with(st, peer, rule, name, tool.level, args, status, &summary, inverse.clone(), rp.clone(), mini, startup);
             let mut v = value;
             if let Value::Object(m) = &mut v {
                 m.insert("registro".into(), json!(n));
@@ -501,11 +578,19 @@ fn undo_since(st: &State, peer: &Peer, rule: &CallerRule, args: &Value, rp: Opti
             falhas.push(json!({"id": e.id, "erro": kalango_i18n::tr("invalid inverse")}));
             continue;
         };
-        let ctx = Ctx { cfg: &st.cfg, peer, rule, timeline: &st.timeline, lan: None, state: None };
+        // (a startup file put back or deleted asks on its own screen, with the diff, as any change to it)
+        let (mark, startup_ok) = match startup_gate(st, peer, rule, &tool, tool.name, &inv["argumentos"]) {
+            Ok(g) => g.map(|(m, a)| (Some(m), a)).unwrap_or_default(),
+            Err(err) => {
+                falhas.push(json!({"id": e.id, "erro": err}));
+                continue;
+            }
+        };
+        let ctx = Ctx { cfg: &st.cfg, peer, rule, timeline: &st.timeline, lan: None, state: None, startup_ok };
         match (tool.run)(&ctx, &inv["argumentos"]) {
             Ok(out) => {
-                log(st, peer, rule, "linha_do_tempo.desfazer", Level::Sistema, &json!({"id": e.id}), "desfeito",
-                    &kalango_i18n::trf("undid #{id}: {action}", &[("id", e.id.to_string()), ("action", out.summary.clone())]), None, rp.clone());
+                log_with(st, peer, rule, "linha_do_tempo.desfazer", Level::Sistema, &json!({"id": e.id}), "desfeito",
+                    &kalango_i18n::trf("undid #{id}: {action}", &[("id", e.id.to_string()), ("action", out.summary.clone())]), None, rp.clone(), None, mark);
                 desfeitos.push(e.id);
             }
             Err(err) => falhas.push(json!({"id": e.id, "erro": err})),
@@ -528,8 +613,11 @@ fn undo(st: &State, peer: &Peer, rule: &CallerRule, args: &Value, rp: Option<Str
     let tname = inv["ferramenta"].as_str().unwrap_or("");
     let targs = inv["argumentos"].clone();
     let tool = tools::find(tname).ok_or(kalango_i18n::tr("invalid inverse"))?;
-    let ctx = Ctx { cfg: &st.cfg, peer, rule, timeline: &st.timeline, lan: None, state: None };
+    // the inverse goes through the startup gate as any call (the paths are checked now, as they are now: a folder
+    // made a link to ~/.config/autostart since the record counts as autostart)
+    let (mark, startup_ok) = startup_gate(st, peer, rule, &tool, tname, &targs)?.map(|(m, a)| (Some(m), a)).unwrap_or_default();
+    let ctx = Ctx { cfg: &st.cfg, peer, rule, timeline: &st.timeline, lan: None, state: None, startup_ok };
     let out = (tool.run)(&ctx, &targs)?;
-    let n = log(st, peer, rule, "linha_do_tempo.desfazer", Level::Sistema, &json!({"id": id}), "desfeito", &kalango_i18n::trf("undid #{id}: {action}", &[("id", id.to_string()), ("action", out.summary.clone())]), None, rp);
+    let n = log_with(st, peer, rule, "linha_do_tempo.desfazer", Level::Sistema, &json!({"id": id}), "desfeito", &kalango_i18n::trf("undid #{id}: {action}", &[("id", id.to_string()), ("action", out.summary.clone())]), None, rp, None, mark);
     Ok((json!({"desfeito": id, "registro": n, "acao": out.summary}), kalango_i18n::trf("undid #{id}", &[("id", id.to_string())])))
 }

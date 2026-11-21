@@ -51,7 +51,7 @@ fn program(peer: &Peer) -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("KALANGO_FLUXOSD").map(PathBuf::from).filter(|p| p.is_file()) {
         return Some(p);
     }
-    let fixed = [PathBuf::from("/usr/lib/kalango/kalango-fluxosd"), peer.home.join(".local/bin/kalango-fluxosd")];
+    let fixed = [PathBuf::from("/usr/lib/kalango/kalango-fluxosd"), peer.passwd_home.join(".local/bin/kalango-fluxosd")];
     if let Some(p) = fixed.into_iter().find(|p| p.is_file()) {
         return Some(p);
     }
@@ -69,9 +69,9 @@ fn service(peer: &Peer, method: &str, params: &Value) -> Result<Value, String> {
     cmd.args(["chamar", method, &params.to_string(), "--socket", &socket(peer)]);
     if nix::unistd::geteuid().is_root() && peer.uid != 0 {
         use std::os::unix::process::CommandExt;
-        cmd.uid(peer.uid).gid(peer.gid).env_clear().env("HOME", &peer.home).env("USER", &peer.user)
+        cmd.uid(peer.uid).gid(peer.gid).env_clear().env("HOME", &peer.passwd_home).env("USER", &peer.user)
             .env("XDG_RUNTIME_DIR", format!("/run/user/{}", peer.uid)).env("PATH", "/usr/local/bin:/usr/bin:/bin")
-            .current_dir(&peer.home);
+            .current_dir(&peer.passwd_home);
     }
     let o = cmd.output().map_err(|e| e.to_string())?;
     let v: Value = serde_json::from_str(String::from_utf8_lossy(&o.stdout).trim())
@@ -252,7 +252,7 @@ fn registrar_mcp(c: &Ctx, a: &Value) -> Result<Out, String> {
     }
     toml.push_str("sob_demanda = true\n");
     // (KALANGO_CONECTORES_DIR: the tests' folder — kalangod resolves the home by passwd, never the test's $HOME)
-    let dir = std::env::var_os("KALANGO_CONECTORES_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| c.peer.home.join(".config/kalango/conectores"));
+    let dir = std::env::var_os("KALANGO_CONECTORES_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| c.peer.passwd_home.join(".config/kalango/conectores"));
     let p = dir.join(format!("{nome}.toml"));
     if p.exists() {
         return Err(trf("a connector named {name} already exists", &[("name", nome.to_string())]));

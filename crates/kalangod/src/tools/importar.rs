@@ -10,6 +10,13 @@
 use super::*;
 use std::path::{Path, PathBuf};
 
+/// Where a copy from another system may land: in this home, outside its protected folders and not a file that runs
+/// at login, wherever a link there leads (the copy runs as root).
+fn import_destination_ok(to: &std::path::Path, peer: &crate::peer::Peer, home_rule: &[String], cfg: &crate::policy::Config) -> bool {
+    let raw = to.display().to_string();
+    crate::sandbox::check_change_path(&raw, peer, home_rule, &cfg.protected_paths).is_ok() && crate::startup::startup_base(&raw, peer, cfg).is_none()
+}
+
 pub fn tools() -> Vec<Tool> {
     let t = |name, description, level, effect, reversible, schema: fn() -> Value, run: Run| Tool { name, description, level, effect, reversible, schema, run };
     use Effect::*;
@@ -274,15 +281,20 @@ fn copy(c: &Ctx, a: &Value) -> Result<Out, String> {
     // places come from ~/.config/user-dirs.dirs, which an agent can write, and the copy runs as root (an
     // XDG_DOCUMENTS_DIR in ~/.config/kalango, in /etc, or a Documents that is a link to them, would put files there)
     let home_rule = [home.display().to_string()];
-    plan.retain(|(_, to)| match crate::sandbox::check_change_path(&to.display().to_string(), c.peer, &home_rule, &c.cfg.protected_paths) {
-        Ok(_) => true,
-        Err(_) => {
+    // (nor a file that runs at login: a folder there set to ~/.config/autostart would bring programs to start)
+    plan.retain(|(_, to)| {
+        let ok = import_destination_ok(to, c.peer, &home_rule, c.cfg);
+        if !ok {
             skipped.push(to.display().to_string());
-            false
         }
+        ok
     });
     let commands: Vec<String> = plan.iter().map(|(f, t)| format!("rsync -a --ignore-existing --chown={owner} {}{} {}", f.display(), if f.is_dir() { "/" } else { "" }, t.display())).collect();
     let uid = c.peer.uid;
+    // the copy lands first in a staging folder in the person's protected state (~/.local/state/kalango: no agent
+    // reaches it) and is then put in place by `merge_tree`, from folder descriptors opened without following links:
+    // rsync runs as root and would follow a link an agent put on the destination's path meanwhile
+    let staging = c.peer.home.join(".local/state/kalango/importar");
     let summary = trf("bringing {n} folders from {system}", &[("n", plan.len().to_string()), ("system", system.clone())]);
     if c.cfg.dry_run {
         if ours {
@@ -300,13 +312,18 @@ fn copy(c: &Ctx, a: &Value) -> Result<Out, String> {
             .and_then(|o| o.split_whitespace().next().and_then(|n| n.parse().ok())).unwrap_or(0)).sum();
         let mut done = 0u64;
         let mut error = None;
-        for (from, to) in &total_plan {
-            if let Some(d) = if from.is_dir() { Some(to.as_path()) } else { to.parent() } {
-                let _ = std::fs::create_dir_all(d);
-                let _ = exec("chown", &[&owner, &d.display().to_string()]);
+        for (i, (from, to)) in total_plan.iter().enumerate() {
+            let piece_dir = staging.join(format!("{}-{i}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&piece_dir);
+            if std::fs::create_dir_all(&piece_dir).is_err() {
+                error = Some(piece_dir.display().to_string());
+                break;
             }
+            let _ = exec("chown", &[&owner, &staging.display().to_string(), &piece_dir.display().to_string()]);
             let src_arg = format!("{}{}", from.display(), if from.is_dir() { "/" } else { "" });
-            let child = std::process::Command::new("rsync").args(["-a", "--ignore-existing", &format!("--chown={owner}"), "--info=progress2", "--no-inc-recursive", &src_arg, &to.display().to_string()])
+            // (a folder's content goes into the piece folder; a single file goes in under its own name)
+            let staged_to = if from.is_dir() { piece_dir.clone() } else { piece_dir.join(to.file_name().unwrap_or_default()) };
+            let child = std::process::Command::new("rsync").args(["-a", "--ignore-existing", &format!("--chown={owner}"), "--info=progress2", "--no-inc-recursive", &src_arg, &staged_to.display().to_string()])
                 .env("LC_ALL", "C").stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn();
             let Ok(mut child) = child else { error = Some("rsync".to_string()); break };
             let mut piece = 0u64;
@@ -329,7 +346,12 @@ fn copy(c: &Ctx, a: &Value) -> Result<Out, String> {
             }
             let ok = child.wait().map(|s| s.success() || s.code() == Some(23) || s.code() == Some(24)).unwrap_or(false);
             done += piece;
-            if !ok {
+            // into place: a folder merged into its destination, a file into its folder (never over what is there)
+            let placed = if from.is_dir() { crate::sandbox::merge_tree(&piece_dir, to) } else { crate::sandbox::merge_tree(&piece_dir, to.parent().unwrap_or(to)) };
+            let _ = std::fs::remove_dir_all(&piece_dir);
+            // (a folder the merge had to make is the person's; -h: a link is never followed)
+            let _ = exec("chown", &["-h", &owner, &(if from.is_dir() { to.as_path() } else { to.parent().unwrap_or(to) }).display().to_string()]);
+            if !ok || placed.is_err() {
                 error = Some(to.display().to_string());
             }
         }
@@ -369,5 +391,30 @@ mod tests {
         assert_eq!(dest_for(&me, "DOCUMENTS", "Documents"), me.join("Documentos"));
         assert_eq!(dest_for(&me, "DESKTOP", "Desktop"), me.join("Desktop"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod destination_tests {
+    use super::import_destination_ok;
+
+    /// The folders brought from another system land in the person's folders, never in a startup or protected one
+    /// (also when a folder of the plan is a link there).
+    #[test]
+    fn a_copy_never_lands_where_programs_start() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("casa");
+        for p in ["Documentos", ".config/autostart", ".config/kalango"] {
+            std::fs::create_dir_all(home.join(p)).unwrap();
+        }
+        let peer = crate::peer::Peer { pid: 1, uid: 1000, gid: 1000, exe: "/x".into(), cgroup: String::new(), passwd_home: home.clone(), home: home.clone(), user: "t".into(), has_tty: false };
+        let cfg = crate::policy::Config::system_default();
+        let rule = [home.display().to_string()];
+        assert!(import_destination_ok(&home.join("Documentos/Antigos"), &peer, &rule, &cfg));
+        assert!(!import_destination_ok(&home.join(".config/autostart"), &peer, &rule, &cfg));
+        assert!(!import_destination_ok(&home.join(".local/bin"), &peer, &rule, &cfg));
+        assert!(!import_destination_ok(&home.join(".config/kalango"), &peer, &rule, &cfg));
+        std::os::unix::fs::symlink(home.join(".config/autostart"), home.join("Documentos/Fotos")).unwrap();
+        assert!(!import_destination_ok(&home.join("Documentos/Fotos"), &peer, &rule, &cfg), "a link to autostart");
     }
 }

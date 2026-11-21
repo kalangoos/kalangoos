@@ -36,6 +36,13 @@ pub struct Pending {
     pub exe: String,
     #[serde(skip)]
     pub decision: Option<bool>,
+    /// A change to files that run at the person's next login (`startup.rs`): which ones and the exact diff, for the
+    /// approval screen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup: Option<Value>,
+    /// "Always" is refused for this request (the screen shows no such button): each change to a startup file is
+    /// seen before it happens.
+    pub no_always: bool,
 }
 
 #[derive(Default)]
@@ -193,6 +200,9 @@ impl Approvals {
         }
         if requires_tty && !approver.has_tty && !trusted_approver(&approver.exe, trusted) {
             return Err(tr("the approval has to be made by you: in a terminal or on the system approval screen (in person)").into());
+        }
+        if always && p.no_always {
+            return Err(tr("this request cannot be answered with “always”: each change is approved on its own").into());
         }
         if always && (!approve || p.level != "sistema") {
             return Err(tr("“always” is only for approving system changes; full access is always temporary").into());

@@ -940,6 +940,12 @@ dropdown.central-escolha > button { background: #1A1B21; border: 1px solid #2627
 dropdown.central-escolha > button > box { border-spacing: 8px; }
 dropdown.central-escolha:disabled > button { color: @k_muted; }
 dropdown.central-escolha popover contents { background: #1C1D23; border: 1px solid #26272F; border-radius: 6px; }
+/* files that run at login (design page 30): the selector and its list with what each choice means */
+menubutton.central-inicio > button { background: #1A1B21; border: 1px solid #26272F; border-radius: 4px; box-shadow: none; padding: 0 8px 0 12px; min-height: 32px; font-size: 13px; color: @k_text; }
+popover.central-inicio-lista > contents { background: #18191E; border: 1px solid #26272F; border-radius: 6px; padding: 4px; box-shadow: none; }
+button.central-inicio-opcao { background: none; border: none; box-shadow: none; border-radius: 4px; padding: 8px 10px; min-height: 0; }
+button.central-inicio-opcao.escolhida, button.central-inicio-opcao:hover { background: #24252D; }
+.central-inicio-ajuda { line-height: 1.5; }
 .central-botao { background: #26272F; border: none; box-shadow: none; border-radius: 4px; min-height: 36px; font-size: 13px; font-weight: 600; color: @k_text; }
 .central-botao:hover { background: #2E2F3A; }
 .central-botao.perigo { background: alpha(@k_coral, 0.16); color: @k_coral; }
@@ -1000,7 +1006,7 @@ entry.rotinas-campo { background: #16171B; border: 1px solid #2E2F3A; border-rad
 .linha-ponto.voce, .linha-ponto.sistema { background: @k_blue; } .linha-ponto.rotina, .linha-ponto.outro { background: @k_teal; }
 .linha-fio { min-width: 1px; background: #2E2F3A; margin-top: 4px; }
 .linha-cartao { background: #1A1B21; border: 1px solid #26272F; border-radius: 4px; padding: 11px 12px; }
-.linha-cartao.escolhido { border-color: alpha(@k_accent, 0.75); background: #1E1F27; }
+.linha-cartao.escolhido { border-color: alpha(@k_accent, 0.75); background: alpha(@k_accent, 0.08); }
 .linha-quem { font-size: 12px; font-weight: 600; color: @k_accent; }
 .linha-quem.voce, .linha-quem.sistema { color: @k_blue; } .linha-quem.rotina, .linha-quem.outro { color: @k_teal; }
 .linha-texto { font-size: 13px; font-weight: 600; color: @k_text; }
@@ -1024,6 +1030,20 @@ scale.central-escala marks indicator { min-height: 6px; min-width: 1px; color: #
 .linha-ad-texto { font-size: 13px; color: @k_text; }
 .linha-porque { font-size: 13px; color: @k_text; }
 .linha-permissao { border: 1px solid #2E2F3A; border-radius: 4px; padding: 4px 9px; font-size: 12px; color: @k_text; }
+/* a file that runs at login (design page 30): the notice, the chip, the diff */
+.linha-aviso-inicio { background: alpha(@k_gold, 0.10); border: 1px solid alpha(@k_gold, 0.35); border-radius: 6px; padding: 12px 12px 12px 14px; margin-top: 12px; }
+.linha-aviso-titulo { font-size: 13px; font-weight: 600; color: @k_text; }
+.linha-aviso-texto { font-size: 12px; color: @k_text2; }
+.linha-aviso-inicio .linha-acao, .linha-cartao.escolhido .linha-acao { background: alpha(@k_accent, 0.16); color: mix(@k_accent, @k_text, 0.35); }
+.linha-aviso-inicio .linha-acao:hover, .linha-cartao.escolhido .linha-acao:hover { background: alpha(@k_accent, 0.24); }
+.linha-chip.inicio { background: alpha(@k_gold, 0.16); color: @k_gold; }
+.linha-diff { background: @k_base; border: 1px solid #26272F; border-radius: 4px; padding: 8px 10px; font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; font-size: 12px; }
+.linha-diff-arquivo { color: @k_muted; margin-bottom: 2px; }
+.linha-diff-linha { border-radius: 2px; padding: 1px 6px; color: @k_text; }
+.linha-diff-linha .linha-diff-sinal { color: @k_text2; }
+.linha-diff-linha.mais { background: alpha(@k_teal, 0.12); } .linha-diff-linha.mais label { color: @k_teal; }
+.linha-diff-linha.menos { background: alpha(@k_coral, 0.12); } .linha-diff-linha.menos label { color: @k_coral; }
+.linha-diff-linha.intervalo label { color: @k_dim; }
 .linha-desfazer { background: @k_accent; color: @k_accent_fg; border: none; box-shadow: none; border-radius: 4px; min-height: 36px; padding: 0 16px; font-size: 13px; font-weight: 600; }
 .linha-desfazer:disabled { background: alpha(@k_accent, 0.25); color: alpha(@k_accent_fg, 0.7); }
 

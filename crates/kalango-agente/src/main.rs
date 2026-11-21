@@ -523,6 +523,17 @@ fn main() {
         permissoes::save(&s).unwrap_or_else(|e| fail(e));
         return;
     }
+    // files that run at login (.bashrc, autostart…): kalangod asks before each change, or lets them through
+    // (Agents › Permissions; kalangod reads it from this file, which no agent reaches)
+    if rest.first() == Some(&"inicio") {
+        let Some(m) = rest.get(1).copied().filter(|m| matches!(*m, "perguntar" | "livre")) else {
+            fail(tr("usage: kalango-agente inicio <perguntar|livre>").to_string())
+        };
+        let mut s = permissoes::load();
+        s.startup_files = Some(m.to_string());
+        permissoes::save(&s).unwrap_or_else(|e| fail(e));
+        return;
+    }
     if rest.first() == Some(&"pausar") {
         let mut s = permissoes::load();
         s.paused = rest.get(1) != Some(&"nao");

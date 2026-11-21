@@ -12,7 +12,12 @@ pub struct Peer {
     pub gid: u32,
     pub exe: String,
     pub cgroup: String,
+    /// The home for the caller's own paths ("~" in an agent's arguments): from passwd, or the test session's folder
+    /// (config `home`).
     pub home: PathBuf,
+    /// The home from passwd, always: where the person's programs are (~/.local/bin) and what kalangod's helpers run
+    /// with. A test session's `home` must not move those.
+    pub passwd_home: PathBuf,
     pub user: String,
     /// O processo tem terminal de controle (usado para aprovação presencial).
     pub has_tty: bool,
@@ -34,7 +39,7 @@ impl Peer {
             Ok(Some(u)) => (u.name, u.dir),
             _ => (uid.to_string(), PathBuf::from("/nonexistent")),
         };
-        Peer { pid, uid, gid, exe, cgroup, home, user, has_tty: has_tty(pid) }
+        Peer { pid, uid, gid, exe, cgroup, passwd_home: home.clone(), home, user, has_tty: has_tty(pid) }
     }
 }
 

@@ -381,6 +381,11 @@ impl Linha {
             vazio.set_margin_top(16);
             self.lista.append(&vazio);
         }
+        // an agent changed a file that runs at login, let through by the person's choice (design page 30): said
+        // first, with undo and the way to the setting
+        if let Some(e) = v.iter().rev().find(|e| e["startup"]["automatico"] == true && e["status"] == "ok" && e["desfeito"] != true) {
+            self.lista.append(&self.startup_notice(e));
+        }
         let mut secao_atual = "";
         for e in v.iter().rev() {
             let t = e["time"].as_i64().unwrap_or(0);
@@ -400,9 +405,13 @@ impl Linha {
                 "negado" => trf("refused: {why}", &[("why", e["summary"].as_str().unwrap_or("").to_string())]),
                 "erro" => trf("failed: {why}", &[("why", e["summary"].as_str().unwrap_or("").to_string())]),
                 _ if e["tool"].as_str().is_some_and(|t| t.starts_with("tela.")) => screen_sub(e),
+                _ if e["startup"].is_object() => startup_sub(e),
                 _ => resumo_args(&e["args"]),
             };
             let mut chips: Vec<(&str, &str)> = Vec::new();
+            if e["startup"].is_object() {
+                chips.push((tr("startup file"), "inicio"));
+            }
             if e["miniatura"].is_string() && status == "ok" {
                 chips.push((tr("on the screen"), "tela"));
             }
@@ -432,7 +441,7 @@ impl Linha {
                 let b = gtk::Button::new();
                 b.add_css_class("linha-acao");
                 let bc = caixa(Orientation::Horizontal, 6, "");
-                bc.append(&ui_icon("desfazer", "#E2E2E6", 14));
+                bc.append(&ui_icon("desfazer", if id == self.escolhido.get() { "#A5A1E2" } else { "#E2E2E6" }, 14));
                 bc.append(&rotulo(tr("Undo"), ""));
                 b.set_child(Some(&bc));
                 b.set_valign(Align::Center);
@@ -486,6 +495,61 @@ impl Linha {
         }
     }
 
+    /// The notice over the list: which file, who, when; undo, and the setting (Permissions).
+    fn startup_notice(self: &Rc<Self>, e: &Value) -> gtk::Box {
+        let id = e["id"].as_u64().unwrap_or(0);
+        let b = caixa(Orientation::Horizontal, 12, "linha-aviso-inicio");
+        b.set_margin_bottom(4);
+        let ic = ui_icon("alerta", "#E5C98C", 16);
+        ic.set_valign(Align::Center);
+        b.append(&ic);
+        let col = caixa(Orientation::Vertical, 3, "");
+        col.set_hexpand(true);
+        col.set_valign(Align::Center);
+        let t = rotulo(tr("An agent changed a file that runs at login"), "linha-aviso-titulo");
+        t.set_xalign(0.0);
+        col.append(&t);
+        let (quem, _) = self.quem(e);
+        let file = e["startup"]["arquivos"][0].as_str().unwrap_or("").to_string();
+        let sub = rotulo(&trf("{agent} changed {file} at {time}. You set these changes to “Allow automatically” (Permissions).",
+            &[("agent", quem), ("file", file), ("time", hora(e["time"].as_i64().unwrap_or(0)))]), "linha-aviso-texto");
+        sub.set_xalign(0.0);
+        sub.set_wrap(true);
+        sub.set_max_width_chars(1);
+        col.append(&sub);
+        b.append(&col);
+        let desfazer = gtk::Button::new();
+        desfazer.add_css_class("linha-acao");
+        let bc = caixa(Orientation::Horizontal, 6, "");
+        bc.append(&ui_icon("desfazer", "#A5A1E2", 14));
+        bc.append(&rotulo(tr("Undo"), ""));
+        desfazer.set_child(Some(&bc));
+        desfazer.set_valign(Align::Center);
+        let w = Rc::downgrade(self);
+        desfazer.connect_clicked(move |_| {
+            if let Some(l) = w.upgrade() {
+                l.escolher(id);
+                l.executar("linha_do_tempo.desfazer", json!({"id": id}));
+            }
+        });
+        crate::central::posicao_debug("aviso de início: desfazer", desfazer.upcast_ref());
+        b.append(&desfazer);
+        let ajuste = gtk::Button::with_label(tr("Permissions"));
+        ajuste.add_css_class("linha-revisar");
+        ajuste.set_valign(Align::Center);
+        let sh = self.shell.clone();
+        ajuste.connect_clicked(move |_| {
+            if let Some(s) = sh.upgrade() {
+                s.abrir_central(Some("permissoes"));
+            }
+        });
+        b.append(&ajuste);
+        if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+            eprintln!("debug central: aviso de arquivo de início (registro {id}, {})", e["startup"]["arquivos"]);
+        }
+        b
+    }
+
     fn secao(&self, t: &str) -> gtk::Label {
         let s = rotulo(t, "central-painel-secao");
         s.set_xalign(0.0);
@@ -499,6 +563,9 @@ impl Linha {
     fn cartao(&self, t: i64, quem: &str, classe: &str, titulo: &str, sub: &str, chips: &[(&str, &str)], escolhido: bool) -> (gtk::Box, gtk::Box) {
         let linha = caixa(Orientation::Horizontal, 12, "");
         linha.set_margin_bottom(10);
+        // (the line beside the dot fills the row's height; the row itself does not take the list's spare height —
+        // a lone record would stretch to the whole list, its buttons floating in the middle)
+        linha.set_vexpand(false);
         let h = rotulo(&hora(t), "linha-hora");
         h.set_valign(Align::Start);
         h.set_margin_top(4);
@@ -637,7 +704,11 @@ impl Linha {
         let t = e["time"].as_i64().unwrap_or(0);
         let (quem, _) = self.quem(&e);
         self.titulo.set_text(&titulo_de(&e));
-        self.meta.set_text(&format!("{quem} · {} · {}", hora(t), trf("level {level}", &[("level", e["level"].as_str().unwrap_or("").to_string())])));
+        if e["startup"].is_object() {
+            self.meta.set_text(&format!("{quem} · {} · {} · {}", hora(t), e["tool"].as_str().unwrap_or(""), tr("file that runs at login")));
+        } else {
+            self.meta.set_text(&format!("{quem} · {} · {}", hora(t), trf("level {level}", &[("level", e["level"].as_str().unwrap_or("").to_string())])));
+        }
         // before / after
         let a = &e["args"];
         let caixa_ad = |rotulo_t: &str, linhas: Vec<String>, depois: bool| {
@@ -661,7 +732,10 @@ impl Linha {
             }
             b
         };
-        if e["miniatura"].is_string() {
+        if e["startup"]["linhas"].is_array() {
+            // a file that runs at login: what changed in it, line by line
+            self.antes_depois.append(&diff_box(&e["startup"]));
+        } else if e["miniatura"].is_string() {
             // the screen before (the previous action's picture) and after this one
             let id = e["id"].as_u64().unwrap_or(0);
             let antes = self.registros.borrow().iter().rev().filter(|x| x["id"].as_u64().unwrap_or(0) < id && x["miniatura"].is_string())
@@ -699,13 +773,22 @@ impl Linha {
             None if self.quem(&e).1 == "voce" => tr("You did it, in the system.").to_string(),
             None => tr("No request of yours is linked to it (a summary in the background, or another program).").to_string(),
         };
+        let porque = match e["startup"]["automatico"].as_bool() {
+            Some(true) => format!("{porque} {}", tr("Files that run at login are set to “Allow automatically” (Permissions), so the agent did not ask for approval.")),
+            Some(false) if e["status"] == "ok" => format!("{porque} {}", tr("It changes a file that runs at login: you approved it on the system screen.")),
+            _ => porque,
+        };
         self.porque.set_text(&porque);
         // permissions used
+        let startup_file = e["startup"]["arquivos"][0].as_str().map(str::to_string);
         let leitura = e["leitura"].as_bool().unwrap_or(false);
         let tool = e["tool"].as_str().unwrap_or("");
         let (col, glifo) = coluna(tool, leitura);
         let mut chips: Vec<(String, &str)> = vec![(tr(col).to_string(), glifo), (trf("level {level}", &[("level", e["level"].as_str().unwrap_or("").to_string())]), "escudo")];
-        if let Some(p) = a["caminho"].as_str().or(a["de"].as_str()) {
+        if let Some(f) = &startup_file {
+            chips = vec![(f.clone(), "olho"), (tr(col).to_string(), glifo),
+                (if e["startup"]["automatico"] == true { tr("automatic") } else { tr("approved by you") }.to_string(), "cadeado")];
+        } else if let Some(p) = a["caminho"].as_str().or(a["de"].as_str()) {
             let pasta = std::path::Path::new(p).parent().map(|x| x.display().to_string()).unwrap_or_default();
             let home = glib::home_dir().display().to_string();
             chips.push((pasta.replacen(&home, "~", 1), "pasta"));
@@ -720,7 +803,9 @@ impl Linha {
             self.permissoes.append(&c);
         }
         // what undoing does
-        let explica = if e["miniatura"].is_string() {
+        let explica = if let (Some(f), true) = (&startup_file, !e["inverse"].is_null() && e["status"] == "ok" && e["desfeito"] != true) {
+            trf("Undoing puts {file} back as it was before the change.", &[("file", f.clone())])
+        } else if e["miniatura"].is_string() {
             tr("An action on the screen is not undone from here: the app itself undoes it (Ctrl+Z). The thumbnails stay on this computer and go with the record.").to_string()
         } else if e["desfeito"] == true {
             tr("This action was already undone.").to_string()
@@ -750,6 +835,9 @@ fn titulo_de(e: &Value) -> String {
         return e["descricao"].as_str().unwrap_or(e["tool"].as_str().unwrap_or("")).to_string();
     }
     let caminho = a["caminho"].as_str().unwrap_or("");
+    if let Some(f) = e["startup"]["arquivos"][0].as_str() {
+        return trf("Changed {file}", &[("file", f.rsplit(" → ").next().unwrap_or(f).to_string())]);
+    }
     match e["tool"].as_str().unwrap_or("") {
         "arquivos.mover" => {
             let (de, para) = (a["de"].as_str().unwrap_or(""), a["para"].as_str().unwrap_or(""));
@@ -769,6 +857,46 @@ fn titulo_de(e: &Value) -> String {
             c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
         }
     }
+}
+
+/// A change to a file that runs at login, in one line: the tool, how much changed, what kind of file it is.
+fn startup_sub(e: &Value) -> String {
+    [e["tool"].as_str().unwrap_or(""), e["startup"]["resumo"].as_str().unwrap_or(""), tr("file that runs at login")]
+        .into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")
+}
+
+/// What changed in a file, line by line (as the approval screen shows it): kept, removed, added, a gap.
+fn diff_box(st: &Value) -> gtk::Box {
+    let b = caixa(Orientation::Vertical, 4, "linha-diff");
+    b.set_hexpand(true);
+    let files: Vec<&str> = st["arquivos"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let head = rotulo(&format!("{} · {}", files.join(", "), st["resumo"].as_str().unwrap_or("")), "linha-diff-arquivo");
+    head.set_xalign(0.0);
+    head.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    head.set_max_width_chars(1);
+    b.append(&head);
+    let lines = st["linhas"].as_array().cloned().unwrap_or_default();
+    for l in lines.iter().take(60) {
+        let (sign, class) = match l["t"].as_str().unwrap_or(" ") {
+            "+" => ("+", "mais"),
+            "-" => ("-", "menos"),
+            "@" => ("⋯", "intervalo"),
+            _ => (" ", ""),
+        };
+        let row = caixa(Orientation::Horizontal, 8, "linha-diff-linha");
+        if !class.is_empty() {
+            row.add_css_class(class);
+        }
+        row.append(&rotulo(sign, "linha-diff-sinal"));
+        let t = rotulo(l["l"].as_str().unwrap_or(""), "linha-diff-texto");
+        t.set_xalign(0.0);
+        t.set_hexpand(true);
+        t.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        t.set_max_width_chars(1);
+        row.append(&t);
+        b.append(&row);
+    }
+    b
 }
 
 /// What a record touched, in one line: from → to, the path, the packages…

@@ -103,6 +103,9 @@ pub struct Landlock {
     pub leitura: Vec<PathBuf>,
     /// Leitura e escrita.
     pub escrita: Vec<PathBuf>,
+    /// Only listing what a folder holds (the names, not the files): a folder on the way to a protected one.
+    #[serde(default)]
+    pub listar: Vec<PathBuf>,
     /// Rede TCP (Landlock ABI 4+): `None` não restringe; `Some(portas)` só deixa conectar nessas portas.
     #[serde(default)]
     pub portas: Option<Vec<u16>>,
@@ -113,6 +116,12 @@ pub struct Landlock {
 pub struct Seccomp {
     /// Sem rede: sockets de internet (IPv4, IPv6, pacotes crus) são negados.
     pub sem_rede: bool,
+    /// No local sockets (AF_UNIX): no D-Bus (the session and system buses), no systemd (its private socket, `systemd-run
+    /// --user`, `systemctl --user start`, D-Bus activation of a user service), no other program's socket — the ways a
+    /// command could have something started outside its own cgroup, where it would outlive the task and the rules it
+    /// runs under. `socketpair` (a pipe between a process and its children) still works.
+    #[serde(default)]
+    pub sem_unix: bool,
 }
 
 pub struct Pedido<'a> {
@@ -134,6 +143,8 @@ pub struct Preparado {
     pub dir: Option<PathBuf>,
     pub modo: &'static str,
     descricao: String,
+    /// the systemd unit (scope) of the task
+    unit: String,
 }
 
 
@@ -197,14 +208,14 @@ pub fn prepare_command(p: Pedido, prefixo: &str) -> Result<Preparado, String> {
     }
     let descricao = format!("{} {}", plano.programa, plano.argumentos.join(" "));
     cmd.arg("__tarefa").arg(serde_json::to_string(&plano).unwrap());
-    Ok(Preparado { cmd, dir, modo, descricao })
+    Ok(Preparado { cmd, dir, modo, descricao, unit })
 }
 
 /// Executa uma tarefa limitada e devolve o resultado (código, saída, memória máxima, se estourou memória ou tempo).
 pub fn run_task(p: Pedido) -> Result<Value, String> {
     let lim = p.limites.clone();
     let dry_run = p.dry_run;
-    let Preparado { mut cmd, dir, modo, descricao } = prepare_command(p, "kalango-tarefa")?;
+    let Preparado { mut cmd, dir, modo, descricao, unit } = prepare_command(p, "kalango-tarefa")?;
     if dry_run {
         return Ok(json!({"simulado": true, "comando": descricao, "modo": modo, "limites": lim}));
     }
@@ -242,17 +253,10 @@ pub fn run_task(p: Pedido) -> Result<Value, String> {
     };
     if let Some(d) = &dir {
         oom = oom.max(events(&d.join("memory.events"), "oom_kill"));
-        if modo == "cgroupfs" {
-            // processos que sobraram (filhos em segundo plano) não sobrevivem à tarefa
-            let _ = std::fs::write(d.join("cgroup.kill"), "1");
-            for _ in 0..40 {
-                if std::fs::remove_dir(d).is_ok() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-        }
     }
+    // nothing the task started outlives it (a detached `setsid` loop could otherwise keep working after the command
+    // returned — round 2 of the review raced a folder swap that way): its whole cgroup is killed, in every mode
+    end_scope(dir.as_deref(), modo, &unit);
     let (saida, cortada_o) = out_t.join().unwrap_or_default();
     let (erros, cortada_e) = err_t.join().unwrap_or_default();
     let sinal = status.signal();
@@ -266,6 +270,30 @@ pub fn run_task(p: Pedido) -> Result<Value, String> {
         "tempo_ms": start.elapsed().as_millis() as u64, "memoria_pico_mb": peak / (1024 * 1024),
         "estourou_memoria": oom > 0, "estourou_tempo": timed_out, "limites": lim, "modo": modo,
     }))
+}
+
+/// Kills every process left in a task's cgroup (`cgroup.kill`), and stops its systemd scope when the cgroup's folder
+/// is not known; a cgroupfs folder is removed.
+fn end_scope(dir: Option<&Path>, modo: &str, unit: &str) {
+    let killed = dir.is_some_and(|d| std::fs::write(d.join("cgroup.kill"), "1").is_ok());
+    if !killed && modo != "cgroupfs" {
+        let mut c = Command::new("systemctl");
+        if modo == "systemd --user" {
+            c.arg("--user");
+            if let Some(bus) = std::env::var_os("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("bus")).filter(|b| b.exists()) {
+                c.env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}", bus.display()));
+            }
+        }
+        let _ = c.args(["kill", "--signal=SIGKILL", &format!("{unit}.scope")]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+    if let (Some(d), "cgroupfs") = (dir, modo) {
+        for _ in 0..40 {
+            if std::fs::remove_dir(d).is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
 }
 
 fn user_manager_cgroup() -> Option<PathBuf> {
@@ -372,7 +400,7 @@ fn landlock_task(l: &Landlock) -> Result<(), String> {
         rs = rs.handle_access(AccessNet::from_all(ABI::V4)).map_err(|e| e.to_string())?;
     }
     let mut rs = rs.create().map_err(|e| e.to_string())?;
-    for (paths, access) in [(&l.leitura, AccessFs::from_read(abi)), (&l.escrita, AccessFs::from_all(abi))] {
+    for (paths, access) in [(&l.listar, AccessFs::ReadDir.into()), (&l.leitura, AccessFs::from_read(abi)), (&l.escrita, AccessFs::from_all(abi))] {
         for p in paths {
             if let Ok(fd) = PathFd::new(p) {
                 // regras em arquivos (ex.: /dev/null) só aceitam direitos de arquivo
@@ -405,9 +433,16 @@ fn seccomp_task(p: Seccomp) -> Result<(), String> {
         libc::SYS_request_key, libc::SYS_chroot, libc::SYS_io_uring_setup, libc::SYS_userfaultfd, libc::SYS_open_by_handle_at, libc::SYS_name_to_handle_at,
     ];
     let mut rules: std::collections::BTreeMap<i64, Vec<SeccompRule>> = deny.iter().map(|s| (*s, vec![])).collect();
+    let fam = |f: i32| SeccompRule::new(vec![SeccompCondition::new(0, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, f as u64).unwrap()]).unwrap();
+    let mut socket_rules = Vec::new();
     if p.sem_rede {
-        let fam = |f: i32| SeccompRule::new(vec![SeccompCondition::new(0, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, f as u64).unwrap()]).unwrap();
-        rules.insert(libc::SYS_socket, vec![fam(libc::AF_INET), fam(libc::AF_INET6), fam(libc::AF_PACKET)]);
+        socket_rules.extend([fam(libc::AF_INET), fam(libc::AF_INET6), fam(libc::AF_PACKET)]);
+    }
+    if p.sem_unix {
+        socket_rules.push(fam(libc::AF_UNIX));
+    }
+    if !socket_rules.is_empty() {
+        rules.insert(libc::SYS_socket, socket_rules);
     }
     let filter = SeccompFilter::new(rules, SeccompAction::Allow, SeccompAction::Errno(libc::EPERM as u32), TargetArch::x86_64).map_err(|e| e.to_string())?;
     let prog: BpfProgram = filter.try_into().map_err(|e: seccompiler::BackendError| e.to_string())?;

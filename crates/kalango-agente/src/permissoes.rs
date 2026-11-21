@@ -129,6 +129,9 @@ pub struct Settings {
     pub extra_hoje: Option<(i64, u64)>,
     /// sites the person blocked after one tried to give orders to the agent
     pub sites_bloqueados: Vec<String>,
+    /// files that run at login (`arquivos_de_inicio`): "perguntar" or "livre". Read by kalangod, set only in the
+    /// agents center; kept here as it is, so saving the other permissions never changes it
+    pub startup_files: Option<String>,
 }
 
 /// An error with a code the shell understands (shown as the failure card of that kind): \u{1}code\u{1}message.
@@ -179,6 +182,7 @@ impl Settings {
         }
         s.paused = v["pausado"].as_bool().unwrap_or(false);
         s.extra_hoje = v["extra_hoje"]["dia"].as_i64().zip(v["extra_hoje"]["tokens"].as_u64());
+        s.startup_files = v["arquivos_de_inicio"].as_str().filter(|m| matches!(*m, "perguntar" | "livre")).map(str::to_string);
         s.sites_bloqueados = v["sites_bloqueados"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect();
         s
     }
@@ -200,6 +204,9 @@ impl Settings {
         }
         if !self.sites_bloqueados.is_empty() {
             v["sites_bloqueados"] = json!(self.sites_bloqueados);
+        }
+        if let Some(m) = &self.startup_files {
+            v["arquivos_de_inicio"] = json!(m);
         }
         v
     }
@@ -234,6 +241,8 @@ impl Settings {
             self.set_column(tools, c, Perm::Never);
         }
         self.tools.clear();
+        // (files that run at login: asked again)
+        self.startup_files = Some("perguntar".into());
         let mut f = self.shown_folders();
         f.iter_mut().for_each(|f| f.on = false);
         self.folders = Some(f);
@@ -428,6 +437,7 @@ pub fn profile(tools: &[Tool], protected: &[String]) -> Value {
         "pastas": s.shown_folders().iter().map(|f| json!({"caminho": f.path, "ativa": f.on, "modo": if f.write { "mexer" } else { "ler" }})).collect::<Vec<_>>(),
         "protegidas": protected,
         "tokens_dia": s.tokens_per_day, "tokens_hoje": tokens_today(), "horario": s.hours, "pausado": s.paused,
+        "arquivos_de_inicio": s.startup_files.as_deref().unwrap_or("perguntar"),
         "uso": u,
     })
 }
@@ -481,6 +491,18 @@ mod tests {
     fn virtual_machine_tools_are_asked_by_kalangod_only() {
         assert_eq!(default_for(&tool("vm.executar", "usuario", false, true)), Perm::Free);
         assert_eq!(default_for(&tool("arquivos.mover", "usuario", false, false)), Perm::Ask);
+    }
+
+    /// The choice for files that run at login is kalangod's to read and the agents center's to set: saving the
+    /// agent's other permissions (a conversation's "Always") keeps it as it was.
+    #[test]
+    fn the_startup_files_choice_survives_a_save() {
+        let v = json!({"ferramentas": {}, "arquivos_de_inicio": "livre"});
+        let mut s = Settings::parse(&v);
+        s.tools.insert("arquivos.escrever".into(), Perm::Free);
+        assert_eq!(s.to_json()["arquivos_de_inicio"], "livre");
+        assert!(Settings::parse(&json!({})).to_json().get("arquivos_de_inicio").is_none());
+        assert_eq!(Settings::parse(&json!({"arquivos_de_inicio": "talvez"})).startup_files, None);
     }
 
     #[test]

@@ -106,7 +106,30 @@ pub struct Config {
     pub tela_max_acoes: u32,
     #[serde(default = "tela_minutos_max_padrao")]
     pub tela_minutos_max: u64,
+    /// Files and folders whose contents run at the person's next login or terminal (`~` = the caller's home): an
+    /// agent's change to them asks every time, unless the person chose otherwise (see `startup.rs`).
+    #[serde(default = "startup_paths_default")]
+    pub startup_paths: Vec<String>,
+    /// Where the person's choice for those files is kept (`~` = the caller's home): a file under a protected folder,
+    /// which no agent reaches. Its key `arquivos_de_inicio` is "perguntar" (the default) or "livre".
+    #[serde(default = "startup_setting_default")]
+    pub startup_setting: String,
+    /// Test sessions only: the home (`~`) of every caller, in place of the one from passwd, so that what an agent
+    /// writes to `~/.bashrc` lands in the test's folder and the person's real home stays out of reach.
+    #[serde(default)]
+    pub home: Option<PathBuf>,
+    /// Tests only: the person's login PATH (else read from their session's processes, `startup::login_path_dirs`).
+    #[serde(default)]
+    pub login_path: Option<String>,
     pub callers: Vec<CallerRule>,
+}
+
+fn startup_paths_default() -> Vec<String> {
+    STARTUP_PATHS.iter().chain(PROGRAM_FOLDERS).map(|p| p.to_string()).collect()
+}
+
+fn startup_setting_default() -> String {
+    "~/.config/kalango/agente-permissoes.json".into()
 }
 
 fn tela_auxiliar_padrao() -> PathBuf {
@@ -170,6 +193,44 @@ pub const KALANGO_PROTECTED: &[&str] = &[
     "~/.local/state/kalango",
 ];
 
+/// What runs at the next login, or in every terminal the person opens, from their own home: the shells' startup
+/// files (bash, zsh, fish and the plain POSIX `.profile`, and `.bash_aliases`, which Ubuntu's `.bashrc` reads), the
+/// X session's (`.xprofile`, `.xsession*`, `.xinitrc`), the environment read at login (`.pam_environment`,
+/// `environment.d`, plasma's `env`), the desktop's autostart entries and the person's systemd units (in
+/// `~/.config/systemd`, and in `~/.local/share/systemd/user`, which systemd also reads). Something an agent writes
+/// there runs as the person later, outside every rule the agent runs under: so a change to them asks, and shows
+/// exactly what changes. (The compositor's own files are in `~/.config/kalango`, which is protected.)
+pub const STARTUP_PATHS: &[&str] = &[
+    "~/.bashrc", "~/.bash_profile", "~/.bash_login", "~/.bash_logout", "~/.bash_aliases", "~/.profile",
+    "~/.zshrc", "~/.zshenv", "~/.zprofile", "~/.zlogin", "~/.zlogout",
+    "~/.xprofile", "~/.xsession", "~/.xsessionrc", "~/.xinitrc", "~/.pam_environment",
+    "~/.config/autostart", "~/.config/autostart-scripts", "~/.config/plasma-workspace/env",
+    "~/.config/systemd", "~/.config/environment.d", "~/.config/fish",
+    // what those files bring in: Ubuntu's .bashrc sources ~/.bashrc.d (where it exists), zsh reads from ZDOTDIR
+    // (~/.config/zsh is where it usually points) and oh-my-zsh loads everything in its custom folder
+    "~/.bashrc.d", "~/.config/zsh", "~/.oh-my-zsh/custom",
+    // what systemd and D-Bus start for the person: user units (both folders), user tmpfiles, and D-Bus activation
+    // (a .service file there names a program that D-Bus runs when anything asks for that name)
+    "~/.local/share/systemd", "~/.config/user-tmpfiles.d", "~/.local/share/dbus-1/services",
+    // where the person's folders are (Documents, Downloads…): kalangod and the apps write there trusting it
+    "~/.config/user-dirs.dirs",
+];
+
+/// The folders of programs in the person's PATH ahead of the system's: a program written there under a common name
+/// ("ls", "sudo") runs the next time they type it — as much a startup file as .bashrc. Ubuntu's .profile puts
+/// ~/.local/bin and ~/bin first; rustup, bun and npm add theirs; and the tool managers' (nvm, conda, pyenv, fnm…) are
+/// first in every terminal that loads them ("*": each version). A floor under what the person's PATH shows
+/// (`startup::login_path_dirs`). Installing a tool there (pip --user, a release binary, `conda install`) asks too, or
+/// goes ahead with "Permitir automaticamente". These folders often hold hard links by design (conda's are its
+/// package cache's files), so a hard link in them does not stop commands (`startup::hardlinked`).
+pub const PROGRAM_FOLDERS: &[&str] = &[
+    "~/.local/bin", "~/.cargo/bin", "~/bin", "~/.bun/bin", "~/.npm-global/bin",
+    "~/.nvm/versions/node/*/bin", "~/miniconda3/bin", "~/miniconda3/condabin", "~/anaconda3/bin", "~/anaconda3/condabin",
+    "~/.pyenv/shims", "~/.pyenv/bin", "~/.rbenv/shims", "~/.rbenv/bin", "~/.local/share/fnm", "~/.fnm", "~/.volta/bin",
+    "~/.deno/bin", "~/go/bin", "~/.opencode/bin", "~/.lmstudio/bin", "~/.sdkman/candidates/*/current/bin",
+    "~/.local/share/pnpm", "~/.yarn/bin", "~/.dotnet/tools", "~/.rustup/toolchains/*/bin",
+];
+
 impl Config {
     pub fn system_default() -> Config {
         let mut protected: Vec<String> = ["~/.ssh", "~/.gnupg", "~/.local/share/keyrings"].iter().map(|p| p.to_string()).collect();
@@ -194,6 +255,10 @@ impl Config {
             tela_auxiliar: tela_auxiliar_padrao(),
             tela_max_acoes: tela_max_acoes_padrao(),
             tela_minutos_max: tela_minutos_max_padrao(),
+            startup_paths: startup_paths_default(),
+            startup_setting: startup_setting_default(),
+            home: None,
+            login_path: None,
             aprovadores_graficos: aprovadores_padrao(),
             callers: vec![
                 CallerRule {
