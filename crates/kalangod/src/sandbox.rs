@@ -19,38 +19,75 @@ pub fn check_path(raw: &str, peer: &Peer, allowed: &[String], protected: &[Strin
     let p = normalize(&p);
     // segue links simbólicos do que já existe, para que um link não leve a uma pasta protegida
     let resolved = resolve_existing(&p);
+    // (a protected folder is compared as written and where it really is: with the home behind a link, /home → /var/home,
+    // a link to it resolves to the real place)
     for prot in protected {
         let base = normalize(&expand(prot, &peer.home));
-        if is_within(&p, &base) || is_within(&resolved, &base) {
+        if is_within(&p, &base) || is_within(&resolved, &base) || is_within(&resolved, &resolve_existing(&base)) {
             return Err(format!("pasta protegida: {} (nenhum agente acessa)", base.display()));
         }
     }
-    let ok = allowed.iter().map(|a| normalize(&expand(a, &peer.home))).any(|base| is_within(&resolved, &base) && is_within(&p, &base));
+    let ok = allowed.iter().map(|a| normalize(&expand(a, &peer.home)))
+        .any(|base| (is_within(&resolved, &base) || is_within(&resolved, &resolve_existing(&base))) && is_within(&p, &base));
     if !ok {
         return Err(kalango_i18n::trf("outside the folders allowed for this agent: {path}", &[("path", p.display().to_string())]));
     }
     Ok(p)
 }
 
+/// Where `p` really leads: every symbolic link on the way is followed, also one whose target does not exist yet
+/// (`canonicalize` fails on a dangling link, and writing through it creates its target: a link in Documents to a
+/// protected file not created yet must still count as that file). The parts that do not exist are kept as given.
 fn resolve_existing(p: &Path) -> PathBuf {
-    let mut cur = p.to_path_buf();
-    let mut tail = Vec::new();
-    loop {
-        if let Ok(c) = std::fs::canonicalize(&cur) {
-            let mut out = c;
-            for t in tail.iter().rev() {
-                out.push(t);
-            }
-            return out;
+    use std::path::Component;
+    let mut out = PathBuf::from("/");
+    let mut pending: std::collections::VecDeque<std::ffi::OsString> = p.components().filter_map(|c| match c {
+        Component::Normal(n) => Some(n.to_os_string()),
+        Component::ParentDir => Some("..".into()),
+        _ => None,
+    }).collect();
+    // the kernel gives up after 40 links (ELOOP); so does this, keeping the rest as given
+    let mut hops = 0;
+    while let Some(name) = pending.pop_front() {
+        if name == ".." {
+            out.pop();
+            continue;
         }
-        match (cur.parent(), cur.file_name()) {
-            (Some(parent), Some(name)) => {
-                tail.push(name.to_os_string());
-                cur = parent.to_path_buf();
+        let cand = out.join(&name);
+        match std::fs::symlink_metadata(&cand) {
+            Ok(md) if md.file_type().is_symlink() && hops < 40 => {
+                hops += 1;
+                let target = std::fs::read_link(&cand).unwrap_or_default();
+                if target.is_absolute() {
+                    out = PathBuf::from("/");
+                }
+                for c in target.components().rev() {
+                    match c {
+                        Component::Normal(n) => pending.push_front(n.to_os_string()),
+                        Component::ParentDir => pending.push_front("..".into()),
+                        _ => {}
+                    }
+                }
             }
-            _ => return p.to_path_buf(),
+            _ => out = cand,
         }
     }
+    out
+}
+
+/// As `check_path`, for a path that will be changed (written, moved, renamed, trashed, deleted): it also may not
+/// contain a protected folder. Moving `~/.config` away (or to the trash) would carry `~/.config/kalango` to a place
+/// that is not protected, where it could be changed and then moved back.
+pub fn check_change_path(raw: &str, peer: &Peer, allowed: &[String], protected: &[String]) -> Result<PathBuf, String> {
+    let p = check_path(raw, peer, allowed, protected)?;
+    let resolved = resolve_existing(&p);
+    for prot in protected {
+        let base = normalize(&expand(prot, &peer.home));
+        if is_within(&base, &p) || is_within(&base, &resolved) || is_within(&resolve_existing(&base), &resolved) {
+            return Err(format!("pasta protegida: {} (nenhum agente acessa)", base.display()));
+        }
+    }
+    Ok(p)
 }
 
 /// Executa `op` num filho com o UID do chamador e Landlock nas pastas `roots`.
@@ -292,5 +329,84 @@ mod binary_tests {
         let mut t = "a".repeat(8191).into_bytes();
         t.extend("ã".as_bytes());
         assert_eq!(binary_kind(&t), None);
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    /// A home of the test's own (never the real one) with the default protected list.
+    fn setup() -> (tempfile::TempDir, Peer, Vec<String>, Vec<String>) {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("casa");
+        for p in ["Documentos", ".config/kalango/conectores", ".local/share/kalango/fluxos", ".local/share/kalango/virtualdesk/maquinas/ana",
+            ".local/share/kalango/conectores/relogio"] {
+            std::fs::create_dir_all(home.join(p)).unwrap();
+        }
+        let peer = Peer { pid: 1, uid: 1000, gid: 1000, exe: "/usr/bin/teste".into(), cgroup: String::new(), home, user: "teste".into(), has_tty: false };
+        (d, peer, vec!["~".into()], crate::policy::Config::system_default().protected_paths)
+    }
+
+    fn refused(raw: &str, peer: &Peer, allowed: &[String], protected: &[String]) -> bool {
+        check_path(raw, peer, allowed, protected).is_err() && check_change_path(raw, peer, allowed, protected).is_err()
+    }
+
+    #[test]
+    fn kalango_settings_and_data_are_out_of_reach() {
+        let (_d, peer, allowed, protected) = setup();
+        for raw in ["~/.config/kalango/agente-permissoes.json", "~/.config/kalango/agente-ajustes.json", "~/.config/kalango/conectores/x.toml",
+            "~/.config/kalango/conectores.json", "~/.config/kalango/remote/hosts.json", "~/.config/kalango/rotinas.json", "~/.config/kalango/orcamento.json",
+            "~/.config/kalango/atalhos.kdl", "~/.config/kalango-remote/kalango-remote.toml", "~/.local/share/kalango/fluxos/fluxos.db",
+            "~/.local/share/kalango/virtualdesk/maquinas/ana/maquina.json", "~/.local/share/kalango/conversas/1/eventos.jsonl",
+            "~/.local/share/kalango/modelos/LFM3-1.7B-Q4_K_M.gguf", "~/.local/state/kalango/uso-tokens.jsonl", "~/.config/kalango"] {
+            assert!(refused(raw, &peer, &allowed, &protected), "{raw} should be refused");
+        }
+        // through .. from an allowed folder
+        assert!(refused("~/Documentos/../.config/kalango/agente-permissoes.json", &peer, &allowed, &protected));
+        assert!(refused("~/Documentos/../.local/share/kalango/fluxos/fluxos.db", &peer, &allowed, &protected));
+        // the person's own folders still work, and a connector's own data folder too
+        assert!(check_change_path("~/Documentos/notas.md", &peer, &allowed, &protected).is_ok());
+        assert!(check_change_path("~/Documentos", &peer, &allowed, &protected).is_ok());
+        assert!(check_change_path("~/.local/share/kalango/conectores/relogio/estado.json", &peer, &allowed, &protected).is_ok());
+    }
+
+    #[test]
+    fn a_link_into_the_settings_is_refused_even_dangling() {
+        let (_d, peer, allowed, protected) = setup();
+        let h = peer.home.clone();
+        symlink(h.join(".config/kalango"), h.join("Documentos/atalho")).unwrap();
+        assert!(refused("~/Documentos/atalho/agente-permissoes.json", &peer, &allowed, &protected));
+        // a link to a file that does not exist yet: writing through it would create the protected file
+        symlink(h.join(".config/kalango/agente-permissoes.json"), h.join("Documentos/permissoes.json")).unwrap();
+        assert!(!h.join(".config/kalango/agente-permissoes.json").exists());
+        assert!(refused("~/Documentos/permissoes.json", &peer, &allowed, &protected));
+        // relative, and through a chain of links
+        symlink("../.local/share/kalango/virtualdesk", h.join("Documentos/vd")).unwrap();
+        symlink(h.join("Documentos/vd"), h.join("Documentos/vd2")).unwrap();
+        assert!(refused("~/Documentos/vd/maquinas/ana/maquina.json", &peer, &allowed, &protected));
+        assert!(refused("~/Documentos/vd2/maquinas/ana/maquina.json", &peer, &allowed, &protected));
+        // a link to a missing folder whose parent is protected
+        symlink(h.join(".local/share/kalango/fluxos/novo"), h.join("Documentos/fl")).unwrap();
+        assert!(refused("~/Documentos/fl/fluxos.db", &peer, &allowed, &protected));
+        // a link that stays among the person's folders is fine
+        symlink(h.join("Documentos"), h.join("docs")).unwrap();
+        assert!(check_change_path("~/docs/notas.md", &peer, &allowed, &protected).is_ok());
+    }
+
+    #[test]
+    fn a_folder_holding_a_protected_one_cannot_be_changed() {
+        let (_d, peer, allowed, protected) = setup();
+        // moved or trashed, ~/.config would carry ~/.config/kalango somewhere unprotected
+        for raw in ["~/.config", "~/.local", "~/.local/share", "~/.local/share/kalango", "~"] {
+            assert!(check_change_path(raw, &peer, &allowed, &protected).is_err(), "{raw} should not be changed");
+            assert!(check_path(raw, &peer, &allowed, &protected).is_ok(), "{raw} can still be listed");
+        }
+        // nor through a link to it
+        symlink(peer.home.join(".config"), peer.home.join("Documentos/cfg")).unwrap();
+        assert!(check_change_path("~/Documentos/cfg", &peer, &allowed, &protected).is_err());
+        // a destination that does not exist yet but would become one (a move that recreates ~/.config)
+        assert!(check_change_path("~/.local/state", &peer, &allowed, &protected).is_err());
     }
 }

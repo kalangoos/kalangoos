@@ -145,14 +145,40 @@ fn pontos_padrao() -> usize {
     20
 }
 
+/// What KalangoOS keeps for itself in a person's home and no agent reaches, to read or to write: the files that
+/// decide what the agents (and other privileged apps) may do. The home is the agents' allowed folder, so without
+/// this an agent could write its own permissions (`agente-permissoes.json`), add an MCP connector without the
+/// approval `mcp.registrar` asks (`conectores/`), turn on unattended remote access (`remote/`, Kalango Remote's
+/// core in `~/.config/kalango-remote`), bind a key to a command in the compositor (`atalhos.kdl`), raise its
+/// budget, change the agents platform's agents and approvals (`fluxos/`), mark a person's machine as a throwaway
+/// copy that is then deleted without asking (`virtualdesk/`), put words in its own past conversations
+/// (`conversas/`) or swap the model it thinks with (`modelos/`). The programs that own these files run outside the
+/// agents' cgroup and read them directly. A connector's own data folder (`~/.local/share/kalango/conectores/NAME`)
+/// stays reachable: the connector runs in the agents' cgroup and works there.
+pub const KALANGO_PROTECTED: &[&str] = &[
+    "~/.config/kalango",
+    "~/.config/kalango-remote",
+    "~/.local/share/kalango/fluxos",
+    "~/.local/share/kalango/virtualdesk",
+    "~/.local/share/kalango/conversas",
+    "~/.local/share/kalango/modelos",
+    "~/.local/share/kalango/cofre.json",
+    // the agent's memory: read only by the agent runtime itself, never through a tool
+    "~/.local/share/kalango/memoria.json",
+    "~/.local/share/kalango/memoria.bin",
+    // the day's token use (against the budget), the permissions' use and the connectors' call records
+    "~/.local/state/kalango",
+];
+
 impl Config {
     pub fn system_default() -> Config {
+        let mut protected: Vec<String> = ["~/.ssh", "~/.gnupg", "~/.local/share/keyrings"].iter().map(|p| p.to_string()).collect();
+        protected.extend(KALANGO_PROTECTED.iter().map(|p| p.to_string()));
+        protected.push("/etc/shadow".into());
         Config {
             socket: "/run/kalango/mcp.sock".into(),
             state_dir: "/var/lib/kalango".into(),
-            protected_paths: vec!["~/.ssh".into(), "~/.gnupg".into(), "~/.local/share/keyrings".into(), "~/.local/share/kalango/cofre.json".into(),
-                // the agent's memory: read only by the agent runtime itself, never through a tool
-                "~/.local/share/kalango/memoria.json".into(), "~/.local/share/kalango/memoria.bin".into(), "/etc/shadow".into()],
+            protected_paths: protected,
             approval_requires_tty: true,
             approval_timeout_s: 120,
             total_grant_s: 15 * 60,

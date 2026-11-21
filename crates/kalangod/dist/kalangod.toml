@@ -1,8 +1,14 @@
 # KalangoOS · configuração do kalangod (/etc/kalango/kalangod.toml)
 socket = "/run/kalango/mcp.sock"
 state_dir = "/var/lib/kalango"
-# pastas que nenhum agente acessa, em nenhum nível (~ = casa de quem chama)
-protected_paths = ["~/.ssh", "~/.gnupg", "~/.local/share/keyrings", "~/.local/share/kalango/cofre.json", "/etc/shadow", "/etc/gshadow"]
+# pastas que nenhum agente acessa, em nenhum nível (~ = casa de quem chama): as chaves, o chaveiro e o cofre, e o que
+# decide o que os agentes podem fazer — a configuração do KalangoOS (permissões, conectores, acesso remoto, atalhos),
+# a plataforma de agentes, as máquinas do VirtualDesk, as conversas, os modelos, a memória e o uso do orçamento
+protected_paths = ["~/.ssh", "~/.gnupg", "~/.local/share/keyrings",
+  "~/.config/kalango", "~/.config/kalango-remote", "~/.local/share/kalango/fluxos", "~/.local/share/kalango/virtualdesk",
+  "~/.local/share/kalango/conversas", "~/.local/share/kalango/modelos", "~/.local/share/kalango/cofre.json",
+  "~/.local/share/kalango/memoria.json", "~/.local/share/kalango/memoria.bin", "~/.local/state/kalango",
+  "/etc/shadow", "/etc/gshadow"]
 # aprovação presencial: precisa vir de um terminal (ou, quando existir, da tela de aprovação do compositor)
 approval_requires_tty = true
 approval_timeout_s = 120

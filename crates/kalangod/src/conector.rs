@@ -176,8 +176,18 @@ pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
     let mut escrita: Vec<PathBuf> = SISTEMA_ESCRITA.iter().filter(|p| !p.ends_with("tmp")).map(Into::into).collect();
     escrita.push(dados.clone());
     escrita.extend(m.escrita.iter().map(|p| expand(p)));
-    // o Landlock não abre exceção dentro de uma permissão: pedir ~ (ou /home, ou /) daria acesso a ~/.ssh
+    // o Landlock não abre exceção dentro de uma permissão: pedir ~ (ou /home, ou /) daria acesso a ~/.ssh — e pedir
+    // ~/.config daria a configuração do KalangoOS (as permissões dos agentes, os outros conectores)
     let mut protegidas: Vec<PathBuf> = [".ssh", ".gnupg", ".local/share/keyrings"].iter().map(|p| home().join(p)).collect();
+    // (as written, and in the XDG folders this session uses, where the programs that own them read them)
+    for p in crate::policy::KALANGO_PROTECTED {
+        protegidas.push(expand(p));
+        for (var, prefix) in [("XDG_CONFIG_HOME", "~/.config/"), ("XDG_DATA_HOME", "~/.local/share/"), ("XDG_STATE_HOME", "~/.local/state/")] {
+            if let Some(rest) = p.strip_prefix(prefix) {
+                protegidas.push(crate::policy::normalize(&xdg(var, &prefix[2..]).join(rest)));
+            }
+        }
+    }
     protegidas.push(crate::cofre::file());
     for p in leitura.iter().chain(&escrita) {
         if let Some(x) = protegidas.iter().find(|x| crate::policy::is_within(p, x) || crate::policy::is_within(x, p)) {
