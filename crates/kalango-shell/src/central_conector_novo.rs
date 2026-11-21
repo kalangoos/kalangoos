@@ -184,6 +184,7 @@ impl NovoConector {
         colar.set_wrap_mode(gtk::WrapMode::WordChar);
         colar.set_size_request(-1, 220);
         colar.buffer().set_text("{\n  \"mcpServers\": {\n  }\n}");
+        crate::code_block::highlight_editable(&colar, "json");
         col.append(&colar);
         let colar_erro = rotulo("", "rotinas-erro");
         colar_erro.set_xalign(0.0);

@@ -76,7 +76,7 @@ fn colour(k: Kind) -> String {
 }
 
 /// The block's lines as Pango markup, in the theme's colours now (crate::syntax; a language it does not know: plain).
-fn markup(lang: &str, code: &str) -> String {
+pub fn markup(lang: &str, code: &str) -> String {
     crate::syntax::highlight(crate::syntax::lang(lang), code)
         .into_iter()
         .map(|pieces| pieces.into_iter().map(|(k, s)| format!("<span foreground=\"{}\">{}</span>", colour(k), glib::markup_escape_text(&s))).collect::<String>())
@@ -97,10 +97,38 @@ fn conversation_folder(w: &gtk::Widget) -> std::path::PathBuf {
     glib::user_data_dir().join("kalango").join("latex")
 }
 
+/// The text for why LaTeX failed, for the person.
+pub(crate) fn failure_text(f: &crate::latex_pdf::Failure) -> String {
+    use crate::latex_pdf::Failure;
+    match f {
+        Failure::Offline => tr("No connection: the first time, LaTeX downloads the packages the document uses. Connect and try again.").to_string(),
+        Failure::TimedOut => tr("LaTeX took too long and was stopped.").to_string(),
+        Failure::Sandbox(_) => tr("This system cannot wall LaTeX in (Landlock), so the document is not compiled.").to_string(),
+        Failure::TooBig => tr("The document wrote too much and was stopped.").to_string(),
+        Failure::CacheFull => tr("The LaTeX package cache is full; the document needs packages that are not there.").to_string(),
+        Failure::Missing(out) => match crate::latex_pdf::failure(out) {
+            Failure::Document(why) if !why.is_empty() => trf("LaTeX could not make the PDF: {reason}", &[("reason", why)]),
+            _ => tr("LaTeX could not make the PDF.").to_string(),
+        },
+        Failure::Document(why) if why.is_empty() => tr("LaTeX could not make the PDF.").to_string(),
+        Failure::Document(why) => trf("LaTeX could not make the PDF: {reason}", &[("reason", why.clone())]),
+    }
+}
+
+/// What a progress step says.
+pub(crate) fn progress_text(p: &crate::latex_pdf::Progress) -> String {
+    use crate::latex_pdf::Progress;
+    match p {
+        Progress::Preparing => tr("Preparing LaTeX (only the first time): downloading its packages…").to_string(),
+        Progress::Downloading(name) => trf("Downloading LaTeX packages (only the first time)… {name}", &[("name", name.clone())]),
+        Progress::Typesetting => tr("Typesetting the document…").to_string(),
+        Progress::Writing => tr("Writing the PDF…").to_string(),
+    }
+}
+
 /// "Gerar PDF": the document next to the conversation, compiled in the background with its progress (the first
 /// run downloads LaTeX packages), then opened in Documentos.
-fn generate_pdf(b: &gtk::Button, e: &crate::latex_pdf::Engine, tex: &str, aviso: &gtk::Box, div: &gtk::Box, estado: &gtk::Label) {
-    use crate::latex_pdf::{Failure, Progress};
+pub(crate) fn generate_pdf(b: &gtk::Button, e: &crate::latex_pdf::Engine, tex: &str, aviso: &gtk::Box, div: &gtk::Box, estado: &gtk::Label) {
     let debug = std::env::var_os("KALANGO_SHELL_DEBUG").is_some();
     let dir = conversation_folder(b.upcast_ref());
     let _ = std::fs::create_dir_all(&dir);
@@ -119,98 +147,201 @@ fn generate_pdf(b: &gtk::Button, e: &crate::latex_pdf::Engine, tex: &str, aviso:
     if debug {
         eprintln!("debug latex: gerando {} com {}", file.display(), e.path.display());
     }
-    enum Msg {
-        Step(Progress),
-        Done(Result<std::path::PathBuf, Failure>),
-    }
-    let (tx, rx) = std::sync::mpsc::channel::<Msg>();
-    let mut cmd = crate::latex_pdf::command(e, &file, &dir);
-    let pdf = file.with_extension("pdf");
-    std::thread::spawn(move || {
-        use std::io::BufRead;
-        let child = cmd.spawn();
-        let mut child = match child {
-            Ok(c) => c,
-            Err(err) => {
-                let _ = tx.send(Msg::Done(Err(Failure::Document(err.to_string()))));
-                return;
-            }
-        };
-        // (the notes come on stderr, TeX's own log on stdout: both read, each in its thread)
-        let out = child.stdout.take().map(|o| {
-            let tx = tx.clone();
-            std::thread::spawn(move || {
-                let mut all = String::new();
-                for l in std::io::BufReader::new(o).lines().map_while(Result::ok) {
-                    if let Some(p) = crate::latex_pdf::progress(&l) {
-                        let _ = tx.send(Msg::Step(p));
-                    }
-                    all.push_str(&l);
-                    all.push('\n');
-                }
-                all
-            })
-        });
-        let mut all = String::new();
-        if let Some(err) = child.stderr.take() {
-            for l in std::io::BufReader::new(err).lines().map_while(Result::ok) {
-                if let Some(p) = crate::latex_pdf::progress(&l) {
-                    let _ = tx.send(Msg::Step(p));
-                }
-                all.push_str(&l);
-                all.push('\n');
-            }
-        }
-        if let Some(o) = out.and_then(|h| h.join().ok()) {
-            all.push_str(&o);
-        }
-        let ok = child.wait().is_ok_and(|s| s.success()) && pdf.is_file();
-        let _ = tx.send(Msg::Done(if ok { Ok(pdf) } else { Err(crate::latex_pdf::failure(&all)) }));
-    });
+    let st = estado.clone();
     let (b, estado) = (b.clone(), estado.clone());
-    glib::timeout_add_local(Duration::from_millis(150), move || {
-        for m in rx.try_iter() {
-            match m {
-                Msg::Step(Progress::Downloading(name)) => {
-                    estado.set_text(&trf("Downloading LaTeX packages (only the first time)… {name}", &[("name", name.clone())]));
-                    if debug {
-                        eprintln!("debug latex: baixando {name}");
-                    }
+    let name = file.with_extension("pdf").file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "documento.pdf".into());
+    crate::latex_block::request(&format!("pdf:{}", file.display()), e, tex, &dir, &name, move |p| {
+        st.set_text(&progress_text(p));
+        if debug {
+            if let crate::latex_pdf::Progress::Downloading(n) = p {
+                eprintln!("debug latex: baixando {n}");
+            }
+        }
+    }, move |r| {
+        b.set_sensitive(true);
+        b.set_label(tr("Generate PDF"));
+        match r {
+            Ok(c) => {
+                let name = c.pdf.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                estado.set_text(&match &c.warning {
+                    Some(w) => trf("PDF ready: {file} (LaTeX went past an error: {reason})", &[("file", name), ("reason", w.clone())]),
+                    None => trf("PDF ready: {file}", &[("file", name)]),
+                });
+                if debug {
+                    eprintln!("debug latex: pdf em {}", c.pdf.display());
                 }
-                Msg::Step(Progress::Typesetting) => estado.set_text(tr("Typesetting the document…")),
-                Msg::Step(Progress::Writing) => estado.set_text(tr("Writing the PDF…")),
-                Msg::Done(r) => {
-                    b.set_sensitive(true);
-                    b.set_label(tr("Generate PDF"));
-                    match r {
-                        Ok(pdf) => {
-                            estado.set_text(&trf("PDF ready: {file}", &[("file", pdf.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())]));
-                            if debug {
-                                eprintln!("debug latex: pdf em {}", pdf.display());
-                            }
-                            // (KalangoOS's reader, in this same shell)
-                            if let Ok(exe) = std::env::current_exe() {
-                                let _ = std::process::Command::new(exe).arg("documentos").arg(&pdf).spawn();
-                            }
-                        }
-                        Err(Failure::Offline) => {
-                            estado.set_text(tr("No connection: the first time, LaTeX downloads the packages the document uses. Connect and try again."));
-                            if debug {
-                                eprintln!("debug latex: falhou sem rede");
-                            }
-                        }
-                        Err(Failure::Document(why)) => {
-                            estado.set_text(&if why.is_empty() { tr("LaTeX could not make the PDF.").to_string() } else { trf("LaTeX could not make the PDF: {reason}", &[("reason", why.clone())]) });
-                            if debug {
-                                eprintln!("debug latex: falhou: {why}");
-                            }
-                        }
-                    }
-                    return glib::ControlFlow::Break;
+                // (KalangoOS's reader, in this same shell)
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = std::process::Command::new(exe).arg("documentos").arg(&c.pdf).spawn();
+                }
+            }
+            Err(f) => {
+                estado.set_text(&failure_text(&f));
+                if debug {
+                    eprintln!("debug latex: falhou: {f:?}");
                 }
             }
         }
-        glib::ControlFlow::Continue
+    });
+}
+
+/// "Copiar" for a block's text ("Copiado" for a moment).
+pub fn copy_button(code: &str) -> gtk::Button {
+    let copiar = gtk::Button::new();
+    copiar.add_css_class("md-bloco-botao");
+    let cc = caixa(Orientation::Horizontal, 6, "");
+    cc.append(&ui_icon("copiar", "#8E8F99", 16));
+    let cl = rotulo(tr("Copy"), "");
+    cc.append(&cl);
+    copiar.set_child(Some(&cc));
+    copiar.set_valign(Align::Center);
+    let texto = code.to_string();
+    let n_linhas = code.lines().count();
+    copiar.connect_clicked(move |b| {
+        b.clipboard().set_text(&texto);
+        cl.set_text(tr("Copied"));
+        let l = cl.downgrade();
+        glib::timeout_add_local_once(Duration::from_millis(1500), move || {
+            if let Some(l) = l.upgrade() {
+                l.set_text(tr("Copy"));
+            }
+        });
+        if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+            eprintln!("debug codigo: copiado ({n_linhas} linhas)");
+        }
+    });
+    copiar
+}
+
+/// A block's line numbers, from `first` (one line at least), one a line: the gutter, right-aligned by its label.
+pub fn gutter(first: usize, lines: usize) -> String {
+    let first = first.max(1);
+    (first..first + lines.max(1)).map(|i| i.to_string()).collect::<Vec<_>>().join("\n")
+}
+
+/// The coloured stretches of an editable code field: (line, first char, char after, kind), in chars (a TextBuffer's
+/// offsets), plain text left out.
+pub fn spans(lang: &str, text: &str) -> Vec<(i32, i32, i32, Kind)> {
+    let mut out = Vec::new();
+    for (line, pieces) in crate::syntax::highlight(crate::syntax::lang(lang), text).into_iter().enumerate() {
+        let mut at = 0i32;
+        for (k, piece) in pieces {
+            let n = piece.chars().count() as i32;
+            if k != Kind::Plain {
+                out.push((line as i32, at, at + n, k));
+            }
+            at += n;
+        }
+    }
+    out
+}
+
+/// The lines of a block: numbered from `first` in an aligned gutter, coloured by syntax.rs, in the code font; long
+/// lines scroll sideways, and past `max_height` (when given; 0: as tall as its place) the lines scroll too.
+pub fn body(lang: &str, code: &str, first: usize, max_height: Option<i32>) -> gtk::ScrolledWindow {
+    let corpo = caixa(Orientation::Horizontal, 14, "md-bloco-corpo");
+    let nums = rotulo(&gutter(first, code.lines().count()), "md-bloco-num");
+    nums.set_xalign(1.0);
+    nums.set_valign(Align::Start);
+    corpo.append(&nums);
+    let linhas = gtk::Label::new(None);
+    linhas.add_css_class("md-bloco-codigo");
+    linhas.set_xalign(0.0);
+    linhas.set_valign(Align::Start);
+    linhas.set_selectable(true);
+    linhas.set_markup(&markup(lang, code));
+    // (the theme changes: the colours again)
+    let (lg, cd) = (lang.to_string(), code.to_string());
+    crate::tema::registrar(&linhas, move |w| {
+        if let Some(l) = w.downcast_ref::<gtk::Label>() {
+            l.set_markup(&markup(&lg, &cd));
+        }
+    });
+    corpo.append(&linhas);
+    let rol = gtk::ScrolledWindow::new();
+    rol.set_policy(gtk::PolicyType::Automatic, if max_height.is_some() { gtk::PolicyType::Automatic } else { gtk::PolicyType::Never });
+    match max_height {
+        // (0: as tall as its place, the lines scroll inside)
+        Some(0) => rol.set_vexpand(true),
+        Some(h) => {
+            rol.set_propagate_natural_height(true);
+            rol.set_max_content_height(h);
+        }
+        None => rol.set_propagate_natural_height(true),
+    }
+    rol.set_child(Some(&corpo));
+    rol.add_css_class("md-bloco-rolagem");
+    rol
+}
+
+/// A code block to look at outside a conversation (the Canvas's code): its language, a detail ("pagina.html · linhas
+/// 1–8"), Copiar, and the lines numbered from `first`.
+pub fn view(lang: &str, code: &str, detail: &str, first: usize, max_height: Option<i32>) -> gtk::Widget {
+    let bloco = caixa(Orientation::Vertical, 0, "md-bloco");
+    let cab = caixa(Orientation::Horizontal, 8, "md-bloco-cab");
+    cab.append(&ui_icon("codigo", "#8E8F99", 16));
+    cab.append(&rotulo(&language_name(lang), "md-bloco-titulo"));
+    let d = rotulo(detail, "md-bloco-detalhe");
+    d.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    d.set_max_width_chars(1);
+    d.set_hexpand(true);
+    d.set_xalign(0.0);
+    cab.append(&d);
+    let copiar = copy_button(code);
+    cab.append(&copiar);
+    crate::central::posicao_debug("canvas codigo copiar", copiar.upcast_ref());
+    bloco.append(&cab);
+    bloco.append(&caixa(Orientation::Horizontal, 0, "md-bloco-div"));
+    bloco.append(&body(lang, code, first, max_height));
+    bloco.upcast()
+}
+
+/// Colours an editable code field (a TextView: the Canvas's diagram source, a pasted configuration) as the blocks
+/// are, again after each change (on idle: typing stays quick) and when the theme changes.
+pub fn highlight_editable(tv: &gtk::TextView, lang: &str) {
+    tv.add_css_class("codigo-editavel");
+    let paint = {
+        let lang = lang.to_string();
+        move |b: &gtk::TextBuffer| {
+            let (start, end) = b.bounds();
+            let text = b.text(&start, &end, false).to_string();
+            let table = b.tag_table();
+            for k in ["Plain", "Keyword", "Text", "Number", "Function", "Type", "Comment", "Tag", "Attribute", "Punct"] {
+                if let Some(t) = table.lookup(k) {
+                    b.remove_tag(&t, &start, &end);
+                }
+            }
+            for (line, from, to, k) in spans(&lang, &text) {
+                let (Some(a), Some(z)) = (b.iter_at_line_offset(line, from), b.iter_at_line_offset(line, to)) else { continue };
+                let name = format!("{k:?}");
+                let tag = table.lookup(&name).unwrap_or_else(|| {
+                    let t = gtk::TextTag::new(Some(&name));
+                    table.add(&t);
+                    t
+                });
+                tag.set_foreground(Some(&colour(k)));
+                b.apply_tag(&tag, &a, &z);
+            }
+        }
+    };
+    let paint = std::rc::Rc::new(paint);
+    paint(&tv.buffer());
+    let pending = std::rc::Rc::new(std::cell::Cell::new(false));
+    let p2 = paint.clone();
+    tv.buffer().connect_changed(move |b| {
+        if pending.replace(true) {
+            return;
+        }
+        let (b, p, pending) = (b.clone(), p2.clone(), pending.clone());
+        glib::idle_add_local_once(move || {
+            pending.set(false);
+            p(&b);
+        });
+    });
+    crate::tema::registrar(tv, move |w| {
+        if let Some(tv) = w.downcast_ref::<gtk::TextView>() {
+            paint(&tv.buffer());
+        }
     });
 }
 
@@ -243,29 +374,7 @@ pub fn with_detail(info: &str, code: &str, apply: bool, detail: Option<&str>, no
         e.set_hexpand(true);
         cab.append(&e);
     }
-    let copiar = gtk::Button::new();
-    copiar.add_css_class("md-bloco-botao");
-    let cc = caixa(Orientation::Horizontal, 6, "");
-    cc.append(&ui_icon("copiar", "#8E8F99", 16));
-    let cl = rotulo(tr("Copy"), "");
-    cc.append(&cl);
-    copiar.set_child(Some(&cc));
-    copiar.set_valign(Align::Center);
-    let texto = code.to_string();
-    let n_linhas = code.lines().count();
-    copiar.connect_clicked(move |b| {
-        b.clipboard().set_text(&texto);
-        cl.set_text(tr("Copied"));
-        let l = cl.downgrade();
-        glib::timeout_add_local_once(Duration::from_millis(1500), move || {
-            if let Some(l) = l.upgrade() {
-                l.set_text(tr("Copy"));
-            }
-        });
-        if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
-            eprintln!("debug codigo: copiado ({n_linhas} linhas)");
-        }
-    });
+    let copiar = copy_button(code);
     cab.append(&copiar);
     crate::central::posicao_debug("codigo copiar", copiar.upcast_ref());
     if let (true, Some(f)) = (apply, &file) {
@@ -331,32 +440,8 @@ pub fn with_detail(info: &str, code: &str, apply: bool, detail: Option<&str>, no
         bloco.append(&aviso);
         bloco.append(&div);
     }
-    let corpo = caixa(Orientation::Horizontal, 14, "md-bloco-corpo");
     let n = code.lines().count().max(1);
-    let nums = rotulo(&(1..=n).map(|i| i.to_string()).collect::<Vec<_>>().join("\n"), "md-bloco-num");
-    nums.set_xalign(1.0);
-    nums.set_valign(Align::Start);
-    corpo.append(&nums);
-    let linhas = gtk::Label::new(None);
-    linhas.add_css_class("md-bloco-codigo");
-    linhas.set_xalign(0.0);
-    linhas.set_valign(Align::Start);
-    linhas.set_selectable(true);
-    linhas.set_markup(&markup(&lang, code));
-    // (the theme changes: the colours again)
-    let (lg, cd) = (lang.clone(), code.to_string());
-    crate::tema::registrar(&linhas, move |w| {
-        if let Some(l) = w.downcast_ref::<gtk::Label>() {
-            l.set_markup(&markup(&lg, &cd));
-        }
-    });
-    corpo.append(&linhas);
-    // long lines scroll sideways (the answer's column keeps its width)
-    let rol = gtk::ScrolledWindow::new();
-    rol.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
-    rol.set_propagate_natural_height(true);
-    rol.set_child(Some(&corpo));
-    rol.add_css_class("md-bloco-rolagem");
+    let rol = body(&lang, code, 1, None);
     bloco.append(&rol);
     if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
         eprintln!("debug codigo: bloco {} ({n} linhas){}", language_name(&lang), file.as_ref().map(|f| format!(" de {f}")).unwrap_or_default());
@@ -376,6 +461,20 @@ mod tests {
         assert_eq!(parse_info("src/ui/mod.rs"), ("rs".into(), Some("src/ui/mod.rs".into())));
         assert_eq!(parse_info("python title=\"app.py\""), ("python".into(), Some("app.py".into())));
         assert_eq!(parse_info(""), ("".into(), None));
+    }
+
+    #[test]
+    fn gutters_and_editable_spans() {
+        // the gutter starts where the shown lines start (the Canvas's "linhas 12–14")
+        assert_eq!(gutter(12, 3), "12\n13\n14");
+        assert_eq!(gutter(0, 0), "1");
+        // an editable field's colours: per line, in chars (accents count one), plain text left out
+        let s = spans("json", "{\"nome\": \"São\",\n \"n\": 2}");
+        assert!(s.contains(&(0, 1, 7, Kind::Attribute)), "{s:?}");
+        assert!(s.contains(&(0, 9, 14, Kind::Text)), "{s:?}");
+        assert!(s.contains(&(1, 1, 4, Kind::Attribute)) && s.contains(&(1, 6, 7, Kind::Number)), "{s:?}");
+        assert!(spans("mermaid", "flowchart TD\nA --> B").iter().any(|x| x.3 == Kind::Keyword && x.0 == 0));
+        assert!(spans("brainfuck", "+.").is_empty());
     }
 
     #[test]

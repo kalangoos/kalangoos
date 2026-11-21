@@ -44,6 +44,7 @@ mod desktop_files;
 mod bloqueio;
 mod limite;
 mod fences;
+mod latex_block;
 mod latex_pdf;
 mod fit_row;
 mod resize_handle;
@@ -1011,6 +1012,11 @@ thread_local! {
 }
 
 fn main() -> glib::ExitCode {
+    // (a LaTeX compilation's walls: the helper puts them up and becomes the engine, before anything else starts)
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--latex-sandbox") {
+        latex_pdf::sandbox_main(&args[2..]);
+    }
     dev_paths();
     let app = gtk::Application::builder()
         .application_id(std::env::var("KALANGO_SHELL_APP_ID").unwrap_or_else(|_| "os.kalango.Shell".into()))

@@ -5325,5 +5325,18 @@
  "‹ Preview": "‹ Prévia",
  "→ asked you": "→ perguntou a você",
  "↻ up to {n} times": "↻ até {n} vezes",
- "✓ done (reading only) · ◇ simulated: not done · ✗ refused": "✓ feito (só leitura) · ◇ simulado: não feito · ✗ recusado"
+ "✓ done (reading only) · ◇ simulated: not done · ✗ refused": "✓ feito (só leitura) · ◇ simulado: não feito · ✗ recusado",
+ "Open in the Canvas": "Abrir no Canvas",
+ "Without a TeX engine installed, the document stays as code. Install tectonic to see it drawn.": "Sem um motor TeX instalado, o documento fica como código. Instale o tectonic para vê-lo desenhado.",
+ "Generating the preview…": "Gerando a prévia…",
+ "LaTeX went past an error: {reason}": "O LaTeX contornou um erro: {reason}",
+ "{n} more in the Canvas": "mais {n} no Canvas",
+ "LaTeX took too long and was stopped.": "O LaTeX demorou demais e foi parado.",
+ "PDF ready: {file} (LaTeX went past an error: {reason})": "PDF pronto: {file} (o LaTeX contornou um erro: {reason})",
+ "Open in Documents": "Abrir no Documentos",
+ "This system cannot wall LaTeX in (Landlock), so the document is not compiled.": "Este sistema não consegue isolar o LaTeX (Landlock), então o documento não é compilado.",
+ "The document wrote too much and was stopped.": "O documento escreveu demais e foi parado.",
+ "The LaTeX package cache is full; the document needs packages that are not there.": "O cache de pacotes do LaTeX está cheio; o documento precisa de pacotes que não estão lá.",
+ "Preparing LaTeX (only the first time): downloading its packages…": "Preparando o LaTeX (só da primeira vez): baixando os pacotes…",
+ "{n} more in Documents": "mais {n} no Documentos"
 }

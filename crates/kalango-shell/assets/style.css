@@ -346,6 +346,12 @@ button.md-bloco-icone:hover, button.md-bloco-icone:checked { background: alpha(@
 button.md-bloco-aplicar { background: alpha(@k_accent, 0.16); border: none; box-shadow: none; min-height: 28px; padding: 0 10px; border-radius: 4px; font-size: 12px; color: @k_accent_text; }
 button.md-bloco-aplicar:hover { background: alpha(@k_accent, 0.24); }
 .md-bloco-div { min-height: 1px; background: @k_border; }
+/* an editable code field (the Canvas's diagram source, a pasted configuration): the code font, the blocks' colours */
+textview.codigo-editavel, textview.codigo-editavel > text { font-family: "JetBrains Mono", monospace; font-size: 12px; }
+/* a LaTeX document drawn: its pages as paper on the panel (design "… › Documento LaTeX desenhado") */
+.latex-documento { background: @k_panel; border-radius: 0 0 5px 5px; padding: 20px; }
+.latex-pagina { border: 1px solid @k_border; }
+.latex-paginas-legenda { font-size: 11px; color: @k_dim; }
 /* a block that could not be drawn (design "Chat · diagramas, documentos e realce de sintaxe"): one line over its code */
 .md-bloco-aviso { background: @k_surface2; padding: 9px 14px; }
 .md-bloco-aviso-ponto { min-width: 6px; min-height: 6px; border-radius: 3px; background: @k_gold; }
@@ -1061,7 +1067,7 @@ button.uso-segmento:checked { background: #26272F; color: @k_text; font-weight: 
 .ajustes-log { font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; font-size: 11px; color: #C9CAD1; }
 .ajustes-catalogo { background: #1A1B21; border: 1px solid #26272F; border-radius: 4px; box-shadow: none; padding: 10px 12px; min-height: 0; }
 .ajustes-catalogo:hover { border-color: alpha(@k_accent, 0.6); }
-textview.ajustes-colar, textview.ajustes-colar > text { background: #16171B; color: @k_text; font-size: 12px; }
+textview.ajustes-colar, textview.ajustes-colar > text { background: #16171B; color: @k_text; font-size: 12px; font-family: "JetBrains Mono", monospace; }
 textview.ajustes-colar { border: 1px solid #2E2F3A; border-radius: 4px; padding: 10px; }
 .ajustes-aviso { background: alpha(@k_gold, 0.07); border: 1px solid alpha(@k_gold, 0.45); border-radius: 6px; padding: 11px 13px; }
 entry.rotinas-campo:focus-within, entry.rotinas-campo:focus { border-color: @k_accent; outline: none; box-shadow: none; }
@@ -1945,8 +1951,6 @@ button.canvas-acao-texto:hover { background: alpha(@k_text, 0.05); }
 entry.canvas-pedir-campo { background: none; border: none; box-shadow: none; min-height: 32px; font-size: 13px; color: @k_text; }
 entry.canvas-pedir-campo:focus-within { outline: none; border: none; box-shadow: none; }
 button.canvas-pedir-enviar { background: @k_accent; border: none; box-shadow: none; border-radius: 4px; min-width: 32px; min-height: 32px; padding: 0; }
-.canvas-codigo { font-size: 12px; background: none; }
-.canvas-codigo text { background: none; color: @k_text2; }
 button.canvas-versao { background: alpha(@k_text, 0.04); border: 1px solid @k_border; box-shadow: none; border-radius: 4px; min-height: 26px; padding: 0 10px; font-size: 12px; color: @k_muted; }
 button.canvas-versao.ativo { background: alpha(@k_accent, 0.18); border-color: alpha(@k_accent, 0.45); color: @k_text; }
 /* Bluetooth pairing (designs "Parear Bluetooth" and "· confirmar código"): the code's six boxes */

@@ -192,6 +192,8 @@ pub struct Conversas {
     canvas_box: gtk::Box,
     /// the canvas with live HTML (design "Chat · canvas com HTML ao vivo"): a page the agent wrote
     html: Rc<crate::html_canvas::HtmlCanvas>,
+    /// a LaTeX document's PDF opened in the Canvas ("Abrir no Canvas"), with the conversation it belongs to
+    document: RefCell<Option<(String, std::path::PathBuf)>>,
     /// the agent's browser (the Browser tab) and the context's usual width
     navegador: Rc<crate::agent_browser::AgentBrowser>,
     painel_base: i32,
@@ -704,7 +706,7 @@ impl Conversas {
             faixa: Cell::new(Faixa::de(largura_janela)), largura: Cell::new(largura_janela), na_pagina: Cell::new(false), painel_aberto: Cell::new(Faixa::de(largura_janela) == Faixa::Larga), arrumando: Cell::new(false),
             folhas: RefCell::default(), veu, casa_lateral: RefCell::default(), casa_painel: RefCell::default(), faixa_abas, faixa_botoes: botoes_faixa.clone(), controles_painel, abrir_lista_b, faisca, subtitulo, nomes_chips, ja_mostrou: Cell::new(false), busca, lista, rodape_tokens,
             titulo, chip_agente, fixar, apagar: apagar.clone(), painel_b: painel_b.clone(), vista, conv, controles_meio, saudacao, nova_texto, nova_grupos, sugestoes, painel, abas, painel_stack, contexto, ferramentas,
-            memoria, arquivos, tokens_v, tokens_barra, modelo_v, marca: Cell::new((0, 0)), canvas_box, html: crate::html_canvas::HtmlCanvas::new(), alteracoes_box, terminal_box, navegador, painel_base, largura_contexto: Cell::new(guardada("contexto")), largura_lista: Cell::new(guardada("lista")), canvas_width: Cell::new(guardada("canvas")), browser_width: Cell::new(guardada("navegador")), expanded: Cell::new(false), list_closed_before: Cell::new(false), expand_button: expandir.clone(), alca_contexto: RefCell::default(), alca_lista: RefCell::default(), uso: uso.clone(), repo: RefCell::default(), commit_feito: RefCell::default(), previa: RefCell::default(), preenchendo: Cell::new(false),
+            memoria, arquivos, tokens_v, tokens_barra, modelo_v, marca: Cell::new((0, 0)), canvas_box, html: crate::html_canvas::HtmlCanvas::new(), document: RefCell::default(), alteracoes_box, terminal_box, navegador, painel_base, largura_contexto: Cell::new(guardada("contexto")), largura_lista: Cell::new(guardada("lista")), canvas_width: Cell::new(guardada("canvas")), browser_width: Cell::new(guardada("navegador")), expanded: Cell::new(false), list_closed_before: Cell::new(false), expand_button: expandir.clone(), alca_contexto: RefCell::default(), alca_lista: RefCell::default(), uso: uso.clone(), repo: RefCell::default(), commit_feito: RefCell::default(), previa: RefCell::default(), preenchendo: Cell::new(false),
             start_chips, start_agent: RefCell::default(), start_picker: RefCell::default(), nova_form, nova_ph: ph.clone(), chip_agente_box, chip_tile, ao_executar: RefCell::default(), nova_erro,
         });
         // the edges of the context and the side bar (the agents center puts the side bar's beside it)
@@ -895,6 +897,25 @@ impl Conversas {
             }
         });
         c.veu.add_controller(fechar);
+        let w = Rc::downgrade(&c);
+        // a LaTeX document's "Abrir no Canvas": its pages large in the Canvas tab
+        crate::latex_block::on_open(move |pdf| {
+            if let Some(c) = w.upgrade() {
+                *c.document.borrow_mut() = Some((c.conv.id(), pdf));
+                c.abas[2].set_sensitive(true);
+                c.abas[2].set_visible(true);
+                c.abas[2].set_active(true);
+                // (as a page the agent wrote: the side list folds to its rail so the pages get the room)
+                c.uso.set_visible(false);
+                if c.faixa.get() == Faixa::Larga && !c.recolhida.get() {
+                    c.recolhida.set(true);
+                    c.arrumar();
+                }
+                c.abrir_painel(true);
+                c.canvas_render();
+                c.ajustar_painel();
+            }
+        });
         let w = Rc::downgrade(&c);
         crate::diagram_block::on_new(move || {
             if let Some(c) = w.upgrade() {
@@ -1118,6 +1139,44 @@ impl Conversas {
         while let Some(x) = self.canvas_box.first_child() {
             self.canvas_box.remove(&x);
         }
+        // a LaTeX document opened from its block (in this conversation): its pages, large
+        let doc = self.document.borrow().clone().filter(|(id, p)| *id == self.conv.id() && p.is_file());
+        if let Some((_, pdf)) = doc {
+            let card = caixa(Orientation::Vertical, 0, "md-bloco");
+            card.set_vexpand(true);
+            let cab = caixa(Orientation::Horizontal, 8, "md-bloco-cab");
+            cab.append(&ui_icon("codigo", "#8E8F99", 16));
+            cab.append(&rotulo("LaTeX", "md-bloco-titulo"));
+            let det = rotulo(&pdf.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), "md-bloco-detalhe");
+            det.set_hexpand(true);
+            det.set_xalign(0.0);
+            det.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+            det.set_max_width_chars(1);
+            cab.append(&det);
+            let abrir = gtk::Button::with_label(tr("Open in Documents"));
+            abrir.add_css_class("md-bloco-botao");
+            abrir.set_valign(Align::Center);
+            let p = pdf.clone();
+            abrir.connect_clicked(move |_| {
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = std::process::Command::new(exe).arg("documentos").arg(&p).spawn();
+                }
+            });
+            cab.append(&abrir);
+            card.append(&cab);
+            card.append(&caixa(Orientation::Horizontal, 0, "md-bloco-div"));
+            let rol = gtk::ScrolledWindow::new();
+            rol.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+            rol.set_vexpand(true);
+            rol.add_css_class("latex-documento");
+            rol.set_child(Some(&crate::latex_block::pages(&pdf, crate::latex_block::PAGES_CANVAS, Some(&rol))));
+            card.append(&rol);
+            self.canvas_box.append(&card);
+            if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+                eprintln!("debug conversas: canvas com o documento {}", pdf.display());
+            }
+            return;
+        }
         // a page the agent wrote: the live HTML canvas
         if self.html.file().is_some() {
             if let Some(p) = self.html.raiz.parent().and_downcast::<gtk::Box>() {
@@ -1165,6 +1224,7 @@ impl Conversas {
         tv.set_top_margin(10);
         tv.set_bottom_margin(10);
         tv.buffer().set_text(&d.src.borrow());
+        crate::code_block::highlight_editable(&tv, "mermaid");
         let tr_ = gtk::ScrolledWindow::new();
         tr_.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
         tr_.set_propagate_natural_height(true);
