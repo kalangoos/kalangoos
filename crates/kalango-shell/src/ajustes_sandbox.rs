@@ -83,6 +83,8 @@ pub fn stats(list: &[Machine]) -> (usize, usize, usize, f64) {
 
 /// "2,1 GB", "18 GB".
 pub fn gb_text(gb: f64) -> String {
+    // (an empty f64 sum is -0.0: never show "-0,0 GB")
+    let gb = gb.max(0.0) + 0.0;
     if gb < 10.0 { format!("{} GB", crate::fluxo_modelo::decimal(gb, 1)) } else { format!("{} GB", gb.round()) }
 }
 
@@ -115,11 +117,28 @@ pub fn vm_call(tool: &str, args: Value, done: impl FnOnce(Result<Value, String>)
 }
 
 /// Opens Kalango VirtualDesk (where the machines are made and changed).
-pub fn open_virtualdesk() {
-    let bin = std::env::var("KALANGO_VIRTUALDESK").unwrap_or_else(|_| "kalango-virtualdesk".into());
-    if let Err(e) = std::process::Command::new(&bin).spawn() {
-        eprintln!("ajustes sandbox: VirtualDesk não abriu ({bin}): {e}");
+/// The VirtualDesk program, found as kalangod finds it: `$KALANGO_VIRTUALDESK`, the system's, ~/.local/bin, the PATH.
+pub fn virtualdesk_program() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if let Some(p) = std::env::var_os("KALANGO_VIRTUALDESK").map(PathBuf::from).filter(|p| p.is_file()) {
+        return Some(p);
     }
+    let fixed = [PathBuf::from("/usr/bin/kalango-virtualdesk"), PathBuf::from("/usr/local/bin/kalango-virtualdesk"), gtk::glib::home_dir().join(".local/bin/kalango-virtualdesk")];
+    if let Some(p) = fixed.into_iter().find(|p| p.is_file()) {
+        return Some(p);
+    }
+    std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join("kalango-virtualdesk")).find(|p| p.is_file()))
+}
+
+/// Opens VirtualDesk; the error, in the person's words, when it isn't installed or doesn't start.
+pub fn open_virtualdesk() -> Result<(), String> {
+    let Some(bin) = virtualdesk_program() else {
+        return Err(tr("Kalango VirtualDesk is not installed on this computer.").to_string());
+    };
+    std::process::Command::new(&bin).spawn().map(|_| ()).map_err(|e| {
+        eprintln!("ajustes sandbox: VirtualDesk não abriu ({}): {e}", bin.display());
+        tr("Kalango VirtualDesk did not open. Try again in a moment.").to_string()
+    })
 }
 
 pub struct SandboxTab {
@@ -159,9 +178,12 @@ impl SandboxTab {
         create.set_child(Some(&cc));
         create.set_valign(Align::Center);
         create.set_tooltip_text(Some(tr("Opens VirtualDesk: prepare the machine there and it shows here as a template")));
-        create.connect_clicked(|_| open_virtualdesk());
+        let open_error = crate::fluxos_ui::error_label();
+        let err = open_error.clone();
+        create.connect_clicked(move |_| crate::fluxos_ui::show_error(&err, &open_virtualdesk().err().unwrap_or_default()));
         top.append(&create);
         body.append(&top);
+        body.append(&open_error);
         let stats = caixa(Orientation::Horizontal, 12, "");
         stats.set_homogeneous(true);
         stats.set_margin_top(14);
@@ -256,8 +278,11 @@ impl SandboxTab {
         oc.append(&ui_icon("apps-pontos", "#E2E2E6", 14));
         oc.append(&rotulo(tr("Open in VirtualDesk"), ""));
         open.set_child(Some(&oc));
-        open.connect_clicked(|_| open_virtualdesk());
+        let side_error = crate::fluxos_ui::error_label();
+        let err = side_error.clone();
+        open.connect_clicked(move |_| crate::fluxos_ui::show_error(&err, &open_virtualdesk().err().unwrap_or_default()));
         side.append(&open);
+        side.append(&side_error);
 
         let t = Rc::new(SandboxTab {
             body, side, numbers, list, empty, machines: RefCell::default(), users: RefCell::default(), chosen: RefCell::default(), s_name, s_sub, s_info, s_defaults,
@@ -488,6 +513,26 @@ fn state_word(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_machines_is_zero_gb_not_minus_zero() {
+        // an empty f64 sum is -0.0, which printed as "-0,0 GB"
+        let (_, _, _, gb) = stats(&[]);
+        assert_eq!(gb_text(gb), gb_text(0.0));
+        assert!(!gb_text(gb).starts_with('-'));
+    }
+
+    #[test]
+    fn virtualdesk_is_found_from_the_variable() {
+        let dir = std::env::temp_dir().join(format!("kalango-vd-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("kalango-virtualdesk");
+        std::fs::write(&bin, "").unwrap();
+        std::env::set_var("KALANGO_VIRTUALDESK", &bin);
+        assert_eq!(virtualdesk_program(), Some(bin));
+        std::env::remove_var("KALANGO_VIRTUALDESK");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn templates_copies_and_their_numbers() {

@@ -11,7 +11,7 @@
 //!
 //! The shell drives it through `kalango/navegador` (server.rs); each action answers with a picture of the page.
 
-use super::navegador::{moli, Local, Proxy};
+use super::navegador::{moli, not_installed, Local, Proxy};
 use crate::limits::{self, Landlock, Limits, Pedido};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -100,7 +100,7 @@ fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
 impl Session {
     fn start(uid: u32, gid: u32, local: Local) -> Result<Session, String> {
         // (the real file: Landlock gives the folder it is in, not a link's)
-        let moli = moli().ok_or("Moli is not installed")?;
+        let moli = moli().ok_or_else(not_installed)?;
         let moli = std::fs::canonicalize(&moli).unwrap_or(moli);
         let proxy = Proxy::start(local).map_err(|e| format!("proxy: {e}"))?;
         let dir = std::env::temp_dir().join(format!("kalango-navegador-vivo-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));

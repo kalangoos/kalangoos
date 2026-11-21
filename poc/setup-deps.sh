@@ -49,7 +49,8 @@ fi
 
 # Moli (github.com/lexmount/moli): the browser engine for pages that show their content only with scripts (the agents'
 # web reading and search, held by kalangod: filtering proxy, Landlock, cgroup). A fixed release, unpacked here; kalangod
-# finds it next to itself (target/release/moli, a link) or in /usr/lib/kalango/moli on the installed system.
+# finds it next to itself (target/release/moli, a link), in the other profiles' folders or poc/.deps/moli (a session built
+# with the "sessao" profile), or in /usr/lib/kalango/moli on the installed system.
 MOLI_VERSAO=v1.1.26
 if [ ! -x .deps/moli/moli ] || [ "$(cat .deps/moli/VERSION 2>/dev/null)" != "${MOLI_VERSAO#v}" ]; then
   rm -rf .deps/moli .deps/moli-dl && mkdir -p .deps/moli-dl

@@ -8,13 +8,14 @@
 //!     and may only connect to the proxy's port; a cgroup limits memory, processes and time;
 //!   - it gets no environment of kalangod's (tokens, keys) and runs as the person, never as root.
 
+use super::tr;
 use super::web::forbidden;
 use crate::limits::{self, Landlock, Limits, Pedido};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,15 +26,41 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 /// (450 KB at most: the task's output has a limit).
 const EXPORT: &str = r#"(() => { const d = document.documentElement.cloneNode(true); d.querySelectorAll("script,style,svg,template,link,meta,iframe,object,embed").forEach(e => e.remove()); return JSON.stringify({url: location.href, titulo: document.title, html: d.outerHTML.slice(0, 450000)}); })()"#;
 
-/// Where Moli is: `KALANGOD_MOLI` (empty or "nao" turns it off), next to kalangod, the system's, or on the PATH.
+/// Where Moli is: `KALANGOD_MOLI` (empty or "nao" turns it off), then the places in `moli_places`, then the PATH.
 pub fn moli() -> Option<PathBuf> {
     if let Some(v) = std::env::var_os("KALANGOD_MOLI") {
         let p = PathBuf::from(v);
         return (p.as_os_str() != "nao" && p.is_file()).then_some(p);
     }
-    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("moli")));
-    [beside, Some(PathBuf::from("/usr/lib/kalango/moli"))].into_iter().flatten().find(|p| p.is_file())
+    let exe = std::env::current_exe().ok();
+    moli_places(exe.as_deref()).into_iter().find(|p| p.is_file())
         .or_else(|| std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join("moli")).find(|p| p.is_file())))
+}
+
+/// The cargo profiles a dev build may come from (the dev session builds with "sessao", the image with "release").
+const PROFILES: [&str; 3] = ["release", "sessao", "debug"];
+
+/// Where to look for Moli, in order, given kalangod's own path: next to kalangod; when kalangod is a dev build
+/// (`<repo>/target/<profile>/kalangod`), the other profiles' folders (poc/setup-deps.sh links target/release/moli)
+/// and the dev dependencies' copy (`<repo>/poc/.deps/moli/moli`); the installed system's (imagem/construir.sh).
+pub(crate) fn moli_places(exe: Option<&Path>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(dir) = exe.and_then(Path::parent) {
+        out.push(dir.join("moli"));
+        if let Some(target) = dir.parent().filter(|t| t.file_name().is_some_and(|n| n == "target")) {
+            out.extend(PROFILES.iter().map(|p| target.join(p).join("moli")).filter(|p| p.parent() != Some(dir)));
+            if let Some(repo) = target.parent() {
+                out.push(repo.join("poc/.deps/moli/moli"));
+            }
+        }
+    }
+    out.push(PathBuf::from("/usr/lib/kalango/moli"));
+    out
+}
+
+/// The error when Moli is nowhere (shown under the canvas and the browser tab).
+pub(crate) fn not_installed() -> String {
+    tr("The agents' browser (Moli) is not installed on this computer.").to_string()
 }
 
 // ------------------------------------------------------------------------------------------------- the proxy
@@ -223,7 +250,7 @@ pub fn render(url: &str, uid: u32, gid: u32, local: Local) -> Result<Rendered, S
 /// browser — a login wall — must not be read as if it were the page).
 pub fn render_with(url: &str, uid: u32, gid: u32, local: Local, strict: bool) -> Result<Rendered, String> {
     // (the real file: Landlock gives the folder it is in, not a link's)
-    let moli = moli().ok_or("Moli is not installed")?;
+    let moli = moli().ok_or_else(not_installed)?;
     let moli = std::fs::canonicalize(&moli).unwrap_or(moli);
     let proxy = Proxy::start(local).map_err(|e| format!("proxy: {e}"))?;
     let dir = std::env::temp_dir().join(format!("kalango-navegador-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
@@ -275,6 +302,24 @@ pub fn render_with(url: &str, uid: u32, gid: u32, local: Local, strict: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moli_is_looked_for_beside_kalangod_in_the_other_profiles_and_the_system() {
+        // the dev session's build (target/sessao): its own folder first, then release's link, then the deps' copy
+        let got = moli_places(Some(Path::new("/r/target/sessao/kalangod")));
+        let want: Vec<PathBuf> = ["/r/target/sessao/moli", "/r/target/release/moli", "/r/target/debug/moli", "/r/poc/.deps/moli/moli", "/usr/lib/kalango/moli"]
+            .iter().map(PathBuf::from).collect();
+        assert_eq!(got, want);
+        // installed: beside it, then the system's; no guessing at dev folders
+        assert_eq!(moli_places(Some(Path::new("/usr/bin/kalangod"))), vec![PathBuf::from("/usr/bin/moli"), PathBuf::from("/usr/lib/kalango/moli")]);
+        assert_eq!(moli_places(None), vec![PathBuf::from("/usr/lib/kalango/moli")]);
+    }
+
+    #[test]
+    fn a_missing_moli_is_said_in_portuguese() {
+        let pt = kalango_i18n::catalog(Some("pt_BR"));
+        assert_eq!(pt.get("The agents' browser (Moli) is not installed on this computer.").map(String::as_str), Some("O navegador dos agentes (Moli) não está instalado neste computador."));
+    }
 
     fn ask(port: u16, req: &str) -> String {
         let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();

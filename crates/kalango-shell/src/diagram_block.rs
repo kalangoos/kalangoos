@@ -421,6 +421,208 @@ struct Drawn {
     boxes: Vec<(f64, f64, f64, f64)>,
     layer: Vec<usize>,
     size: (f64, f64),
+    /// laid out in rows ([`wrap_layout`]): each edge's path, and how many rows
+    routes: Option<Vec<Vec<(f64, f64)>>>,
+    rows: usize,
+}
+
+/// A long flowchart laid out in rows ("Fluxograma longo · em linhas"): the boxes, each edge's path (a polyline from
+/// the source's border to the target's), the layers of each row and the size.
+#[derive(Debug)]
+pub struct Wrapped {
+    pub boxes: Vec<(f64, f64, f64, f64)>,
+    pub routes: Vec<Vec<(f64, f64)>>,
+    pub rows: Vec<Vec<usize>>,
+    pub size: (f64, f64),
+}
+
+/// The scale below which a fitted diagram is hard to read: under it, a long flowchart is laid out in rows.
+pub const READABLE: f64 = 0.75;
+/// Rows: the side margins (where the edges between rows far apart run), the least gap between columns, the gap
+/// between rows (the turning edges and the channels), between the nodes of a column, and above and below.
+const WRAP_SIDE: f64 = 28.0;
+const WRAP_COL_GAP: f64 = 56.0;
+const WRAP_ROW_GAP: f64 = 64.0;
+const WRAP_NODE_GAP: f64 = 24.0;
+const WRAP_EDGE: f64 = 16.0;
+
+/// Lays a flowchart's layers out in rows, like text, in a snake: the first row left to right, the next right to left
+/// (so the edge that turns a row goes straight down at its end), each layer a column with its nodes stacked (its
+/// branches). Edges to the next column go side to side through the middle of the gap; the others (the turn, skips,
+/// loops back) leave by the bottom or top of their node — or its flow side when other nodes are stacked there — and
+/// run along the gap between rows, and along a side margin when the rows are further apart. `sizes`: each node's box;
+/// `label_w`: an edge label's width (the gaps make room for them).
+pub fn wrap_layout(g: &Graph, sizes: &[(f64, f64)], label_w: &dyn Fn(&str) -> f64, width: f64) -> Wrapped {
+    let n = g.nodes.len();
+    let (layer, place) = layout(g);
+    let layers = layer.iter().max().map(|m| m + 1).unwrap_or(1);
+    let cols: Vec<Vec<usize>> = (0..layers).map(|l| {
+        let mut c: Vec<usize> = (0..n).filter(|&v| layer[v] == l).collect();
+        c.sort_by_key(|&v| place[v]);
+        c
+    }).collect();
+    let cw: Vec<f64> = cols.iter().map(|c| c.iter().map(|&v| sizes[v].0).fold(0.0, f64::max)).collect();
+    let ch: Vec<f64> = cols.iter().map(|c| c.iter().map(|&v| sizes[v].1).sum::<f64>() + WRAP_NODE_GAP * (c.len().max(1) - 1) as f64).collect();
+    // the gap after each column: room for the labels of the edges into the next one
+    let mut gap = vec![WRAP_COL_GAP; layers];
+    for e in &g.edges {
+        if layer[e.to] == layer[e.from] + 1 && !e.label.is_empty() {
+            gap[layer[e.from]] = gap[layer[e.from]].max(label_w(&e.label) + 24.0);
+        }
+    }
+    // the rows: as many columns as fit
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    let mut cur: Vec<usize> = Vec::new();
+    let mut used = 0.0;
+    for (l, w) in cw.iter().enumerate() {
+        let need = w + cur.last().map(|&p| gap[p]).unwrap_or(0.0);
+        if !cur.is_empty() && used + need > width - 2.0 * WRAP_SIDE {
+            rows.push(std::mem::take(&mut cur));
+            cur.push(l);
+            used = *w;
+            continue;
+        }
+        cur.push(l);
+        used += need;
+    }
+    rows.push(cur);
+    let mut row_of = vec![0usize; layers];
+    for (r, ls) in rows.iter().enumerate() {
+        for &l in ls {
+            row_of[l] = r;
+        }
+    }
+    let rh: Vec<f64> = rows.iter().map(|ls| ls.iter().map(|&l| ch[l]).fold(0.0, f64::max)).collect();
+    let mut row_top = Vec::new();
+    let mut y = WRAP_EDGE;
+    for h in &rh {
+        row_top.push(y);
+        y += h + WRAP_ROW_GAP;
+    }
+    let widest = rows.iter().map(|ls| ls.iter().map(|&l| cw[l]).sum::<f64>() + ls[..ls.len() - 1].iter().map(|&l| gap[l]).sum::<f64>()).fold(0.0, f64::max);
+    let total_w = width.max(widest + 2.0 * WRAP_SIDE);
+    let mut colx = vec![0.0f64; layers];
+    for (r, ls) in rows.iter().enumerate() {
+        if r % 2 == 0 {
+            let mut x = WRAP_SIDE;
+            for &l in ls {
+                colx[l] = x;
+                x += cw[l] + gap[l];
+            }
+        } else {
+            let mut x = total_w - WRAP_SIDE;
+            for &l in ls {
+                colx[l] = x - cw[l];
+                x -= cw[l] + gap[l];
+            }
+        }
+    }
+    let mut boxes = vec![(0.0, 0.0, 0.0, 0.0); n];
+    for (l, c) in cols.iter().enumerate() {
+        let r = row_of[l];
+        let mut y = row_top[r] + (rh[r] - ch[l]) / 2.0;
+        for &v in c {
+            let (w, h) = sizes[v];
+            boxes[v] = (colx[l] + (cw[l] - w) / 2.0, y, w, h);
+            y += h + WRAP_NODE_GAP;
+        }
+    }
+    let total_h = row_top.last().copied().unwrap_or(WRAP_EDGE) + rh.last().copied().unwrap_or(0.0) + WRAP_EDGE;
+    let cx = |v: usize| boxes[v].0 + boxes[v].2 / 2.0;
+    let cy = |v: usize| boxes[v].1 + boxes[v].3 / 2.0;
+    let top_most = |v: usize| cols[layer[v]].first() == Some(&v);
+    let bottom_most = |v: usize| cols[layer[v]].last() == Some(&v);
+    let ltr = |v: usize| row_of[layer[v]] % 2 == 0;
+    // out of a node to a channel at `ych` (below or above it); in from a channel to a node
+    let out = |v: usize, below: bool, ych: f64, off: f64| -> Vec<(f64, f64)> {
+        let b = boxes[v];
+        if below && bottom_most(v) {
+            return vec![(cx(v), b.1 + b.3), (cx(v), ych)];
+        }
+        if !below && top_most(v) {
+            return vec![(cx(v), b.1), (cx(v), ych)];
+        }
+        // (sideways on the flow's side: the gap toward the next column, away from the branches coming in)
+        let l = layer[v];
+        if ltr(v) {
+            let gx = colx[l] + cw[l] + 10.0 + off;
+            vec![(b.0 + b.2, cy(v)), (gx, cy(v)), (gx, ych)]
+        } else {
+            let gx = colx[l] - 10.0 - off;
+            vec![(b.0, cy(v)), (gx, cy(v)), (gx, ych)]
+        }
+    };
+    let into = |v: usize, from_above: bool, ych: f64, off: f64| -> Vec<(f64, f64)> {
+        let b = boxes[v];
+        if from_above && top_most(v) {
+            return vec![(cx(v), ych), (cx(v), b.1)];
+        }
+        if !from_above && bottom_most(v) {
+            return vec![(cx(v), ych), (cx(v), b.1 + b.3)];
+        }
+        let l = layer[v];
+        if ltr(v) {
+            let gx = colx[l] - 10.0 - off;
+            vec![(gx, ych), (gx, cy(v)), (b.0, cy(v))]
+        } else {
+            let gx = colx[l] + cw[l] + 10.0 + off;
+            vec![(gx, ych), (gx, cy(v)), (b.0 + b.2, cy(v))]
+        }
+    };
+    let mut routed = 0usize;
+    let routes = g.edges.iter().map(|e| {
+        let (a, b) = (e.from, e.to);
+        let (ra, rb) = (row_of[layer[a]], row_of[layer[b]]);
+        let pts = if ra == rb && layer[b] == layer[a] + 1 {
+            // to the next column: side to side, turning in the middle of the gap
+            let (sa, sb) = if ltr(a) { (boxes[a].0 + boxes[a].2, boxes[b].0) } else { (boxes[a].0, boxes[b].0 + boxes[b].2) };
+            let xm = (sa + sb) / 2.0;
+            vec![(sa, cy(a)), (xm, cy(a)), (xm, cy(b)), (sb, cy(b))]
+        } else {
+            // (each routed edge a little apart from the others in the same channels)
+            let off = (routed % 4) as f64 * 5.0;
+            routed += 1;
+            let down = rb >= ra;
+            let y1 = if down { row_top[ra] + rh[ra] + WRAP_ROW_GAP / 2.0 } else { row_top[ra] - WRAP_ROW_GAP / 2.0 } + off - 7.5;
+            let mut p = out(a, down, y1, off);
+            if rb == ra {
+                p.extend(into(b, false, y1, off));
+            } else if rb.abs_diff(ra) == 1 {
+                p.extend(into(b, down, y1, off));
+            } else {
+                let xs = if ra % 2 == 0 { WRAP_SIDE / 2.0 - off / 2.0 } else { total_w - WRAP_SIDE / 2.0 + off / 2.0 };
+                let y2 = if down { row_top[rb] - WRAP_ROW_GAP / 2.0 } else { row_top[rb] + rh[rb] + WRAP_ROW_GAP / 2.0 } + off - 7.5;
+                p.push((xs, y1));
+                p.push((xs, y2));
+                p.extend(into(b, down, y2, off));
+            }
+            p
+        };
+        // (no point twice in a row)
+        let mut clean: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
+        for q in pts {
+            if clean.last().is_none_or(|l: &(f64, f64)| (l.0 - q.0).abs() > 0.01 || (l.1 - q.1).abs() > 0.01) {
+                clean.push(q);
+            }
+        }
+        clean
+    }).collect();
+    Wrapped { boxes, routes, rows, size: (total_w, total_h) }
+}
+
+/// Where an edge's label goes on its path: over the stretch into the target when that one is level (two branches
+/// from one node keep their labels apart), else over the longest level stretch, else beside the longest one —
+/// (x, y, level): centred on x above y, or to the right of x centred on y.
+pub fn label_anchor(route: &[(f64, f64)]) -> (f64, f64, bool) {
+    let segs: Vec<((f64, f64), (f64, f64))> = route.windows(2).map(|w| (w[0], w[1])).collect();
+    let level = |s: &((f64, f64), (f64, f64))| (s.0 .1 - s.1 .1).abs() < 0.5;
+    let pick = segs.last().filter(|s| level(s) && (s.0 .0 - s.1 .0).abs() > 20.0).copied()
+        .or_else(|| segs.iter().filter(|s| level(s)).max_by(|a, b| (a.0 .0 - a.1 .0).abs().total_cmp(&(b.0 .0 - b.1 .0).abs())).copied());
+    match pick {
+        Some(s) => ((s.0 .0 + s.1 .0) / 2.0, s.0 .1, true),
+        None => segs.iter().max_by(|a, b| (a.0 .1 - a.1 .1).abs().total_cmp(&(b.0 .1 - b.1 .1).abs()))
+            .map(|s| (s.0 .0, (s.0 .1 + s.1 .1) / 2.0, false)).unwrap_or((route[0].0, route[0].1, true)),
+    }
 }
 
 fn text_layout(cr: &gtk::cairo::Context, t: &str, size: f64) -> gtk::pango::Layout {
@@ -432,13 +634,33 @@ fn text_layout(cr: &gtk::cairo::Context, t: &str, size: f64) -> gtk::pango::Layo
     l
 }
 
-fn measure(cr: &gtk::cairo::Context, g: &Graph) -> Drawn {
-    let (layer, place) = layout(g);
-    let sizes: Vec<(f64, f64)> = g.nodes.iter().map(|n| {
+/// Each node's box size, from its text in the shell's font.
+fn node_sizes(cr: &gtk::cairo::Context, g: &Graph) -> Vec<(f64, f64)> {
+    g.nodes.iter().map(|n| {
         let (w, h) = text_layout(cr, &n.text, 13.0).pixel_size();
         let (w, h) = (f64::from(w) + 32.0, f64::from(h) + 22.0);
         if n.shape == Shape::Diamond { (w * 1.35, h * 1.6) } else { (w.max(80.0), h.max(38.0)) }
-    }).collect();
+    }).collect()
+}
+
+/// The layout for a block `width` wide: the layered one, or — when that would only fit below [`READABLE`] and rows
+/// read better — the same flowchart in rows.
+fn measure_in(cr: &gtk::cairo::Context, g: &Graph, width: f64) -> Drawn {
+    let plain = measure(cr, g);
+    if width <= 0.0 || fit_scale(width, plain.size) >= READABLE || g.nodes.len() < 4 {
+        return plain;
+    }
+    let sizes = node_sizes(cr, g);
+    let w = wrap_layout(g, &sizes, &|t: &str| f64::from(text_layout(cr, t, 11.0).pixel_size().0), width);
+    if w.rows.len() < 2 || fit_scale(width, w.size) <= fit_scale(width, plain.size) {
+        return plain;
+    }
+    Drawn { boxes: w.boxes, layer: plain.layer, size: w.size, routes: Some(w.routes), rows: w.rows.len() }
+}
+
+fn measure(cr: &gtk::cairo::Context, g: &Graph) -> Drawn {
+    let (layer, place) = layout(g);
+    let sizes = node_sizes(cr, g);
     let layers = layer.iter().max().map(|m| m + 1).unwrap_or(1);
     let (gap_l, gap_p) = (if g.horizontal { 64.0 } else { 52.0 }, if g.horizontal { 36.0 } else { 40.0 });
     // the room of each layer (across the flow) and of each place (along it)
@@ -464,7 +686,7 @@ fn measure(cr: &gtk::cairo::Context, g: &Graph) -> Drawn {
     // (room at the side for the edges that go around a layer)
     let detour = if g.edges.iter().any(|e| layer[e.to].abs_diff(layer[e.from]) > 1) { 48.0 } else { 0.0 };
     let total_p = start_p.last().unwrap_or(&16.0) + span_p.last().unwrap_or(&0.0) + 16.0 + detour;
-    Drawn { boxes, layer, size: if g.horizontal { (total_l, total_p) } else { (total_p, total_l) } }
+    Drawn { boxes, layer, size: if g.horizontal { (total_l, total_p) } else { (total_p, total_l) }, routes: None, rows: 1 }
 }
 
 /// The node's colour: the sources neutral, questions gold, the ends teal, the rest the accent.
@@ -496,8 +718,49 @@ fn draw(cr: &gtk::cairo::Context, g: &Graph, d: &Drawn, ox: f64, oy: f64, square
     let rgb = |h: &str| crate::tema::rgb(h);
     let muted = rgb("#8E8F99");
     cr.set_line_width(1.5);
+    // in rows: each edge along its path, the arrow on its last stretch, the label where label_anchor says
+    if let Some(routes) = &d.routes {
+        for (e, r) in g.edges.iter().zip(routes) {
+            if r.len() < 2 {
+                continue;
+            }
+            cr.set_source_rgb(muted.0, muted.1, muted.2);
+            if e.dashed {
+                cr.set_dash(&[5.0, 4.0], 0.0);
+            }
+            cr.move_to(ox + r[0].0, oy + r[0].1);
+            for p in &r[1..] {
+                cr.line_to(ox + p.0, oy + p.1);
+            }
+            let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
+            let (p1, p0) = (r[r.len() - 1], r[r.len() - 2]);
+            let (dx, dy) = (p1.0 - p0.0, p1.1 - p0.1);
+            let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+            let (ux, uy) = (dx / len, dy / len);
+            cr.move_to(ox + p1.0, oy + p1.1);
+            cr.line_to(ox + p1.0 - ux * 7.0 - uy * 4.0, oy + p1.1 - uy * 7.0 + ux * 4.0);
+            cr.line_to(ox + p1.0 - ux * 7.0 + uy * 4.0, oy + p1.1 - uy * 7.0 - ux * 4.0);
+            cr.close_path();
+            let _ = cr.fill();
+            if !e.label.is_empty() {
+                let l = text_layout(cr, &e.label, 11.0);
+                let (lw, lh) = l.pixel_size();
+                let (lw, lh) = (f64::from(lw), f64::from(lh));
+                let (x, y, level) = label_anchor(r);
+                let (lx, ly) = if level { (x - lw / 2.0, y - lh - 3.0) } else { (x + 6.0, y - lh / 2.0) };
+                let panel = rgb("#101114");
+                cr.set_source_rgb(panel.0, panel.1, panel.2);
+                cr.rectangle(ox + lx - 3.0, oy + ly, lw + 6.0, lh);
+                let _ = cr.fill();
+                cr.set_source_rgb(muted.0, muted.1, muted.2);
+                cr.move_to(ox + lx, oy + ly);
+                pangocairo::functions::show_layout(cr, &l);
+            }
+        }
+    }
     // edges first (under the boxes), each an elbow from side to side, with its arrow and label
-    for e in &g.edges {
+    for e in g.edges.iter().filter(|_| d.routes.is_none()) {
         let (a, b) = (d.boxes[e.from], d.boxes[e.to]);
         let ca = (a.0 + a.2 / 2.0, a.1 + a.3 / 2.0);
         let cb = (b.0 + b.2 / 2.0, b.1 + b.3 / 2.0);
@@ -643,9 +906,10 @@ pub fn on_new(f: impl Fn() + 'static) {
     LISTENERS.with(|l| l.borrow_mut().push(Box::new(f)));
 }
 
-fn size_of(g: &Graph) -> (f64, f64) {
+/// A flowchart's size, and in how many rows, in a block `width` wide (0: as laid out, unwrapped).
+fn size_of(g: &Graph, width: f64) -> ((f64, f64), usize) {
     gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 1, 1).ok()
-        .and_then(|s| gtk::cairo::Context::new(&s).ok()).map(|cr| measure(&cr, g).size).unwrap_or((400.0, 200.0))
+        .and_then(|s| gtk::cairo::Context::new(&s).ok()).map(|cr| { let d = measure_in(&cr, g, width); (d.size, d.rows) }).unwrap_or(((400.0, 200.0), 1))
 }
 
 impl Diagram {
@@ -653,7 +917,7 @@ impl Diagram {
     fn shown(&self) -> Rc<Graph> {
         let g = self.graph.borrow().clone();
         let w = self.width.get();
-        if g.horizontal && w > 0 && size_of(&g).0 > f64::from(w) {
+        if g.horizontal && w > 0 && size_of(&g, 0.0).0 .0 > f64::from(w) {
             let mut v = (*g).clone();
             v.horizontal = false;
             return Rc::new(v);
@@ -663,7 +927,7 @@ impl Diagram {
 
     fn refit(&self) {
         let g = self.shown();
-        let (_, h) = size_of(&g);
+        let ((_, h), _) = size_of(&g, f64::from(self.width.get()));
         // (no width of its own: it fits the column, laid out down when across does not fit; then the zoom's scale)
         match self.zoom.borrow().as_ref() {
             Some(z) => z.apply(),
@@ -672,12 +936,28 @@ impl Diagram {
                 self.area.set_content_height(h.ceil() as i32);
             }
         }
-        self.detail.set_text(&format!("{} · {}", tr("flowchart"), trf("{n} nodes", &[("n", g.nodes.len().to_string())])));
+        self.update_detail();
         while let Some(c) = self.code.first_child() {
             self.code.remove(&c);
         }
         self.code.append(&crate::code_block::new("mermaid", &self.src.borrow(), false));
         self.area.queue_draw();
+    }
+
+    /// "fluxograma · 20 nós · em 3 linhas" (the rows change with the block's width).
+    fn update_detail(&self) {
+        let g = self.shown();
+        let (_, rows) = size_of(&g, f64::from(self.width.get()));
+        let mut detail = format!("{} · {}", tr("flowchart"), trf("{n} nodes", &[("n", g.nodes.len().to_string())]));
+        if rows > 1 {
+            detail.push_str(&format!(" · {}", trf("in {n} rows", &[("n", rows.to_string())])));
+            if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+                eprintln!("debug diagrama: em linhas ({rows} linhas, {} nós)", g.nodes.len());
+            }
+        }
+        if self.detail.text() != detail {
+            self.detail.set_text(&detail);
+        }
     }
 
     /// A new source (edited): drawn again when it reads as a flowchart; false when it does not (kept as it was).
@@ -719,13 +999,14 @@ impl Diagram {
 
     /// The drawing as a vector file: SVG or PDF (by the path's extension), on the panel's dark.
     pub fn save_vector(&self, p: &std::path::Path) -> Result<(), String> {
-        let g = self.graph.borrow().clone();
-        let (w, h) = size_of(&g);
+        let g = self.shown();
+        let width = f64::from(self.width.get());
+        let ((w, h), _) = size_of(&g, width);
         let paint = |cr: &gtk::cairo::Context| {
             let bg = crate::tema::rgb("#101114");
             cr.set_source_rgb(bg.0, bg.1, bg.2);
             let _ = cr.paint();
-            let d = measure(cr, &g);
+            let d = measure_in(cr, &g, width);
             draw(cr, &g, &d, 0.0, 0.0, self.square.get(), self.mono.get());
         };
         if p.extension().is_some_and(|e| e == "pdf") {
@@ -746,15 +1027,16 @@ impl Diagram {
 
     /// The drawing as a PNG (twice its size, on the panel's dark).
     pub fn save_png(&self, p: &std::path::Path) -> Result<(), String> {
-        let g = self.graph.borrow().clone();
-        let size = size_of(&g);
+        let g = self.shown();
+        let width = f64::from(self.width.get());
+        let (size, _) = size_of(&g, width);
         let s = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, (size.0 * 2.0) as i32, (size.1 * 2.0) as i32).map_err(|e| e.to_string())?;
         let cr = gtk::cairo::Context::new(&s).map_err(|e| e.to_string())?;
         cr.scale(2.0, 2.0);
         let bg = crate::tema::rgb("#101114");
         cr.set_source_rgb(bg.0, bg.1, bg.2);
         let _ = cr.paint();
-        let d = measure(&cr, &g);
+        let d = measure_in(&cr, &g, width);
         draw(&cr, &g, &d, 0.0, 0.0, self.square.get(), self.mono.get());
         drop(cr);
         // (the pixels through a GDK texture, which writes PNG)
@@ -1205,7 +1487,7 @@ pub fn new(src: &str, conversa: bool) -> Option<gtk::Widget> {
     bloco.append(&vistas);
     let d = Rc::new(Diagram { src: RefCell::new(src.to_string()), graph: RefCell::new(g.clone()), square: Cell::new(false), mono: Cell::new(false), width: Cell::new(0), area: area.clone(), detail: det, code, zoom: RefCell::new(None) });
     let dw = Rc::downgrade(&d);
-    let (zoom_bar, zoom) = zoom_controls(&area, &rol, move || dw.upgrade().map(|d| size_of(&d.shown())).unwrap_or((400.0, 200.0)));
+    let (zoom_bar, zoom) = zoom_controls(&area, &rol, move || dw.upgrade().map(|d| size_of(&d.shown(), f64::from(d.width.get())).0).unwrap_or((400.0, 200.0)));
     cab.insert_child_after(&zoom_bar, Some(&seg));
     *d.zoom.borrow_mut() = Some(zoom.clone());
     d.refit();
@@ -1219,6 +1501,7 @@ pub fn new(src: &str, conversa: bool) -> Option<gtk::Widget> {
                 if let Some(z) = d2.zoom.borrow().as_ref() {
                     z.apply();
                 }
+                d2.update_detail();
             });
         }
     });
@@ -1228,7 +1511,7 @@ pub fn new(src: &str, conversa: bool) -> Option<gtk::Widget> {
         let g = d.shown();
         let z = d.zoom.borrow().as_ref().map(|z| z.scale()).unwrap_or(1.0);
         cr.scale(z, z);
-        let m = measure(cr, &g);
+        let m = measure_in(cr, &g, f64::from(d.width.get()));
         draw(cr, &g, &m, ((f64::from(w) / z - m.size.0) / 2.0).max(0.0), 0.0, d.square.get(), d.mono.get());
     });
     let v = vistas.clone();
@@ -1372,11 +1655,120 @@ mod tests {
         }
         let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 1, 1).unwrap();
         let d = measure(&gtk::cairo::Context::new(&surface).unwrap(), &g);
+        // the same chart in a 700 px block: in rows, readable
+        let cr = gtk::cairo::Context::new(&surface).unwrap();
+        let t = std::time::Instant::now();
+        let w = measure_in(&cr, &g, 700.0);
+        let laid = t.elapsed();
+        let img = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, w.size.0.ceil() as i32, w.size.1.ceil() as i32).unwrap();
+        let cr2 = gtk::cairo::Context::new(&img).unwrap();
+        let t = std::time::Instant::now();
+        let w2 = measure_in(&cr2, &g, 700.0);
+        draw(&cr2, &g, &w2, 0.0, 0.0, false, false);
+        eprintln!("fluxograma de 30 nós em linhas: {} linhas, {:.0}×{:.0} px (ajuste {:.0}%), layout {:.2} ms, layout+desenho {:.2} ms",
+            w.rows, w.size.0, w.size.1, fit_scale(700.0, w.size) * 100.0, laid.as_secs_f64() * 1000.0, t.elapsed().as_secs_f64() * 1000.0);
+        assert!(w.rows > 1 && w.routes.is_some());
         // no box over another
         for (i, a) in d.boxes.iter().enumerate() {
             for b in d.boxes.iter().skip(i + 1) {
                 assert!(a.0 + a.2 <= b.0 || b.0 + b.2 <= a.0 || a.1 + a.3 <= b.1 || b.1 + b.3 <= a.1, "{a:?} {b:?}");
             }
+        }
+    }
+
+    /// Node boxes as the shell's font would make them, roughly.
+    fn est_sizes(g: &Graph) -> Vec<(f64, f64)> {
+        g.nodes.iter().map(|n| {
+            let w = (n.text.chars().count() as f64 * 7.0 + 32.0).max(80.0);
+            if n.shape == Shape::Diamond { (w * 1.35, 60.0) } else { (w, 38.0) }
+        }).collect()
+    }
+
+    /// What every wrapped layout must keep: no box over another, each edge from its source's border to its target's
+    /// in straight level or upright stretches that cross no other box, everything inside the size, and the layers
+    /// read in order along the snake.
+    fn check_wrapped(g: &Graph, w: &Wrapped) {
+        let inside = |b: (f64, f64, f64, f64), x: f64, y: f64| x > b.0 + 1.0 && x < b.0 + b.2 - 1.0 && y > b.1 + 1.0 && y < b.1 + b.3 - 1.0;
+        let on_border = |b: (f64, f64, f64, f64), p: (f64, f64)| {
+            let (x, y) = p;
+            let in_x = x >= b.0 - 0.5 && x <= b.0 + b.2 + 0.5;
+            let in_y = y >= b.1 - 0.5 && y <= b.1 + b.3 + 0.5;
+            in_x && in_y && ((x - b.0).abs() < 0.6 || (x - b.0 - b.2).abs() < 0.6 || (y - b.1).abs() < 0.6 || (y - b.1 - b.3).abs() < 0.6)
+        };
+        for (i, a) in w.boxes.iter().enumerate() {
+            for b in w.boxes.iter().skip(i + 1) {
+                assert!(a.0 + a.2 <= b.0 || b.0 + b.2 <= a.0 || a.1 + a.3 <= b.1 || b.1 + b.3 <= a.1, "boxes overlap: {a:?} {b:?}");
+            }
+            assert!(a.0 >= 0.0 && a.1 >= 0.0 && a.0 + a.2 <= w.size.0 && a.1 + a.3 <= w.size.1, "box outside: {a:?} {:?}", w.size);
+        }
+        assert_eq!(w.routes.len(), g.edges.len());
+        for (e, r) in g.edges.iter().zip(&w.routes) {
+            assert!(r.len() >= 2, "{r:?}");
+            assert!(on_border(w.boxes[e.from], r[0]), "edge {}→{} leaves off its source: {r:?}", e.from, e.to);
+            assert!(on_border(w.boxes[e.to], *r.last().unwrap()), "edge {}→{} ends off its target: {r:?}", e.from, e.to);
+            for s in r.windows(2) {
+                let ((x0, y0), (x1, y1)) = (s[0], s[1]);
+                assert!((x0 - x1).abs() < 0.01 || (y0 - y1).abs() < 0.01, "a slanted stretch: {r:?}");
+                assert!(x0 >= 0.0 && x0 <= w.size.0 && y0 >= 0.0 && y0 <= w.size.1, "a route outside: {r:?}");
+                for (k, b) in w.boxes.iter().enumerate() {
+                    if k == e.from || k == e.to {
+                        continue;
+                    }
+                    // (sampled along the stretch: no point of it inside another node)
+                    for t in 0..=20 {
+                        let t = f64::from(t) / 20.0;
+                        assert!(!inside(*b, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t), "edge {}→{} crosses node {k}: {r:?} {b:?}", e.from, e.to);
+                    }
+                }
+            }
+        }
+        // the layers in reading order: rows in turn, left to right then right to left
+        let (layer, _) = layout(g);
+        let flat: Vec<usize> = w.rows.iter().flatten().copied().collect();
+        assert_eq!(flat, (0..flat.len()).collect::<Vec<_>>());
+        for (r, ls) in w.rows.iter().enumerate() {
+            let xs: Vec<f64> = ls.iter().map(|&l| (0..g.nodes.len()).filter(|&v| layer[v] == l).map(|v| w.boxes[v].0).fold(f64::MAX, f64::min)).collect();
+            assert!(xs.windows(2).all(|p| if r % 2 == 0 { p[0] < p[1] } else { p[0] > p[1] }), "row {r} out of order: {xs:?}");
+        }
+    }
+
+    #[test]
+    fn long_chains_wrap_into_rows() {
+        // the 20 steps LFM3 wrote (2026-11-21), in a block 700 px wide
+        let names = ["Iniciar projeto", "Definir objetivo", "Criar equipe", "Estabelecer cronograma", "Realizar análise de mercado", "Identificar stakeholders", "Coletar requisitos", "Priorizar requisitos", "Escrever especificações", "Design da arquitetura", "Criar banco de dados", "Implementar módulo A", "Teste módulo A", "Implementar módulo B", "Teste módulo B", "Integrar", "Teste de integração", "Deploy", "Monitorar", "Encerrar"];
+        let mut src = String::from("flowchart TD\n");
+        for i in 0..names.len() - 1 {
+            src.push_str(&format!("  N{i}[{}] --> N{}[{}]\n", names[i], i + 1, names[i + 1]));
+        }
+        let g = parse(&src).unwrap();
+        let sizes = est_sizes(&g);
+        let w = wrap_layout(&g, &sizes, &|t: &str| t.chars().count() as f64 * 6.0, 700.0);
+        assert!(w.rows.len() >= 4, "{:?}", w.rows);
+        check_wrapped(&g, &w);
+        // readable where the column would have shrunk it to 35%
+        assert!(fit_scale(700.0, w.size) >= READABLE, "{:?}", w.size);
+        // the edge that turns a row goes down at its end
+        let turn = w.rows[0].last().copied().unwrap();
+        let r = &w.routes[turn];
+        assert!(r.first().unwrap().1 < r.last().unwrap().1, "{r:?}");
+    }
+
+    #[test]
+    fn rows_keep_branches_loops_and_labels() {
+        // the design's sheet: a decision with two branches, a loop back over a row, labels on the edges
+        let src = "flowchart TD\nA[Início] --> B[Definir requisitos] --> C[Design] --> D[Implementar] --> E[Testar] --> F{Passou nos testes?}\nF -->|sim| G[Revisar código]\nF -->|não| H[Corrigir]\nH -->|refazer| D\nG --> I[Deploy] --> J[Monitorar] --> K[Documentar] --> L[Fim]\nA -.-> L";
+        let g = parse(src).unwrap();
+        let sizes = est_sizes(&g);
+        for width in [520.0, 758.0, 1000.0] {
+            let w = wrap_layout(&g, &sizes, &|t: &str| t.chars().count() as f64 * 6.0, width);
+            assert!(w.rows.len() >= 2, "{width}: {:?}", w.rows);
+            check_wrapped(&g, &w);
+            // the two branches' labels apart; the loop goes up to its target
+            let lab = |t: &str| label_anchor(&w.routes[g.edges.iter().position(|e| e.label == t).unwrap()]);
+            let (sim, nao) = (lab("sim"), lab("não"));
+            assert!((sim.0 - nao.0).abs() + (sim.1 - nao.1).abs() > 12.0, "{width}: {sim:?} {nao:?}");
+            let back = &w.routes[g.edges.iter().position(|e| e.label == "refazer").unwrap()];
+            assert!(back.last().unwrap().1 < back.first().unwrap().1, "{width}: {back:?}");
         }
     }
 

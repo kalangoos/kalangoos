@@ -1087,6 +1087,8 @@ entry.rotinas-campo:focus-within, entry.rotinas-campo:focus { border-color: @k_a
 .conversas-painel .conversas-cab { padding: 0 4px 0 0; }
 .conversas-titulo { font-size: 14px; font-weight: 600; color: @k_text; }
 .central-controle.ativo { background: alpha(@k_accent, 0.18); }
+/* the expanded canvas: its button stays lit (design "Central · canvas expandido") */
+.central-controle.expandido { background: @k_raised; }
 .conversas-saudacao { font-family: "URW Gothic", sans-serif; font-size: 34px; font-weight: 600; color: @k_text; }
 .conversas-agente-chip { background: none; border: 1px solid #2E2F3A; box-shadow: none; border-radius: 14px; padding: 5px 12px; min-height: 0; font-size: 13px; color: @k_text; }
 .conversas-agente-chip.ativo { border-color: alpha(@k_accent, 0.7); background: alpha(@k_accent, 0.12); }

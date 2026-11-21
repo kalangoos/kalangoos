@@ -29,6 +29,17 @@ fn debug() -> bool {
 const WIDTHS: [u32; 3] = [1100, 768, 390];
 const HEIGHTS: [u32; 3] = [500, 640, 760];
 
+/// The page's height in the browser for a preview `area` (w, h) px: as tall as the area's shape asks at the device's
+/// `width` — the canvas fills its panel however wide or tall the panel is (design "Central · canvas largo") — never
+/// under the device's `least` nor over three widths.
+fn viewport_height(width: u32, area: (i32, i32), least: u32) -> u32 {
+    if area.0 <= 0 || area.1 <= 0 {
+        return least;
+    }
+    let h = (f64::from(width) * f64::from(area.1) / f64::from(area.0)).round() as u32;
+    h.clamp(least, width * 3)
+}
+
 /// The style sheets a page links with a relative address (`<link rel="stylesheet" href="estilo.css">`).
 pub fn linked_styles(html: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -143,6 +154,11 @@ pub struct HtmlCanvas {
     picked: RefCell<Option<Picked>>,
     monitor: RefCell<Option<gio::FileMonitor>>,
     busy: Cell<bool>,
+    /// the preview's size, and a counter that drops a redraw a newer resize replaced
+    area: Cell<(i32, i32)>,
+    resized: Cell<u32>,
+    /// the page height last asked of the browser
+    asked: Cell<u32>,
     /// a request about an element, to the agent of the conversation
     pub on_ask: RefCell<Option<Box<dyn Fn(String)>>>,
 }
@@ -292,7 +308,25 @@ impl HtmlCanvas {
         let c = Rc::new(HtmlCanvas {
             raiz, files, picture, marks, ask_box, ask, preview, code_head, code, versions, modes, devices, status,
             file: RefCell::default(), history: RefCell::default(), shown: Cell::new(0), width: Cell::new(WIDTHS[0]), page: Cell::new((1100.0, 500.0)),
-            picked: RefCell::default(), monitor: RefCell::default(), busy: Cell::new(false), on_ask: RefCell::default(),
+            picked: RefCell::default(), monitor: RefCell::default(), busy: Cell::new(false), area: Cell::new((0, 0)), resized: Cell::new(0), asked: Cell::new(0), on_ask: RefCell::default(),
+        });
+        // the panel resized (the window, its edge, Expand): the page is drawn again at the new shape, once the size
+        // settles
+        let w = Rc::downgrade(&c);
+        c.marks.connect_resize(move |_, aw, ah| {
+            let Some(c) = w.upgrade() else { return };
+            c.area.set((aw, ah));
+            if c.file().is_none() || !c.reshaped() {
+                return;
+            }
+            let n = c.resized.get().wrapping_add(1);
+            c.resized.set(n);
+            let w = Rc::downgrade(&c);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(350), move || {
+                if let Some(c) = w.upgrade().filter(|c| c.resized.get() == n) {
+                    c.draw();
+                }
+            });
         });
         // the outline of the element picked, and its name
         let w = Rc::downgrade(&c);
@@ -547,6 +581,15 @@ impl HtmlCanvas {
         self.code.buffer().set_text(&text.join("\n"));
     }
 
+    /// The preview's shape asks for a page height other than the one drawn (more than 8 % off).
+    fn reshaped(&self) -> bool {
+        let width = self.width.get();
+        let least = WIDTHS.iter().position(|w| *w == width).map(|i| HEIGHTS[i]).unwrap_or(HEIGHTS[0]);
+        let want = f64::from(viewport_height(width, self.area.get(), least));
+        let now = f64::from(self.asked.get());
+        (want - now).abs() > now * 0.08
+    }
+
     /// The page drawn again by the canvas's browser, at the width chosen.
     fn draw(self: &Rc<Self>) {
         let Some(path) = self.file() else { return };
@@ -555,7 +598,9 @@ impl HtmlCanvas {
         }
         let html = inline_styles(&self.source(), path.parent().unwrap_or(Path::new("/")));
         let width = self.width.get();
-        let height = WIDTHS.iter().position(|w| *w == width).map(|i| HEIGHTS[i]).unwrap_or(HEIGHTS[0]);
+        let least = WIDTHS.iter().position(|w| *w == width).map(|i| HEIGHTS[i]).unwrap_or(HEIGHTS[0]);
+        let height = viewport_height(width, self.area.get(), least);
+        self.asked.set(height);
         let w = Rc::downgrade(self);
         crate::lateral::em_segundo_plano(move || {
             crate::servicos::kalangod_navegador(json!({"acao": "html", "sessao": "canvas", "conteudo": html, "largura": width, "altura": height}))
@@ -571,7 +616,11 @@ impl HtmlCanvas {
                     c.status.set_visible(false);
                     c.marks.queue_draw();
                     if debug() {
-                        eprintln!("debug canvas: página desenhada ({width} px, versão {})", c.shown.get() + 1);
+                        eprintln!("debug canvas: página desenhada ({width} px, versão {}) · altura {height}", c.shown.get() + 1);
+                    }
+                    // (the panel took its size while the page was being drawn: once more at its shape)
+                    if c.reshaped() {
+                        c.draw();
                     }
                 }
                 Err(e) => {
@@ -661,6 +710,18 @@ impl HtmlCanvas {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_page_is_as_tall_as_the_preview_asks() {
+        // a 756 × 600 preview at the desktop width: 873 px of page
+        assert_eq!(viewport_height(1100, (756, 600), 500), 873);
+        // a wide, short preview keeps the device's least
+        assert_eq!(viewport_height(1100, (1400, 300), 500), 500);
+        // a tall narrow one stops at three widths
+        assert_eq!(viewport_height(390, (200, 2000), 760), 1170);
+        // not laid out yet: the device's least
+        assert_eq!(viewport_height(1100, (0, 0), 500), 500);
+    }
 
     #[test]
     fn a_pages_style_sheets_go_inside_it() {
