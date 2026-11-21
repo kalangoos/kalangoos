@@ -1182,6 +1182,7 @@ dependencies = [
  "gtk4-layer-shell",
  "kalango-i18n",
  "kalango-movimento",
+ "kalango-sons",
  "serde_json",
 ]
 
@@ -1222,6 +1223,7 @@ dependencies = [
  "gtk4-layer-shell",
  "kalango-i18n",
  "kalango-movimento",
+ "kalango-sons",
  "os_pipe",
  "pangocairo",
  "poppler-rs",
@@ -1236,6 +1238,15 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-misc",
  "wl-clipboard-rs",
+]
+
+[[package]]
+name = "kalango-sons"
+version = "0.1.0"
+dependencies = [
+ "gstreamer",
+ "gstreamer-app",
+ "symphonia",
 ]
 
 [[package]]

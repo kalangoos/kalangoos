@@ -38,3 +38,20 @@ Para instalar: copie esta pasta para `/usr/share/sounds/kalango` (ou `~/.local/s
 | `kalango-undo` | Desfazer na Linha do tempo (rebobinar) |
 | `kalango-voice-start` | Modo voz: segurar Super |
 | `kalango-voice-stop` | Modo voz: soltar Super |
+| `kalango-screen-lock` | Bloquear a tela |
+| `kalango-screen-unlock` | Desbloquear a tela |
+| `kalango-auth-failed` | Senha errada |
+| `kalango-screen-record-start` | Começar a gravar a tela |
+| `kalango-screen-record-stop` | Parar a gravação de tela |
+| `alarm-clock-elapsed` | Alarme: fim do foco e lembretes |
+| `kalango-agent-start` | O agente começa a trabalhar |
+| `network-connectivity-established` | Rede conectada |
+| `network-connectivity-lost` | Rede caiu |
+| `kalango-remote-start` | Sessão remota começou |
+| `kalango-remote-stop` | Sessão remota terminou |
+| `kalango-update-ready` | Atualização pronta |
+
+## Licença
+
+CC0-1.0 (domínio público): compostos pelo projeto só com sintetizadores do LMMS, sem samples de terceiros. Veja o
+`ATTRIBUTION.md` na raiz do repositório.

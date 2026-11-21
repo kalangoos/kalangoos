@@ -1,0 +1,12 @@
+[package]
+name = "kalango-sons"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+description = "KalangoOS · os sons do sistema: o arquivo do tema para cada evento, tocado pelo GStreamer dentro do programa"
+
+[dependencies]
+gstreamer = "0.23"
+gstreamer-app = "0.23"
+symphonia = { version = "0.5", default-features = false, features = ["vorbis", "ogg", "wav", "pcm"] }

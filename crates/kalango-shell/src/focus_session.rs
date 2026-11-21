@@ -234,6 +234,10 @@ fn end(s: &Rc<Session>, finished: bool) {
     if debug() {
         eprintln!("debug foco: {} ({minutos} min, {guardadas} guardadas)", if finished { "terminou" } else { "encerrado" });
     }
+    // the time is over (not ended by the person): the alarm
+    if finished {
+        crate::configuracoes_som::tocar("alarm-clock-elapsed");
+    }
     if !s.rules.summary.get() {
         // no summary: only that the time is over
         if finished {

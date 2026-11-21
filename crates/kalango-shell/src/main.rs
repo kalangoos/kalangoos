@@ -930,6 +930,8 @@ fn iniciar(app: &gtk::Application) -> Rc<Shell> {
     // the system's sounds: the start's or the login's (once a session), the charger's, and the approval screen's
     // decisions (it asks the shell over D-Bus: that screen loads no audio code)
     system_sounds::watch_power_source();
+    system_sounds::watch_network();
+    system_sounds::watch_update();
     if let Some(app) = gtk::gio::Application::default() {
         system_sounds::export_action(&app);
     }

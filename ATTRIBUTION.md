@@ -31,7 +31,7 @@ a marca do projeto e **não** entram na licença do código.
 | `crates/kalango-aprovacao/capturas/*.png` | Capturas da tela de aprovação em sessão de teste | A definir |
 | `docs/pagina/img/**` | Capturas e exportações do Design System e da sessão de teste | A definir |
 | `crates/kalangod/tests/fixtures/*.pdf` | Arquivo de teste gerado pelo projeto | A definir |
-| `assets/sounds/kalango/**` | Sons do sistema compostos pelo projeto no LMMS só com sintetizadores (ZynAddSubFX, TripleOscillator, OpulenZ, BitInvader, Organic), sem samples de terceiros | A definir |
+| `assets/sounds/kalango/**` | Sons do sistema compostos pelo projeto no LMMS só com sintetizadores (ZynAddSubFX, TripleOscillator, OpulenZ, BitInvader, Organic), sem samples de terceiros | CC0-1.0 |
 | `site/public/**` (capturas da sessão de teste, ícones dos apps, marca reduzida, papéis de parede, imagem de compartilhamento) | Capturas e cópias reduzidas dos recursos acima, feitas para o site | Marca do projeto, nos logos; o resto, como os originais |
 
 ## Dados de terceiros

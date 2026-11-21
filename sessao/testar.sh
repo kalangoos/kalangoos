@@ -700,6 +700,7 @@ foto_x() { [ -n "${KALANGO_TESTE_CAPTURA:-}" ] && python3 -c "from PIL import Im
 "$N" msg action spawn -- "$T/kalango-shell" bloquear
 for _ in $(seq 20); do grep -aq "debug bloqueio: tela bloqueada" "$T/shell.log" && break; sleep 0.5; done
 ok "bloquear trava a tela pelo protocolo do compositor" 'grep -aq "debug bloqueio: tela bloqueada" "$T/shell.log"'
+ok "Sons: bloquear toca kalango-screen-lock" 'grep -aq "debug som: tocaria kalango-screen-lock " "$T/shell.log"'
 sleep 1
 foto_x bloqueio
 xdotool key --window "$W" space
@@ -708,6 +709,7 @@ xdotool type --window "$W" --delay 60 errada
 xdotool key --window "$W" Return
 for _ in $(seq 20); do grep -aq "debug bloqueio: senha incorreta" "$T/shell.log" && break; sleep 0.5; done
 ok "senha errada é recusada e a tela continua bloqueada" 'grep -aq "debug bloqueio: senha incorreta" "$T/shell.log" && ! grep -aq "debug bloqueio: desbloqueado" "$T/shell.log"'
+ok "Sons: a senha errada no bloqueio toca kalango-auth-failed" 'grep -aq "debug som: tocaria kalango-auth-failed " "$T/shell.log"'
 foto_x bloqueio-senha
 # if the shell stops while locked, the compositor keeps the screen locked and the restarted shell locks again
 PRONTOS=$(grep -ac "pronto (" "$T/shell.log")
@@ -716,6 +718,7 @@ for p in $(pgrep -x kalango-shell); do
 done
 for _ in $(seq 40); do [ "$(grep -ac "pronto (" "$T/shell.log")" -gt "$PRONTOS" ] && [ "$(grep -ac "debug bloqueio: tela bloqueada" "$T/shell.log")" -ge 2 ] && break; sleep 0.5; done
 ok "se o shell cai com a tela bloqueada, ele volta e bloqueia de novo" 'grep -aq "debug bloqueio: retomando o bloqueio" "$T/shell.log" && [ "$(grep -ac "debug bloqueio: tela bloqueada" "$T/shell.log")" -ge 2 ]'
+ok "Sons: o bloqueio retomado depois do shell cair não toca de novo" '[ "$(grep -ac "debug som: tocaria kalango-screen-lock " "$T/shell.log")" = 1 ]'
 sleep 1
 xdotool key --window "$W" space
 sleep 1
@@ -727,6 +730,7 @@ abrir_calc
 for _ in $(seq 20); do "$N" msg -j windows | grep -q '"os.kalango.Calculadora"' && break; sleep 0.3; done
 sleep 1
 ok "a senha certa desbloqueia (as janelas voltam a receber o foco)" 'grep -aq "debug bloqueio: desbloqueado" "$T/shell.log" && "$N" msg focused-window | grep -q "Window ID"'
+ok "Sons: desbloquear toca kalango-screen-unlock" 'grep -aq "debug som: tocaria kalango-screen-unlock " "$T/shell.log"'
 "$N" msg action close-window
 sleep 1
 
@@ -1102,6 +1106,7 @@ xdotool mousemove --window "$W" $((JX + LBX)) $((JY + LBY)) click 1
 for _ in $(seq 120); do python3 -c "import json,sys; ev=[json.loads(l) for l in open(sys.argv[1])]; sys.exit(not any(e.get('tipo')=='resultado' and e.get('nome')=='arquivos.listar' and e.get('ok') for e in ev))" "$X/data/kalango/conversas/$CL/eventos.jsonl" 2>/dev/null && break; sleep 1; done
 ok "Falhas: “Ação bloqueada” libera a pasta e o pedido continua" 'grep -qs "\"tipo\":\"bloqueio\"" "$X/data/kalango/conversas/$CL/eventos.jsonl" && grep -q "area/fora" "$X/config/kalango/agente-permissoes.json" && python3 -c "import json,sys; ev=[json.loads(l) for l in open(sys.argv[1])]; sys.exit(not any(e.get(\"tipo\")==\"resultado\" and e.get(\"nome\")==\"arquivos.listar\" and e.get(\"ok\") for e in ev))" "$X/data/kalango/conversas/$CL/eventos.jsonl"'
 ok "Sons: a ação bloqueada toca kalango-agent-failed" 'grep -aq "debug som: tocaria kalango-agent-failed " "$T/shell.log"'
+ok "Sons: o agente começando a trabalhar toca kalango-agent-start" 'grep -aq "debug som: tocaria kalango-agent-start " "$T/shell.log"'
 AG pasta "~" ativa
 "$N" msg action close-window
 sleep 0.8
@@ -2735,6 +2740,7 @@ VIDEO=$(ls "$OUT/capturas/Vídeos/Gravações de tela/"*.webm 2>/dev/null | head
 echo "  (gst: $(head -1 "$OUT/gst.log" 2>/dev/null | cut -c1-140))"
 ok "Captura: o vídeo da área é gravado pelo niri, recortado, e um clique na ilha o salva em Vídeos" \
   'grep -aq "debug captura: gravando (nó 77, área" "$T/shell.log" && [ -s "$VIDEO" ] && grep -q "pipewiresrc path=77" "$OUT/gst.log" && grep -q "videocrop left=60 top=100" "$OUT/gst.log" && grep -q "^fim" "$OUT/gst.log"'
+ok "Sons: a gravação da tela toca kalango-screen-record-start ao começar e kalango-screen-record-stop ao parar" 'grep -aq "debug som: tocaria kalango-screen-record-start " "$T/shell.log" && grep -aq "debug som: tocaria kalango-screen-record-stop " "$T/shell.log"'
 # "Extrair texto": the local vision model (LFM3-VL) reads the chosen window (a new editor with a line typed, in
 # front, no banner over it)
 fechar_apps
@@ -4310,6 +4316,7 @@ xdotool type --window "$W" --delay 50 errada
 xdotool key --window "$W" Return
 sleep 1.5
 ok "senha errada é recusada (o greetd cancela a sessão)" 'grep -aq "debug entrada: senha incorreta" "$OUT/entrada.log" && grep -q "cancel_session" "$OUT/greetd.log"'
+ok "Sons: a senha errada na tela de entrada toca kalango-auth-failed" 'grep -aq "debug som: tocaria kalango-auth-failed " "$OUT/entrada.log"'
 xdotool type --window "$W" --delay 50 kalango-teste
 xdotool key --window "$W" Return
 for _ in $(seq 30); do pgrep -f "[t]arget/release/kalango-entrada" >/dev/null || break; sleep 0.2; done

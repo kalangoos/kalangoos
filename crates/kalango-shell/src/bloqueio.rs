@@ -158,6 +158,11 @@ impl Bloqueio {
             if debug() {
                 eprintln!("debug bloqueio: tela bloqueada");
             }
+            // the lock's sound, not when the lock comes back after the shell restarted (its marker is still there)
+            let resumed = marker().is_some_and(|(m, id)| std::fs::read_to_string(m).is_ok_and(|c| c == id));
+            if !resumed {
+                crate::configuracoes_som::tocar("kalango-screen-lock");
+            }
             if let Some((m, id)) = marker() {
                 let _ = std::fs::create_dir_all(m.parent().unwrap_or(&m));
                 let _ = std::fs::write(&m, id);
@@ -184,6 +189,7 @@ impl Bloqueio {
             if debug() {
                 eprintln!("debug bloqueio: desbloqueado");
             }
+            crate::configuracoes_som::tocar("kalango-screen-unlock");
             if let Some((m, _)) = marker() {
                 let _ = std::fs::remove_file(m);
             }
@@ -608,6 +614,7 @@ impl Bloqueio {
             if debug() {
                 eprintln!("debug bloqueio: senha incorreta");
             }
+            crate::configuracoes_som::tocar("kalango-auth-failed");
             for t in b.telas.borrow().iter().filter(|t| t.principal) {
                 t.entrada.set_sensitive(true);
                 t.entrada.set_text("");
