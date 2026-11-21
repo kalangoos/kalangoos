@@ -94,9 +94,8 @@ pub fn hunks(lines: &[Line], context: usize) -> Vec<Option<Line>> {
     let changed: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| l.added() || l.removed()).map(|(i, _)| i).collect();
     let mut keep = vec![false; lines.len()];
     for &c in &changed {
-        for k in c.saturating_sub(context)..=(c + context).min(lines.len().saturating_sub(1)) {
-            keep[k] = true;
-        }
+        let end = (c + context).min(lines.len().saturating_sub(1));
+        keep[c.saturating_sub(context)..=end].iter_mut().for_each(|k| *k = true);
     }
     let mut out = Vec::new();
     let mut last: Option<usize> = None;
@@ -114,9 +113,11 @@ pub fn hunks(lines: &[Line], context: usize) -> Vec<Option<Line>> {
 }
 
 /// The lines of a change (context around each part, "⋯" between): whole when short, scrolling inside when long.
-fn body(lines: &[Line]) -> gtk::ScrolledWindow {
+fn body(lines: &[Line], file: &str) -> gtk::ScrolledWindow {
+    // (the lines in the code's colours, by the file's extension)
+    let lang = crate::code_block::parse_info(file).0;
     let corpo = caixa(Orientation::Vertical, 0, "diff-linhas");
-    let partes = hunks(&lines, 1);
+    let partes = hunks(lines, 1);
     // (a long change: its first 400 lines here, the rest summed up)
     let mostrar = 400;
     for l in partes.iter().take(mostrar) {
@@ -139,7 +140,8 @@ fn body(lines: &[Line]) -> gtk::ScrolledWindow {
         num.set_size_request(26, -1);
         linha.append(&num);
         linha.append(&rotulo(sinal, "diff-sinal"));
-        let txt = rotulo(&l.text, "diff-texto");
+        let txt = rotulo("", "diff-texto");
+        txt.set_markup(&crate::code_block::markup(&lang, &l.text));
         txt.set_xalign(0.0);
         txt.set_selectable(true);
         linha.append(&txt);
@@ -187,7 +189,7 @@ pub fn view(file: &str, old: &str, new: &str) -> gtk::Widget {
     }
     bloco.append(&cab);
     bloco.append(&caixa(Orientation::Horizontal, 0, "md-bloco-div"));
-    bloco.append(&body(&lines));
+    bloco.append(&body(&lines, file));
     bloco.upcast()
 }
 
@@ -224,7 +226,7 @@ pub fn card(file: &str, old: &str, new: &str, answer: impl Fn(bool) + 'static) -
     cab.append(&aceitar);
     bloco.append(&cab);
     bloco.append(&caixa(Orientation::Horizontal, 0, "md-bloco-div"));
-    bloco.append(&body(&lines));
+    bloco.append(&body(&lines, file));
     let resultado = rotulo("", "cartao-rodape");
     resultado.set_xalign(0.0);
     resultado.set_margin_start(12);

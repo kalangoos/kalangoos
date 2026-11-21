@@ -306,7 +306,7 @@ fn fenced_block(f: &crate::fences::Fence, apply: bool) -> gtk::Widget {
         "mermaid" => crate::diagram_block::new(src, apply)
             .or_else(|| Some(crate::code_block::with_detail(&f.info, src, apply, None, Some(tr("I couldn't draw this diagram. The code is below.")), false))),
         // (a whole document, or text with \item and \textbf, is source: typeset as equations it lost its spaces)
-        "latex" | "tex" if crate::math_block::is_document(src) => Some(crate::code_block::with_detail(&f.info, src, apply, Some(tr("document")), None, true)),
+        "latex" | "tex" if crate::math_block::is_document(src) => Some(crate::latex_block::new(&f.info, src, apply)),
         "latex" | "tex" | "math" | "katex" => crate::math_block::new(src),
         // a markdown block that only wraps another block (the model showing "its" diagram) is that block
         "markdown" | "md" => match crate::fences::only_block(src) {

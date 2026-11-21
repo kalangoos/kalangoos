@@ -115,6 +115,16 @@ pub fn page_in_answer(md: &str) -> Option<String> {
     })
 }
 
+/// The lines the code under the page shows: beside the preview, the element picked (or the first 8 lines); in
+/// Código and Dividir, the whole file. (first, last), from 1.
+pub fn code_lines(total: usize, picked: Option<(usize, usize)>, preview: bool) -> (usize, usize) {
+    match picked {
+        Some(r) if preview => r,
+        _ if !preview => (1, total.max(1)),
+        _ => (1, total.clamp(1, 8)),
+    }
+}
+
 fn clock_since(t: &glib::DateTime) -> String {
     let now = glib::DateTime::now_local().map(|n| n.to_unix()).unwrap_or(0);
     let m = (now - t.to_unix()) / 60;
@@ -139,8 +149,8 @@ pub struct HtmlCanvas {
     ask_box: gtk::Box,
     ask: gtk::Entry,
     preview: gtk::Box,
-    code_head: gtk::Label,
-    code: gtk::TextView,
+    /// where the code block goes (built again for each change of lines)
+    code: gtk::Box,
     versions: gtk::Box,
     modes: Vec<gtk::ToggleButton>,
     devices: Vec<gtk::ToggleButton>,
@@ -245,41 +255,9 @@ impl HtmlCanvas {
         over.add_overlay(&ask_box);
         preview.append(&over);
         raiz.append(&preview);
-        // the code: the lines of the element picked (or the whole file)
-        let code_card = caixa(Orientation::Vertical, 0, "md-bloco");
-        let cab = caixa(Orientation::Horizontal, 8, "md-bloco-cab");
-        cab.append(&ui_icon("codigo", "#8E8F99", 16));
-        cab.append(&rotulo("HTML", "md-bloco-titulo"));
-        let code_head = rotulo("", "md-bloco-detalhe");
-        code_head.set_hexpand(true);
-        code_head.set_xalign(0.0);
-        code_head.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-        cab.append(&code_head);
-        let copiar = gtk::Button::new();
-        copiar.add_css_class("md-bloco-botao");
-        let cr = caixa(Orientation::Horizontal, 6, "");
-        cr.append(&ui_icon("copiar", "#8E8F99", 14));
-        cr.append(&rotulo(tr("Copy"), ""));
-        copiar.set_child(Some(&cr));
-        cab.append(&copiar);
-        code_card.append(&cab);
-        code_card.append(&caixa(Orientation::Horizontal, 0, "md-bloco-div"));
-        let code = gtk::TextView::new();
-        code.add_css_class("canvas-codigo");
-        code.set_monospace(true);
-        code.set_editable(false);
-        code.set_cursor_visible(false);
-        code.set_wrap_mode(gtk::WrapMode::None);
-        code.set_left_margin(12);
-        code.set_top_margin(10);
-        code.set_bottom_margin(10);
-        let sc = gtk::ScrolledWindow::new();
-        sc.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
-        sc.set_propagate_natural_height(true);
-        sc.set_max_content_height(420);
-        sc.set_child(Some(&code));
-        code_card.append(&sc);
-        raiz.append(&code_card);
+        // the code: the lines of the element picked (or the whole file), as the conversation's code blocks show code
+        let code = caixa(Orientation::Vertical, 0, "");
+        raiz.append(&code);
         // the versions, Desfazer and the .zip
         let bottom = caixa(Orientation::Horizontal, 6, "");
         bottom.append(&ui_icon("relogio", "#8E8F99", 15));
@@ -306,7 +284,7 @@ impl HtmlCanvas {
         status.set_visible(false);
         raiz.append(&status);
         let c = Rc::new(HtmlCanvas {
-            raiz, files, picture, marks, ask_box, ask, preview, code_head, code, versions, modes, devices, status,
+            raiz, files, picture, marks, ask_box, ask, preview, code, versions, modes, devices, status,
             file: RefCell::default(), history: RefCell::default(), shown: Cell::new(0), width: Cell::new(WIDTHS[0]), page: Cell::new((1100.0, 500.0)),
             picked: RefCell::default(), monitor: RefCell::default(), busy: Cell::new(false), area: Cell::new((0, 0)), resized: Cell::new(0), asked: Cell::new(0), on_ask: RefCell::default(),
         });
@@ -426,8 +404,6 @@ impl HtmlCanvas {
             }
             let _ = b;
         });
-        let b = c.code.buffer();
-        copiar.connect_clicked(move |x| x.clipboard().set_text(&b.text(&b.start_iter(), &b.end_iter(), false)));
         let w = Rc::downgrade(&c);
         desfazer.connect_clicked(move |_| {
             if let Some(c) = w.upgrade() {
@@ -569,16 +545,19 @@ impl HtmlCanvas {
     fn show_code(&self) {
         let src = self.source();
         let name = self.file().and_then(|f| f.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
-        let whole = !self.modes[0].is_active();
-        let (a, z) = match self.picked.borrow().as_ref() {
-            Some(p) if !whole => lines_of(&src, &p.selector),
-            _ if whole => (1, src.lines().count().max(1)),
-            _ => (1, src.lines().count().clamp(1, 8)),
-        };
-        self.code_head.set_text(&format!("{name} · {}", trf("lines {from}–{to}", &[("from", a.to_string()), ("to", z.to_string())])));
-        let width = z.to_string().len();
-        let text: Vec<String> = src.lines().enumerate().skip(a - 1).take(z + 1 - a).map(|(i, l)| format!("{:>width$}  {l}", i + 1)).collect();
-        self.code.buffer().set_text(&text.join("\n"));
+        let picked = self.picked.borrow().as_ref().map(|p| lines_of(&src, &p.selector));
+        let (a, z) = code_lines(src.lines().count(), picked, self.modes[0].is_active());
+        let detail = format!("{name} · {}", trf("lines {from}–{to}", &[("from", a.to_string()), ("to", z.to_string())]));
+        let text: Vec<&str> = src.lines().skip(a - 1).take(z + 1 - a).collect();
+        while let Some(x) = self.code.first_child() {
+            self.code.remove(&x);
+        }
+        // (the code alone: as tall as the panel lets it; beside the page: a few hundred pixels, it scrolls)
+        let only_code = self.modes[1].is_active();
+        self.code.set_vexpand(only_code);
+        let block = crate::code_block::view("html", &text.join("\n"), &detail, a, if only_code { Some(0) } else { Some(420) });
+        block.set_vexpand(only_code);
+        self.code.append(&block);
     }
 
     /// The preview's shape asks for a page height other than the one drawn (more than 8 % off).
@@ -747,6 +726,16 @@ mod tests {
         assert_eq!(page_in_answer(two).as_deref(), Some("<p>dois</p>"));
         assert!(page_in_answer("```css\nbody { color: red }\n```").is_none());
         assert!(page_in_answer("```html\n<html><body>").is_none());
+    }
+
+    #[test]
+    fn the_code_under_the_page() {
+        assert_eq!(code_lines(159, None, true), (1, 8));
+        assert_eq!(code_lines(5, None, true), (1, 5));
+        assert_eq!(code_lines(159, Some((12, 14)), true), (12, 14));
+        // Código and Dividir: the whole file, the element picked or not
+        assert_eq!(code_lines(159, Some((12, 14)), false), (1, 159));
+        assert_eq!(code_lines(0, None, false), (1, 1));
     }
 
     #[test]
