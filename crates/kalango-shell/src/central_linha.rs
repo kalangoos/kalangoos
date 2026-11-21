@@ -82,6 +82,8 @@ pub struct Linha {
     busca: RefCell<String>,
     ocupado: Cell<bool>,
     preenchendo: Cell<bool>,
+    /// screen actions' thumbnails already read from kalangod, by record
+    miniaturas: RefCell<std::collections::HashMap<u64, gtk::gdk::Texture>>,
 }
 
 impl Linha {
@@ -212,7 +214,7 @@ impl Linha {
         let l = Rc::new(Linha {
             raiz, shell: Rc::downgrade(shell), filtros, filtro: Cell::new(0), numeros, lista, escala, escala_hora, escala_marcas, titulo, meta,
             antes_depois, porque, permissoes, explica, desfazer, desfazer_tudo, registros: RefCell::default(), pendentes: RefCell::default(),
-            janelas: RefCell::default(), escolhido: Cell::new(0), busca: RefCell::default(), ocupado: Cell::new(false), preenchendo: Cell::new(false),
+            janelas: RefCell::default(), escolhido: Cell::new(0), busca: RefCell::default(), ocupado: Cell::new(false), preenchendo: Cell::new(false), miniaturas: RefCell::default(),
         });
         l.filtros[0].set_active(true);
         for (i, b) in l.filtros.iter().enumerate() {
@@ -302,6 +304,10 @@ impl Linha {
 
     /// Who did it, as the person reads it.
     fn quem(&self, e: &Value) -> (String, &'static str) {
+        // (an action on the screen says the agent's own name, as the screen's banner did)
+        if let Some(n) = e["args"]["agente"].as_str().filter(|n| !n.is_empty() && e["tool"].as_str().is_some_and(|t| t.starts_with("tela."))) {
+            return (n.to_string(), "agente");
+        }
         let exe = e["caller"].as_str().unwrap_or("").rsplit(['/', '(']).next().unwrap_or("").trim_end_matches(')').to_string();
         match exe.as_str() {
             "kalango-agente" => match self.janela_de(e["time"].as_i64().unwrap_or(0)) {
@@ -393,9 +399,13 @@ impl Linha {
             let sub = match status {
                 "negado" => trf("refused: {why}", &[("why", e["summary"].as_str().unwrap_or("").to_string())]),
                 "erro" => trf("failed: {why}", &[("why", e["summary"].as_str().unwrap_or("").to_string())]),
+                _ if e["tool"].as_str().is_some_and(|t| t.starts_with("tela.")) => screen_sub(e),
                 _ => resumo_args(&e["args"]),
             };
             let mut chips: Vec<(&str, &str)> = Vec::new();
+            if e["miniatura"].is_string() && status == "ok" {
+                chips.push((tr("on the screen"), "tela"));
+            }
             if desfeito {
                 chips.push((tr("undone"), "desfeito"));
             } else if reversivel {
@@ -414,6 +424,10 @@ impl Linha {
                 chips.push((tr("restore point"), "leitura"));
             }
             let (linha, card) = self.cartao(t, &quem, classe, &titulo, &sub, &chips, id == self.escolhido.get());
+            // an action on the screen: the screen after it, small (design page 29)
+            if e["miniatura"].is_string() {
+                card.append(&self.miniatura(id, 96, 54));
+            }
             if reversivel {
                 let b = gtk::Button::new();
                 b.add_css_class("linha-acao");
@@ -545,6 +559,34 @@ impl Linha {
         (linha, card)
     }
 
+    /// A screen action's thumbnail (kalangod keeps it; read once, in the background).
+    fn miniatura(self: &Rc<Self>, id: u64, w: i32, h: i32) -> gtk::Picture {
+        let p = gtk::Picture::new();
+        p.add_css_class("linha-miniatura");
+        p.set_size_request(w, h);
+        p.set_can_shrink(true);
+        p.set_content_fit(gtk::ContentFit::Cover);
+        p.set_valign(Align::Center);
+        p.set_halign(Align::Start);
+        if let Some(t) = self.miniaturas.borrow().get(&id) {
+            p.set_paintable(Some(t));
+            return p;
+        }
+        let (pw, lw) = (p.downgrade(), Rc::downgrade(self));
+        crate::lateral::em_segundo_plano(move || crate::servicos::kalangod_rpc("kalango/miniatura", json!({"id": id})).ok()
+            .and_then(|v| v["png"].as_str().map(str::to_string)), move |b64| {
+            let Some(bytes) = b64.map(|b| glib::base64_decode(&b)).filter(|b| !b.is_empty()) else { return };
+            let Ok(t) = gtk::gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)) else { return };
+            if let Some(l) = lw.upgrade() {
+                l.miniaturas.borrow_mut().insert(id, t.clone());
+            }
+            if let Some(p) = pw.upgrade() {
+                p.set_paintable(Some(&t));
+            }
+        });
+        p
+    }
+
     fn escolher(self: &Rc<Self>, id: u64) {
         self.escolhido.set(id);
         let t = self.registros.borrow().iter().find(|e| e["id"].as_u64() == Some(id)).and_then(|e| e["time"].as_i64());
@@ -619,7 +661,26 @@ impl Linha {
             }
             b
         };
-        if let (Some(de), Some(para)) = (a["de"].as_str(), a["para"].as_str()) {
+        if e["miniatura"].is_string() {
+            // the screen before (the previous action's picture) and after this one
+            let id = e["id"].as_u64().unwrap_or(0);
+            let antes = self.registros.borrow().iter().rev().filter(|x| x["id"].as_u64().unwrap_or(0) < id && x["miniatura"].is_string())
+                .find_map(|x| x["id"].as_u64());
+            for (rotulo_t, rid, depois) in [(tr("BEFORE"), antes, false), (tr("AFTER"), Some(id), true)] {
+                let b = caixa(Orientation::Vertical, 6, "linha-ad");
+                if depois {
+                    b.add_css_class("depois");
+                }
+                let r = rotulo(rotulo_t, "central-painel-secao");
+                r.set_xalign(0.0);
+                b.append(&r);
+                match rid {
+                    Some(rid) => b.append(&self.miniatura(rid, 202, 112)),
+                    None => b.append(&rotulo(tr("the first action of the session"), "linha-ad-texto")),
+                }
+                self.antes_depois.append(&b);
+            }
+        } else if let (Some(de), Some(para)) = (a["de"].as_str(), a["para"].as_str()) {
             self.antes_depois.append(&caixa_ad(tr("BEFORE"), vec![de.to_string()], false));
             self.antes_depois.append(&caixa_ad(tr("AFTER"), vec![para.to_string()], true));
         } else if let Some(p) = a["caminho"].as_str() {
@@ -659,7 +720,9 @@ impl Linha {
             self.permissoes.append(&c);
         }
         // what undoing does
-        let explica = if e["desfeito"] == true {
+        let explica = if e["miniatura"].is_string() {
+            tr("An action on the screen is not undone from here: the app itself undoes it (Ctrl+Z). The thumbnails stay on this computer and go with the record.").to_string()
+        } else if e["desfeito"] == true {
             tr("This action was already undone.").to_string()
         } else if !e["inverse"].is_null() && e["status"] == "ok" {
             trf("Undoing runs the recorded inverse ({tool}). It asks for your approval on the system screen and makes a restore point first.",
@@ -709,6 +772,27 @@ fn titulo_de(e: &Value) -> String {
 }
 
 /// What a record touched, in one line: from → to, the path, the packages…
+/// A screen action's line: the tool, what it aimed at ("elemento e14", the keys, how many characters).
+fn screen_sub(e: &Value) -> String {
+    let a = &e["args"];
+    let mut parts = vec![e["tool"].as_str().unwrap_or("").to_string()];
+    if let Some(el) = a["elemento"].as_str() {
+        parts.push(trf("element {e}", &[("e", el.to_string())]));
+    } else if let (Some(x), Some(y)) = (a["x"].as_f64(), a["y"].as_f64()) {
+        parts.push(format!("({}, {})", x.round(), y.round()));
+    }
+    if let Some(k) = a["teclas"].as_str() {
+        parts.push(k.to_string());
+    }
+    if let Some(t) = a["texto"].as_str() {
+        parts.push(trf("{n} characters", &[("n", t.chars().count().to_string())]));
+    }
+    if let Some(j) = a["janela"].as_str().filter(|j| !j.is_empty()) {
+        parts.push(j.to_string());
+    }
+    parts.join(" · ")
+}
+
 fn resumo_args(a: &Value) -> String {
     let home = glib::home_dir().display().to_string();
     let curto = |s: &str| s.replacen(&home, "~", 1);

@@ -124,6 +124,11 @@ pub(crate) fn kalangod_rpc(metodo: &str, params: Value) -> Result<Value, String>
     kalangod_rpc_ate(metodo, params, Duration::from_secs(5))
 }
 
+/// A request that may wait long for its answer (kalangod's long waits).
+pub(crate) fn kalangod_rpc_wait(metodo: &str, params: Value, prazo: Duration) -> Result<Value, String> {
+    kalangod_rpc_ate(metodo, params, prazo)
+}
+
 fn kalangod_rpc_ate(metodo: &str, params: Value, prazo: Duration) -> Result<Value, String> {
     let s = UnixStream::connect(kalangod_socket()).map_err(|e| format!("kalangod: {e}"))?;
     s.set_read_timeout(Some(prazo)).ok();

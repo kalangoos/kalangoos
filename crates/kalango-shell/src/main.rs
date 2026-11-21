@@ -15,6 +15,7 @@
 //!   kalango-shell sair            encerra o shell
 
 mod agent_prefs;
+mod agent_screen;
 mod agent_settings;
 mod app_store;
 mod app_store_data;
@@ -672,6 +673,8 @@ fn iniciar(app: &gtk::Application) -> Rc<Shell> {
         }
     });
     *shell.usando.borrow_mut() = Some(usando);
+    // an agent controlling the screen (kalangod's session): the banner, the outline, the agent's pointer
+    AGENT_SCREEN.with(|a| *a.borrow_mut() = Some(agent_screen::AgentScreen::new(app, &shell)));
     // long copies live in the island; when one ends, a notice opens the folder it went to
     let ops = operacao::Operacoes::new(app);
     let sw = Rc::downgrade(&shell);
@@ -959,6 +962,10 @@ fn dev_paths() {
             std::env::set_var("PATH", format!("{}:{atual}", dir.display()));
         }
     }
+}
+
+thread_local! {
+    static AGENT_SCREEN: RefCell<Option<Rc<agent_screen::AgentScreen>>> = const { RefCell::new(None) };
 }
 
 fn main() -> glib::ExitCode {

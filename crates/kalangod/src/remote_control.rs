@@ -135,6 +135,28 @@ impl RemoteControl {
         Ok(())
     }
 
+    /// kalangod's own screen helper (an agent's screen session, `screen_control.rs`): kalangod started it, so no
+    /// caller is checked here; `agente` marks the grant as an agent's (niri patch 0011 then reports the person's own
+    /// input, and the session yields).
+    pub fn allow_own(&self, pid: i32, capabilities: &[&str]) -> Result<Grant, String> {
+        let target = process(pid).ok_or_else(|| trf("process {pid} does not exist", &[("pid", pid.to_string())]))?;
+        let g = Grant { pid, start: target.start, capabilities: capabilities.iter().map(|c| c.to_string()).collect(), uid: target.uid };
+        let mut v = self.grants.lock().unwrap();
+        Self::prune(&mut v);
+        v.retain(|x| x.pid != pid);
+        v.push(g.clone());
+        self.write(&v);
+        Ok(g)
+    }
+
+    /// Takes the helper's grant away (its session ended).
+    pub fn revoke_own(&self, pid: i32) {
+        let mut v = self.grants.lock().unwrap();
+        v.retain(|g| g.pid != pid);
+        Self::prune(&mut v);
+        self.write(&v);
+    }
+
     pub fn list(&self, uid: u32) -> Vec<Grant> {
         let mut v = self.grants.lock().unwrap();
         Self::prune(&mut v);

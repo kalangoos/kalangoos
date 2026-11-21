@@ -1250,6 +1250,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kalango-tela"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "flate2",
+ "gio",
+ "libc",
+ "serde_json",
+ "wayland-client",
+ "wayland-protocols-misc",
+ "wayland-protocols-wlr",
+]
+
+[[package]]
 name = "kalangod"
 version = "0.1.0"
 dependencies = [

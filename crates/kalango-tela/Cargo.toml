@@ -1,0 +1,19 @@
+[package]
+name = "kalango-tela"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+description = "KalangoOS · the screen helper kalangod starts for an agent's screen-control session: captures the screen, reads the apps' accessible elements and injects pointer and keyboard through niri's gated protocols"
+
+[dependencies]
+serde_json = "1"
+libc = "0.2"
+base64 = "0.22"
+flate2 = "1"
+# the compositor's gated protocols (niri patch 0008): wlr-screencopy, wlr virtual pointer, zwp virtual keyboard
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# AT-SPI (the accessibility bus) through GIO's D-Bus: the elements the agent can click by id
+gio = "0.20"

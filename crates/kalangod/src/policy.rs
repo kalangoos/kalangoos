@@ -98,7 +98,27 @@ pub struct Config {
     /// approval).
     #[serde(default = "controle_remoto_apps_padrao")]
     pub controle_remoto_apps: Vec<String>,
+    /// The screen helper kalangod starts for an agent's screen-control session (the `tela.*` tools).
+    #[serde(default = "tela_auxiliar_padrao")]
+    pub tela_auxiliar: PathBuf,
+    /// The most actions one screen-control session may take, and the longest it may last (minutes).
+    #[serde(default = "tela_max_acoes_padrao")]
+    pub tela_max_acoes: u32,
+    #[serde(default = "tela_minutos_max_padrao")]
+    pub tela_minutos_max: u64,
     pub callers: Vec<CallerRule>,
+}
+
+fn tela_auxiliar_padrao() -> PathBuf {
+    "/usr/libexec/kalango/kalango-tela".into()
+}
+
+fn tela_max_acoes_padrao() -> u32 {
+    100
+}
+
+fn tela_minutos_max_padrao() -> u64 {
+    30
 }
 
 fn controle_remoto_padrao() -> PathBuf {
@@ -145,6 +165,9 @@ impl Config {
             controle_remoto: controle_remoto_padrao(),
             controle_remoto_sempre: controle_remoto_sempre_padrao(),
             controle_remoto_apps: controle_remoto_apps_padrao(),
+            tela_auxiliar: tela_auxiliar_padrao(),
+            tela_max_acoes: tela_max_acoes_padrao(),
+            tela_minutos_max: tela_minutos_max_padrao(),
             aprovadores_graficos: aprovadores_padrao(),
             callers: vec![
                 CallerRule {

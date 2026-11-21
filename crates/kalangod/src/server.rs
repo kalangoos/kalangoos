@@ -20,6 +20,7 @@ pub struct State {
     pub timeline: Arc<Timeline>,
     pub approvals: Approvals,
     pub remote_control: crate::remote_control::RemoteControl,
+    pub screen: crate::screen_control::ScreenControl,
 }
 
 pub fn serve(cfg: Config) -> std::io::Result<()> {
@@ -34,7 +35,7 @@ pub fn serve(cfg: Config) -> std::io::Result<()> {
     std::fs::create_dir_all(&cfg.state_dir)?;
     std::fs::set_permissions(&cfg.state_dir, std::fs::Permissions::from_mode(0o700))?;
     let remote_control = crate::remote_control::RemoteControl::new(cfg.controle_remoto.clone(), cfg.controle_remoto_sempre.clone());
-    let state = Arc::new(State { timeline: Arc::new(Timeline::open(&cfg.state_dir)?), approvals: Approvals::open(&cfg.state_dir), remote_control, cfg });
+    let state = Arc::new(State { timeline: Arc::new(Timeline::open(&cfg.state_dir)?), approvals: Approvals::open(&cfg.state_dir), remote_control, screen: Default::default(), cfg });
     if let Err(e) = crate::guard::start(state.cfg.protected_paths.clone(), state.timeline.clone()) {
         eprintln!("kalangod: {}", kalango_i18n::trf("eBPF guard {e}", &[("e", e.to_string())]));
     }
@@ -112,10 +113,16 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
             match call(st, peer, rule, name, &args) {
-                Ok((value, summary)) => ok(id, json!({
-                    "content": [{"type": "text", "text": serde_json::to_string_pretty(&value).unwrap_or_default()}],
-                    "structuredContent": value, "isError": false, "_meta": {"os.kalango/resumo": summary}
-                })),
+                Ok((value, summary)) => {
+                    // a picture of the screen goes as an image (MCP clients that see images get it as one), not as text
+                    let mut text = value.clone();
+                    let mut content = Vec::new();
+                    if let Some(img) = text.as_object_mut().and_then(|m| m.remove("imagem")).and_then(|v| v.as_str().map(str::to_string)) {
+                        content.push(json!({"type": "image", "data": img, "mimeType": "image/png"}));
+                    }
+                    content.insert(0, json!({"type": "text", "text": serde_json::to_string_pretty(&text).unwrap_or_default()}));
+                    ok(id, json!({"content": content, "structuredContent": value, "isError": false, "_meta": {"os.kalango/resumo": summary}}))
+                }
                 Err(e) => ok(id, json!({"content": [{"type": "text", "text": e}], "isError": true})),
             }
         }
@@ -138,12 +145,84 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
                     id: 0, time: 0, caller: rule.name.clone(), uid: peer.uid, pid: peer.pid, tool: format!("controle_remoto.{acao}"),
                     level: "sistema".into(), args: params.clone(), status: if res.is_ok() { "ok".into() } else { "negado".into() },
                     summary: match &res { Ok(_) => kalango_i18n::trf("remote control {acao} for process {pid}", &[("acao", acao.to_string()), ("pid", pid.to_string())]), Err(e) => e.clone() },
-                    inverse: None, restore_point: None,
+                    inverse: None, restore_point: None, miniatura: None,
                 });
             }
             match res {
                 Ok(v) => ok(id, v),
                 Err(e) => err(id, -32003, &e),
+            }
+        }
+        // an agent operating the screen: the person's own input (niri, patch 0011) and "Stop" end the session at once;
+        // the lock screen ends it and keeps new ones out; the shell's indicator waits here for changes
+        "kalango/tela" => {
+            let acao = params.get("acao").and_then(Value::as_str).unwrap_or("");
+            let end = |why: crate::screen_control::EndReason| {
+                if let Some((w, n)) = st.screen.end(peer.uid, why, &st.remote_control) {
+                    st.timeline.append(crate::timeline::Entry {
+                        id: 0, time: 0, caller: rule.name.clone(), uid: peer.uid, pid: peer.pid, tool: "tela.fim".into(), level: "usuario".into(),
+                        args: json!({"motivo": why.word(), "janela": w, "acoes": n}), status: "ok".into(),
+                        summary: kalango_i18n::trf("screen control of “{w}” ended after {n} actions: {why}", &[("w", w.clone()), ("n", n.to_string()), ("why", why.text())]),
+                        inverse: None, restore_point: None, miniatura: None,
+                    });
+                }
+            };
+            match acao {
+                "pessoa" => {
+                    end(crate::screen_control::EndReason::Person);
+                    ok(id, json!({}))
+                }
+                "parar" => {
+                    end(crate::screen_control::EndReason::Stopped);
+                    ok(id, json!({}))
+                }
+                "bloqueio" => {
+                    let on = params.get("ativo").and_then(Value::as_bool).unwrap_or(true);
+                    // (an agent cannot take the lock away: only the session's own programs say it is open again)
+                    if !on && peer.cgroup.contains("/kalango-agentes.slice") {
+                        return Some(err(id, -32003, kalango_i18n::tr("agents cannot change this")));
+                    }
+                    if on {
+                        end(crate::screen_control::EndReason::Locked);
+                    }
+                    st.screen.set_locked(peer.uid, on);
+                    ok(id, json!({}))
+                }
+                // where the banner's Stop button is (the shell, after laying it out): an agent's click there is refused.
+                // (an agent cannot move it away: only the session's own programs tell)
+                "faixa" => {
+                    if peer.cgroup.contains("/kalango-agentes.slice") {
+                        return Some(err(id, -32003, kalango_i18n::tr("agents cannot change this")));
+                    }
+                    let n = |k: &str| params.get(k).and_then(Value::as_f64);
+                    let at = match (params.get("saida").and_then(Value::as_str), n("x"), n("y"), n("w"), n("h")) {
+                        (Some(o), Some(x), Some(y), Some(w), Some(h)) => Some((o.to_string(), crate::screen::Rect { x, y, w, h })),
+                        _ => None,
+                    };
+                    st.screen.set_stop_button(peer.uid, at);
+                    ok(id, json!({}))
+                }
+                "estado" => {
+                    for u in st.screen.expired() {
+                        if u == peer.uid {
+                            end(crate::screen_control::EndReason::Expired);
+                        }
+                    }
+                    let since = params.get("geracao").and_then(Value::as_u64).unwrap_or(u64::MAX);
+                    let max = params.get("max_s").and_then(Value::as_u64).unwrap_or(0).min(60);
+                    ok(id, st.screen.wait_state(peer.uid, since, Duration::from_secs(max)))
+                }
+                _ => err(id, -32602, kalango_i18n::tr("unknown action")),
+            }
+        }
+        // a screen action's thumbnail, for its owner (the timeline shows it)
+        "kalango/miniatura" => {
+            let n = params.get("id").and_then(Value::as_u64).unwrap_or(0);
+            let png = st.timeline.get(n).filter(|e| peer.uid == 0 || e.uid == peer.uid)
+                .and_then(|e| e.miniatura).and_then(|m| crate::tools::tela::thumbnail(&st.cfg.state_dir, peer.uid, &m));
+            match png {
+                Some(p) => ok(id, json!({"png": p})),
+                None => err(id, -32004, kalango_i18n::tr("no thumbnail")),
             }
         }
         "kalango/quem" => ok(id, json!({
@@ -170,6 +249,11 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
         }
         "kalango/decidir" => {
             let pid = params.get("id").and_then(Value::as_u64).unwrap_or(0);
+            // an agent clicked or typed on this person's screen a moment ago: the decision could be its own (it never
+            // answers approvals; this closes the gap between its last check and the card appearing)
+            if st.screen.injected_recently(peer.uid) {
+                return Some(err(id, -32003, kalango_i18n::tr("an agent was using the screen a moment ago: look at the request and decide again")));
+            }
             let approve = params.get("aprovar").and_then(Value::as_bool).unwrap_or(false);
             let always = params.get("sempre").and_then(Value::as_bool).unwrap_or(false);
             match st.approvals.decide(pid, approve, always, peer, st.cfg.approval_requires_tty, &st.cfg.aprovadores_graficos, Duration::from_secs(st.cfg.total_grant_s)) {
@@ -243,9 +327,14 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
 
 #[allow(clippy::too_many_arguments)]
 fn log(st: &State, peer: &Peer, rule: &CallerRule, tool: &str, level: Level, args: &Value, status: &str, summary: &str, inverse: Option<Value>, rp: Option<String>) -> u64 {
+    log_with(st, peer, rule, tool, level, args, status, summary, inverse, rp, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_with(st: &State, peer: &Peer, rule: &CallerRule, tool: &str, level: Level, args: &Value, status: &str, summary: &str, inverse: Option<Value>, rp: Option<String>, miniatura: Option<String>) -> u64 {
     st.timeline.append(Entry {
         id: 0, time: 0, caller: format!("{} ({})", rule.name, peer.exe), uid: peer.uid, pid: peer.pid,
-        tool: tool.into(), level: level.name().into(), args: args.clone(), status: status.into(), summary: summary.into(), inverse, restore_point: rp,
+        tool: tool.into(), level: level.name().into(), args: args.clone(), status: status.into(), summary: summary.into(), inverse, restore_point: rp, miniatura,
     })
 }
 
@@ -295,6 +384,24 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
         }
         _ => {}
     }
+    // the screen: an action needs the person's session (asked on the approval screen for the window it aims at)
+    if name.starts_with("tela.") {
+        let ask = |p: Pending| {
+            let (w, min) = (p.args["janela"].as_str().unwrap_or("").to_string(), p.args["minutos"].as_u64().unwrap_or(0));
+            let o = st.approvals.request(p, timeout);
+            let (status, why) = match o {
+                Outcome::Approved => ("ok", kalango_i18n::trf("the person allowed controlling “{w}” for {n} min", &[("w", w), ("n", min.to_string())])),
+                Outcome::Denied => ("negado", kalango_i18n::tr("the person denied").to_string()),
+                Outcome::Timeout => ("negado", kalango_i18n::tr("no answer from the person").to_string()),
+            };
+            log(st, peer, rule, "tela.controlar", Level::Usuario, args, status, &why, None, None);
+            o
+        };
+        if let Err(e) = crate::tools::tela::ensure_session(st, peer, rule, name, args, &ask) {
+            log(st, peer, rule, name, tool.level, args, "negado", &e, None, None);
+            return Err(e);
+        }
+    }
     // a page on the person's own network (a router, a printer, a NAS): only with their approval, for that address
     // ("always" keeps it for that address); this computer's own (loopback) stays out of reach
     let mut lan: Option<(String, u16)> = None;
@@ -343,11 +450,13 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
     if name == "linha_do_tempo.desfazer_desde" {
         return undo_since(st, peer, rule, args, rp);
     }
-    let ctx = Ctx { cfg: &st.cfg, peer, rule, timeline: &st.timeline, lan: lan.clone() };
+    let ctx = Ctx { cfg: &st.cfg, peer, rule, timeline: &st.timeline, lan: lan.clone(), state: Some(st) };
     match (tool.run)(&ctx, args) {
         Ok(Out { value, summary, inverse }) => {
             let status = if st.cfg.dry_run && tool.level >= Level::Sistema { "simulado" } else { "ok" };
-            let n = log(st, peer, rule, name, tool.level, args, status, &summary, inverse.clone(), rp.clone());
+            let mini = value.get("miniatura").and_then(Value::as_str).map(str::to_string);
+            // (the timeline keeps what the action was, not the picture's bytes)
+            let n = log_with(st, peer, rule, name, tool.level, args, status, &summary, inverse.clone(), rp.clone(), mini);
             let mut v = value;
             if let Value::Object(m) = &mut v {
                 m.insert("registro".into(), json!(n));
@@ -359,7 +468,8 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
             Ok((v, summary))
         }
         Err(e) => {
-            log(st, peer, rule, name, tool.level, args, "erro", &e, None, rp);
+            let refused = kalango_i18n::trf("refused: {why}", &[("why", String::new())]);
+            log(st, peer, rule, name, tool.level, args, if e.starts_with(refused.trim()) { "negado" } else { "erro" }, &e, None, rp);
             Err(e)
         }
     }
@@ -379,7 +489,7 @@ fn undo_since(st: &State, peer: &Peer, rule: &CallerRule, args: &Value, rp: Opti
             falhas.push(json!({"id": e.id, "erro": kalango_i18n::tr("invalid inverse")}));
             continue;
         };
-        let ctx = Ctx { cfg: &st.cfg, peer, rule, timeline: &st.timeline, lan: None };
+        let ctx = Ctx { cfg: &st.cfg, peer, rule, timeline: &st.timeline, lan: None, state: None };
         match (tool.run)(&ctx, &inv["argumentos"]) {
             Ok(out) => {
                 log(st, peer, rule, "linha_do_tempo.desfazer", Level::Sistema, &json!({"id": e.id}), "desfeito",
@@ -406,7 +516,7 @@ fn undo(st: &State, peer: &Peer, rule: &CallerRule, args: &Value, rp: Option<Str
     let tname = inv["ferramenta"].as_str().unwrap_or("");
     let targs = inv["argumentos"].clone();
     let tool = tools::find(tname).ok_or(kalango_i18n::tr("invalid inverse"))?;
-    let ctx = Ctx { cfg: &st.cfg, peer, rule, timeline: &st.timeline, lan: None };
+    let ctx = Ctx { cfg: &st.cfg, peer, rule, timeline: &st.timeline, lan: None, state: None };
     let out = (tool.run)(&ctx, &targs)?;
     let n = log(st, peer, rule, "linha_do_tempo.desfazer", Level::Sistema, &json!({"id": id}), "desfeito", &kalango_i18n::trf("undid #{id}: {action}", &[("id", id.to_string()), ("action", out.summary.clone())]), None, rp);
     Ok((json!({"desfeito": id, "registro": n, "acao": out.summary}), kalango_i18n::trf("undid #{id}", &[("id", id.to_string())])))

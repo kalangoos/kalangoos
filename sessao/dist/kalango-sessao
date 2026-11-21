@@ -12,6 +12,8 @@ export XDG_SESSION_DESKTOP=kalango
 export KALANGO_NIRI_CONTROLE=/run/kalango/controle-remoto
 # Esc Esc encerra a sessão de controle remoto em qualquer janela (patch 0009 do niri)
 export KALANGO_ESC_DUPLO="/usr/bin/kalango-remote end-sessions"
+# o mouse ou o teclado da pessoa enquanto um agente controla a tela: o agente para (patch 0011 do niri)
+export KALANGO_PESSOA_ATIVA="/usr/libexec/kalango/kalangod tela pessoa"
 # o niri-session importa este ambiente para o systemd do usuário e sobe niri.service; ao chegar em
 # graphical-session.target, sobem kalango-shell.service e kalango-aprovacao.service
 exec niri-session -l

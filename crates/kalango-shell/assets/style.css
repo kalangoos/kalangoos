@@ -961,6 +961,7 @@ entry.rotinas-campo { background: #16171B; border: 1px solid #2E2F3A; border-rad
 .linha-chip { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 3px; }
 .linha-chip.reversivel { background: alpha(@k_teal, 0.16); color: @k_teal; }
 .linha-chip.leitura { background: alpha(@k_blue, 0.14); color: @k_blue; }
+.linha-chip.tela { background: alpha(@k_teal, 0.16); color: @k_teal; }
 .linha-chip.espera { background: alpha(@k_gold, 0.18); color: @k_gold; }
 .linha-chip.negado { background: alpha(@k_coral, 0.16); color: @k_coral; }
 .linha-chip.desfeito, .linha-chip.simulado { background: alpha(@k_realce, 0.08); color: @k_muted; }
@@ -2917,3 +2918,14 @@ button.loja-progresso:hover { background: alpha(@k_realce, 0.05); }
 .loja-nota { background: #1C1D23; border: 1px solid #26272F; border-radius: 6px; padding: 12px 14px; }
 .loja-vazio { font-size: 13px; color: @k_muted; padding: 24px 0; }
 .mon-trilho.loja-trilho { border-right: none; }
+
+/* ---- Agente usando a tela / controlando a tela (designs 9534; página 29 "Agente controla a tela") */
+.usando-faixa { background: @k_surface; border: 1px solid @k_border; border-radius: 4px; padding: 6px 6px 6px 12px; }
+.usando-titulo { color: @k_text; font-size: 13px; font-weight: 600; }
+.usando-progresso { color: @k_muted; font-size: 12px; }
+button.usando-parar { all: unset; background: @k_coral; color: @k_accent_fg; border-radius: 4px; padding: 4px 10px 5px 6px; font-size: 12px; font-weight: 600; }
+button.usando-parar:hover { background: shade(@k_coral, 1.06); }
+window.controle-tela { background: alpha(#000, 0); }
+.controle-contorno { border: 2px solid @k_accent; border-radius: 8px; }
+.controle-cursor { background: @k_accent; color: @k_accent_fg; border-radius: 4px; padding: 3px 8px; font-size: 12px; font-weight: 600; }
+.linha-miniatura { border: 1px solid @k_border; border-radius: 4px; }

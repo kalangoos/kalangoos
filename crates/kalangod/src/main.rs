@@ -6,6 +6,7 @@
 //!   kalangod pendentes                                        aprovações esperando você
 //!   kalangod aprovar ID | negar ID                            decide uma aprovação (num terminal: presencial)
 //!   kalangod quem                                             como o kalangod enxerga este processo
+//!   kalangod tela pessoa|parar|estado                         controle da tela por um agente (niri e o shell chamam)
 //!   kalangod ferramentas                                      ferramentas disponíveis para este processo
 //!   kalangod conector testar|rodar|entrar MANIFESTO           conector MCP de terceiros (local isolado ou remoto)
 //!   kalangod cofre guardar|apagar NOME | cofre listar         segredos dos conectores (chaveiro do sistema)
@@ -24,6 +25,8 @@ mod redes;
 mod remote_control;
 mod restore;
 mod sandbox;
+mod screen;
+mod screen_control;
 mod server;
 mod timeline;
 mod tools;
@@ -137,6 +140,7 @@ fn main() {
             }
             Ok(())
         }
+        ["tela", acao @ ("pessoa" | "parar" | "estado")] => rpc("kalango/tela", json!({"acao": acao})).map(|v| println!("{v}")),
         ["quem"] => rpc("kalango/quem", json!({})).map(|v| println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default())),
         ["ferramentas"] => rpc("tools/list", json!({})).map(|v| {
             for t in v["tools"].as_array().cloned().unwrap_or_default() {
@@ -144,7 +148,7 @@ fn main() {
             }
         }),
         _ => {
-            eprintln!("{}", include_str!("main.rs").lines().skip(2).take(11).map(|l| l.trim_start_matches("//!")).collect::<Vec<_>>().join("\n"));
+            eprintln!("{}", include_str!("main.rs").lines().skip(2).take(12).map(|l| l.trim_start_matches("//!")).collect::<Vec<_>>().join("\n"));
             std::process::exit(2)
         }
     };
