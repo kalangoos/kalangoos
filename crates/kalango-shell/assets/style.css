@@ -491,6 +491,35 @@ button.diff-aceitar:hover { background: shade(@k_accent, 1.06); }
 .passo-titulo-falhou { font-size: 13px; color: @k_coral; }
 .passo-detalhe { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @k_dim; }
 .passo-tempo { font-size: 11px; color: @k_dim; }
+button.passo-tentar { background: none; border: none; box-shadow: none; min-height: 20px; padding: 0 4px; border-radius: 4px; font-size: 12px; color: @k_muted; }
+button.passo-tentar:hover { color: @k_text; background: alpha(@k_realce, 0.06); }
+/* the agent's steps as a card (design 53/54 "Chat · passos do agente"; chat_blocks.rs StepsList) */
+.passos-cartao { background: @k_field; border: 1px solid @k_border; border-radius: 6px; padding: 8px 12px 6px 10px; }
+.passos-cab { min-height: 26px; padding-left: 2px; }
+.passos-cab-titulo { font-size: 12px; font-weight: 600; color: @k_text2; }
+button.passos-recolher { background: none; border: none; box-shadow: none; min-height: 22px; padding: 0 6px; border-radius: 4px; font-size: 12px; color: @k_muted; }
+button.passos-recolher:hover { background: alpha(@k_realce, 0.06); color: @k_text2; }
+.passos-linhas { margin-top: 2px; }
+button.passo-linha { background: none; border: none; box-shadow: none; min-height: 36px; padding: 0 4px 0 0; border-radius: 4px; }
+button.passo-linha:hover { background: alpha(@k_realce, 0.03); }
+.passo-tile { min-width: 22px; min-height: 22px; border-radius: 4px; background: alpha(@k_accent, 0.16); }
+.passo-tile.teal { background: alpha(@k_teal, 0.14); }
+.passo-tile.gold { background: alpha(@k_gold, 0.16); }
+.passo-tile.coral { background: alpha(@k_coral, 0.16); }
+.passo-rotulo { font-size: 13px; color: @k_text; }
+.passo-rotulo.ativo, .passo-rotulo.espera { font-weight: 600; }
+/* a member of a team or a task of a list (design 41/47: "Tarefa 1  Buscador … tabela com 7 dias · 3,1 s") */
+.passo-marca { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @k_dim; }
+.passo-rotulo.membro { font-weight: 600; }
+/* a coordinator's route above its steps ("encaminhado para Tradutor · 92 %") */
+.passo-rota { font-size: 12px; color: @k_muted; padding: 2px 0 4px 32px; }
+.passo-progresso { min-height: 2px; background: @k_divider; }
+.passo-chip { font-size: 11px; font-weight: 600; color: @k_accent_text; background: alpha(@k_accent, 0.16); border-radius: 4px; padding: 1px 6px; }
+.passo-detalhes { padding: 2px 4px 8px 30px; }
+.passo-arg { font-family: "JetBrains Mono", monospace; font-size: 12px; color: @k_text2; }
+.passo-ferramenta { font-family: "JetBrains Mono", monospace; font-size: 11px; color: @k_dim; margin-bottom: 2px; }
+.passo-res, .passo-mais { font-size: 12px; color: @k_dim; }
+.agente-rodape { font-size: 12px; color: @k_dim; margin-top: 2px; }
 
 .compositor { background: @k_field; border: 1px solid @k_divider; border-radius: 6px; padding: 10px 10px 8px 14px; }
 .compositor-texto, .compositor-texto text { background: transparent; color: @k_text; font-size: 14px; caret-color: @k_accent; }
@@ -832,6 +861,10 @@ window.central { background: #16171B; border: 1px solid #26272F; border-radius: 
 .central-barra { min-height: 48px; padding: 0 10px 0 12px; }
 .central-titulo-janela { font-size: 13px; font-weight: 600; color: @k_text; }
 .central-busca { background: #1A1B21; border: 1px solid #26272F; border-radius: 6px; padding: 0 8px 0 12px; }
+/* a narrow window: the search folds into this button (frame 12) */
+.central-busca-botao { background: #1A1B21; border: 1px solid #26272F; border-radius: 6px; box-shadow: none; min-width: 32px; min-height: 30px; padding: 0; }
+.central-busca-botao:hover { background: alpha(@k_realce, 0.08); }
+.central-menu-paginas { padding: 6px; }
 .central-busca-campo { background: none; border: none; box-shadow: none; outline: none; padding: 0; min-height: 30px; font-size: 12px; color: @k_text; }
 .central-busca-campo > text > placeholder { color: @k_muted; }
 menubutton.central-menu > button, .central-controle { background: none; border: none; box-shadow: none; min-width: 30px; min-height: 30px; padding: 0; border-radius: 6px; }
@@ -1002,6 +1035,8 @@ button.uso-segmento:checked { background: #26272F; color: @k_text; font-weight: 
 .ajustes-aba.ativa, togglebutton.ajustes-aba:checked, button.ajustes-aba:checked { color: @k_text; font-weight: 600; border-bottom-color: @k_accent; }
 .ajustes-aba:disabled { opacity: 0.6; }
 .rotinas-item.escolhido { border-color: alpha(@k_accent, 0.75); background: #1E1F27; }
+/* the chosen connector: the card's own background and a 2 px accent border (the padding gives back that pixel) */
+.rotinas-item.ajustes-conector.escolhido { background: #1A1B21; border: 2px solid @k_accent; padding: 11px 13px 11px 11px; }
 .ajustes-chip { background: alpha(@k_realce, 0.07); color: @k_muted; font-size: 11px; padding: 1px 7px; border-radius: 3px; }
 .ajustes-ponto { min-width: 6px; min-height: 6px; border-radius: 3px; background: #6E6F7A; }
 .ajustes-ponto.ok { background: @k_teal; } .ajustes-ponto.erro { background: @k_coral; } .ajustes-ponto.atencao { background: @k_gold; }
@@ -2920,6 +2955,103 @@ button.loja-progresso:hover { background: alpha(@k_realce, 0.05); }
 .loja-vazio { font-size: 13px; color: @k_muted; padding: 24px 0; }
 .mon-trilho.loja-trilho { border-right: none; }
 
+/* ── fluxos: ajustes ── */
+/* Ajustes › Modelos e provedores, Chaves, and the states of the agents and automations screens (fluxos_estados.rs).
+   Only tokens: the light theme comes from the same names. */
+.fx-botao { background: @k_raised; border: none; box-shadow: none; border-radius: 4px; padding: 6px 12px; min-height: 0; font-size: 12px; font-weight: 600; color: @k_text; }
+.fx-botao:hover { background: alpha(@k_realce, 0.10); }
+.fx-botao.principal { background: @k_accent; color: @k_accent_fg; }
+.fx-botao.principal:hover { filter: brightness(1.08); }
+.fx-botao.texto { background: none; color: @k_muted; font-weight: 500; padding: 6px 8px; }
+.fx-botao.texto:hover { color: @k_text; }
+.fx-botao.perigo { background: alpha(@k_coral, 0.14); color: @k_coral; }
+.fx-botao.perigo:hover { background: alpha(@k_coral, 0.22); }
+.fx-botao.pequeno { padding: 4px 9px; font-weight: 500; }
+.fx-botao.alto { min-height: 32px; padding: 0 12px; font-size: 13px; }
+.fx-botao:disabled { opacity: 0.45; }
+.fx-vazio-icone { background: @k_surface2; border-radius: 6px; }
+.fx-vazio-titulo { font-size: 17px; font-weight: 600; color: @k_text; }
+.fx-vazio-texto { font-size: 13px; color: @k_muted; }
+.fx-vazio-nota { font-size: 12px; color: @k_dim; }
+.fx-vazio.compacto { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 18px 16px; }
+.fx-vazio.compacto .fx-vazio-icone { min-width: 40px; min-height: 40px; }
+.fx-carregando-texto { font-size: 13px; color: @k_text2; }
+.fx-girando { color: @k_accent; }
+.fx-barra { background: @k_divider; border-radius: 2px; min-height: 3px; }
+.fx-barra-cheia { background: @k_accent; border-radius: 2px; min-height: 3px; }
+.fx-esqueleto { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 14px 14px 16px 14px; }
+@keyframes fx-pulso { 0% { opacity: 1; } 50% { opacity: 0.45; } 100% { opacity: 1; } }
+.fx-osso { background: alpha(@k_realce, 0.06); border-radius: 3px; animation: fx-pulso 1.6s ease-in-out infinite; }
+.fx-aviso { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 14px 16px; }
+.fx-aviso.erro { background: alpha(@k_coral, 0.05); border-color: alpha(@k_coral, 0.55); }
+.fx-aviso-titulo { font-size: 13px; font-weight: 600; color: @k_text; }
+.fx-aviso-texto { font-size: 12px; color: @k_text2; }
+.fx-aviso-texto.erro { color: @k_coral; }
+.fx-aviso-codigo { background: @k_bg; border: 1px solid @k_border; border-radius: 4px; padding: 8px 10px; font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; font-size: 11px; color: @k_text2; }
+.fx-chip { background: alpha(@k_realce, 0.07); color: @k_muted; font-size: 11px; padding: 1px 7px; border-radius: 3px; }
+.fx-chip.teal { background: alpha(@k_teal, 0.13); color: @k_teal; font-weight: 500; }
+.fx-chip.azul { background: alpha(@k_blue, 0.13); color: @k_blue; font-weight: 500; }
+.fx-chip.ouro { background: alpha(@k_gold, 0.14); color: @k_gold; font-weight: 500; }
+.fx-chip.lilas { background: alpha(@k_accent, 0.16); color: @k_accent_text; font-weight: 500; }
+.fx-chip.info { background: alpha(@k_accent, 0.12); color: @k_accent_text; }
+.fx-tile { border-radius: 4px; background: alpha(@k_accent, 0.12); }
+.fx-tile.teal { background: alpha(@k_teal, 0.11); }
+.fx-tile.azul { background: alpha(@k_blue, 0.11); }
+.fx-tile.roxo { background: alpha(@k_purple, 0.12); }
+.fx-tile.ouro { background: alpha(@k_gold, 0.12); }
+.fx-secao { font-size: 12px; font-weight: 600; letter-spacing: 1px; color: @k_muted; }
+.fx-stat { padding: 14px 13px 12px 13px; }
+.fx-memoria { background: alpha(@k_blue, 0.06); border-radius: 4px; padding: 11px 14px 11px 20px; }
+.fx-memoria-titulo { font-size: 13px; font-weight: 600; color: @k_text; }
+.fx-modelo { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 11px 12px 12px 12px; }
+/* the chosen model: the usual background and a 2 px border in the accent (the padding loses that pixel, so nothing moves) */
+.fx-modelo.padrao { border: 2px solid @k_accent; padding: 10px 11px 11px 11px; }
+.fx-modelo-nome { font-size: 14px; font-weight: 600; color: @k_text; }
+.fx-baixar { border: 1px solid @k_border; border-radius: 4px; padding: 5px 10px; font-size: 12px; font-weight: 500; color: @k_muted; margin-right: 6px; }
+.fx-form { background: @k_surface; border: 1px solid alpha(@k_accent, 0.45); border-radius: 6px; padding: 14px 16px; }
+.fx-campo-rotulo { font-size: 12px; color: @k_muted; }
+entry.fx-campo { background: @k_field; border: 1px solid @k_border; border-radius: 4px; box-shadow: none; outline: none; min-height: 30px; padding: 0 10px; font-size: 13px; color: @k_text; }
+entry.fx-campo.mono { font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; font-size: 12px; }
+entry.fx-campo:focus-within { border-color: @k_accent; }
+.fx-campo-com-olho { background: @k_field; border: 1px solid @k_border; border-radius: 4px; padding-right: 4px; }
+.fx-campo-com-olho:focus-within { border-color: @k_accent; }
+entry.fx-campo.sem-borda, entry.fx-campo.sem-borda:focus-within { border: none; background: none; }
+.fx-olho { background: none; border: none; box-shadow: none; border-radius: 4px; padding: 4px 6px; min-height: 0; }
+.fx-olho:hover, .fx-olho:checked { background: alpha(@k_realce, 0.08); }
+.fx-opcao-titulo { font-size: 13px; font-weight: 600; color: @k_text; }
+.fx-lado-abaixo { background: @k_sunken; border: 1px solid @k_border; border-radius: 6px; padding: 18px 16px; margin-top: 18px; }
+.fx-rota { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 8px; }
+.fx-rota-linha { background: @k_surface2; border-radius: 4px; padding: 7px 10px 7px 10px; }
+.fx-rota-numero { font-size: 13px; color: @k_muted; min-width: 10px; }
+.fx-rota-nome { font-size: 13px; font-weight: 600; color: @k_text; }
+.fx-alca { background: none; border: none; box-shadow: none; padding: 4px; min-height: 0; border-radius: 4px; }
+.fx-alca > button { background: none; border: none; box-shadow: none; padding: 2px; min-height: 0; border-radius: 4px; }
+.fx-alca > button:hover { background: alpha(@k_realce, 0.08); }
+popover.fx-pop > contents { background: @k_surface2; border: 1px solid @k_border; border-radius: 6px; padding: 4px; box-shadow: none; }
+.fx-uso { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 6px 13px; }
+.fx-uso-linha { padding: 7px 0; }
+.fx-uso-nome { font-size: 13px; font-weight: 600; color: @k_text; }
+.fx-uso-custo { font-size: 12px; font-weight: 600; color: @k_gold; }
+.fx-uso-local { font-size: 12px; font-weight: 600; color: @k_teal; }
+/* an assistant's line of usage opens its monthly limit */
+.fx-uso-botao { background: none; border: none; box-shadow: none; padding: 0 4px; margin: 0 -4px; min-height: 0; border-radius: 4px; }
+.fx-uso-botao:hover, .fx-uso-botao:checked { background: alpha(@k_realce, 0.05); }
+.fx-tabela { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; }
+.fx-tabela-cab { padding: 11px 14px; border-bottom: 1px solid @k_border; }
+.fx-tabela-col { font-size: 12px; color: @k_muted; }
+.fx-tabela-linha { padding: 12px 14px; border-bottom: 1px solid @k_border; }
+.fx-tabela-linha:last-child { border-bottom: none; }
+.fx-tabela-texto { font-size: 13px; color: @k_text2; }
+.fx-tabela-texto.fraco { color: @k_dim; }
+.fx-mono { font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; font-size: 12px; color: @k_text; }
+.fx-pontos { font-size: 9px; letter-spacing: 1px; color: @k_dim; }
+.fx-kebab { background: none; border: none; box-shadow: none; border-radius: 4px; padding: 4px; min-height: 0; }
+.fx-kebab:hover, .fx-kebab:checked { background: alpha(@k_realce, 0.08); }
+.fx-confirmar { background: alpha(@k_coral, 0.06); border: 1px solid alpha(@k_coral, 0.4); border-radius: 4px; padding: 8px 10px; }
+.fx-quem { background: alpha(@k_realce, 0.07); border: none; box-shadow: none; border-radius: 3px; padding: 2px 8px; min-height: 0; font-size: 11px; color: @k_muted; }
+.fx-quem:checked { background: alpha(@k_accent, 0.22); color: @k_accent_text; font-weight: 600; }
+.fx-ok { font-size: 12px; color: @k_teal; }
+.fx-api { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 14px 13px; }
 /* ---- Agente usando a tela / controlando a tela (designs 9534; página 29 "Agente controla a tela") */
 .usando-faixa { background: @k_surface; border: 1px solid @k_border; border-radius: 4px; padding: 6px 6px 6px 12px; }
 .usando-titulo { color: @k_text; font-size: 13px; font-weight: 600; }
@@ -3134,7 +3266,6 @@ button.fx-enviar { background: @k_accent; border: none; box-shadow: none; border
 .fluxo-insp.folha { border-left: none; border-top: 1px solid @k_border; }
 .fluxo-insp-conteudo { padding: 18px 18px 12px 18px; }
 .fluxo-insp-rodape { padding: 12px 18px 18px 18px; }
-.fluxo-insp-rodape:empty { padding: 0; }
 .fluxo-rodape-botao { min-height: 36px; }
 .fluxo-secao-cab { font-size: 12px; font-weight: 600; letter-spacing: 1px; color: @k_text2; }
 .fluxo-secao { font-size: 12px; font-weight: 600; letter-spacing: 1px; color: @k_text2; margin: 18px 0 10px 0; }
@@ -3249,6 +3380,71 @@ entry.fluxo-mapa > text > placeholder, entry.fluxo-campo > text > placeholder { 
 .fluxo-aviso-texto { font-size: 12px; color: @k_text; }
 .fluxo-form-cab { margin-top: 8px; }
 .fluxo-pop-corpo .fluxo-campo-rotulo:first-child { margin-top: 0; }
+/* editor: seleção e menus, inspetor, em sandbox (designs "Fluxo · editor · seleção e menus", "· inspetor", "Bloco em sandbox") */
+.fluxo-no.desativado { opacity: 0.45; }
+.fluxo-no-passo { font-size: 10px; font-weight: 600; color: @k_teal; background: alpha(@k_teal, 0.12); border-radius: 3px; padding: 0 5px; }
+.fluxo-no-saidas { margin-top: 6px; }
+.fluxo-no-saida-ponto { border-radius: 3px; min-width: 5px; min-height: 5px; background: @k_teal; }
+.fluxo-no-aviso { margin-top: 6px; }
+.fluxo-no-aviso-texto { font-size: 11px; color: @k_gold; }
+.fluxo-percurso { background: @k_bg; border: 1px solid @k_border; border-radius: 4px; padding: 4px 10px; font-size: 12px; color: @k_teal; }
+.fluxo-sandbox { background: alpha(@k_accent, 0.03); border-radius: 8px; }
+.fluxo-sandbox.desativado { opacity: 0.45; }
+.fluxo-sandbox-cab { margin-left: 14px; padding: 0 2px; min-height: 16px; }
+.fluxo-sandbox-titulo { font-size: 11px; font-weight: 600; color: @k_accent; }
+.fluxo-sandbox-dica { padding: 4px 2px; }
+.fluxo-sandbox-nota { font-size: 11px; color: @k_muted; margin: 0 0 8px 14px; }
+.fluxo-nota-ouro { background: alpha(@k_gold, 0.06); border: 1px solid alpha(@k_gold, 0.7); border-radius: 6px; padding: 10px 12px; margin-top: 10px; }
+.fluxo-nota-ouro-texto { font-size: 12px; color: @k_text; }
+.fluxo-selecao-titulo { font-size: 20px; font-weight: 600; color: @k_text; margin: 10px 0 6px 0; }
+.fluxo-selecao-acoes { margin-top: 12px; }
+.fluxo-selecao-acao { background: @k_field; border: 1px solid @k_border; border-radius: 4px; box-shadow: none; padding: 0 12px; min-height: 34px; }
+.fluxo-selecao-acao:hover { background: #1E1F27; }
+.fluxo-selecao-acao.perigo .fluxo-acao-nome { color: @k_coral; }
+.fluxo-acao-nome { font-size: 13px; color: @k_text; }
+.fluxo-acao-atalho { font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; font-size: 11px; color: @k_muted; }
+.fluxo-menu contents { padding: 0; }
+.fluxo-menu-lista { padding: 6px; min-width: 228px; }
+.fluxo-menu-item { background: none; border: none; box-shadow: none; border-radius: 4px; padding: 0 10px; min-height: 32px; }
+.fluxo-menu-item:hover { background: alpha(@k_accent, 0.12); }
+.fluxo-menu-item.perigo .fluxo-acao-nome { color: @k_coral; }
+.fluxo-menu-sep { background: @k_border; min-height: 1px; margin: 4px 6px; }
+.fluxo-ferr-corpo { padding: 8px; }
+.fluxo-ferr-corpo .fluxo-busca { margin-bottom: 6px; }
+.fluxo-ferr-lista .fluxo-paleta-grupo { margin: 6px 0 4px 0; }
+.fluxo-ferr-item { background: none; border: none; box-shadow: none; border-radius: 4px; padding: 6px 8px; min-height: 0; }
+.fluxo-ferr-item:hover, .fluxo-ferr-item:focus-visible, .fluxo-ferr-item.atual { background: #1E1F27; }
+.fluxo-ferr-nome { font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; font-size: 12px; color: @k_text; }
+.fluxo-ferr-titulo { font-size: 13px; color: @k_text; }
+.fluxo-ferr-desc { font-size: 11px; color: @k_muted; }
+.fluxo-nivel { font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 3px; color: @k_muted; background: #26272F; }
+.fluxo-nivel.usuario { color: @k_gold; background: alpha(@k_gold, 0.14); }
+.fluxo-nivel.observar { color: @k_teal; background: alpha(@k_teal, 0.14); }
+.fluxo-nivel.sistema, .fluxo-nivel.total { color: @k_coral; background: alpha(@k_coral, 0.14); }
+.fluxo-escolher-ferr { background: @k_field; border: 1px solid @k_border; border-radius: 4px; box-shadow: none; min-height: 30px; padding: 0 10px; }
+.fluxo-secao-linha { margin: 20px 0 10px 0; }
+.fluxo-secao-titulo { font-size: 15px; font-weight: 600; color: @k_text; }
+.fluxo-chave.simples .fluxo-chave-titulo { font-weight: 400; }
+.fluxo-entrada-linha { padding: 4px 8px 4px 10px; }
+entry.fluxo-campo.erro { border-color: @k_coral; }
+.fluxo-caminhos { background: @k_field; border: 1px solid @k_border; border-radius: 4px; padding: 6px 10px; }
+.fluxo-caminho { min-height: 24px; }
+.fluxo-caminho-ponto { border-radius: 3px; min-width: 6px; min-height: 6px; background: @k_teal; }
+entry.fluxo-caminho-id, entry.fluxo-caminho-desc { background: none; border: none; box-shadow: none; outline: none; min-height: 22px; padding: 0 2px; }
+entry.fluxo-caminho-id { font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; font-size: 12px; color: @k_text; }
+entry.fluxo-caminho-desc { font-size: 12px; color: @k_muted; }
+.fluxo-chave.simples { padding: 14px 0 4px 0; }
+.fluxo-variaveis { background: @k_field; border: 1px solid @k_border; border-radius: 4px; padding: 8px 10px; }
+.linha-stat-numero.acento { color: @k_accent; }
+.rotinas-texto.perigo { color: @k_coral; }
+.fx-campo-leitura { background: @k_field; border: 1px solid @k_border; border-radius: 4px; min-height: 32px; padding: 0 12px; font-size: 13px; color: @k_text; }
+button.fx-caminho { background: @k_field; border: 1px solid @k_border; border-radius: 4px; box-shadow: none; min-height: 30px; padding: 0 10px; }
+.fx-caminho-texto { font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; font-size: 12px; color: @k_text; }
+.fx-caminho-texto.vazio { color: @k_muted; }
+.fx-sandbox-fluxo { padding: 10px; }
+.fx-sandbox-ponta { background: @k_field; border: 1px solid @k_border; border-radius: 4px; padding: 10px 12px; }
+.fx-sandbox-seta { font-size: 11px; color: @k_teal; }
+.fluxo-desativado { background: #1E1F27; border-radius: 4px; padding: 6px 10px; margin-top: 10px; }
 /* ── fluxos: conversa ── (designs "Chat · escolher agente" e "Chat · conversa com um agente seu") */
 popover.agentes-escolha > contents { background: @k_panel; border: 1px solid @k_border; border-radius: 8px; padding: 8px; box-shadow: none; }
 popover.agentes-escolha .fx-busca { margin-bottom: 6px; }
@@ -3264,6 +3460,19 @@ button.agentes-escolha-gerenciar { background: none; border: none; box-shadow: n
 button.agentes-escolha-criar:hover, button.agentes-escolha-gerenciar:hover { background: alpha(@k_realce, 0.05); }
 button.agente-chip-compositor { background: none; border: 1px solid @k_border; box-shadow: none; border-radius: 4px; padding: 3px 8px 3px 4px; min-height: 0; }
 button.agente-chip-compositor:hover { background: alpha(@k_realce, 0.05); }
+button.agentes-escolha-item.foco { background: @k_raised; }
+.agentes-escolha-dica { font-size: 11px; color: @k_dim; padding: 4px 6px; }
+button.agentes-escolha-gerenciar.acento { color: @k_accent; font-weight: 600; }
+button.agente-chip-cabecalho { background: @k_raised; border: none; box-shadow: none; border-radius: 4px; padding: 3px 8px 3px 4px; min-height: 0; }
+button.agente-chip-cabecalho:hover { background: alpha(@k_realce, 0.08); }
+button.agente-chip-cabecalho .agente-chip-nome { font-size: 13px; font-weight: 600; color: @k_text; }
+.resposta-agente { margin-top: 2px; }
+.resposta-agente-nome { font-size: 12px; font-weight: 600; color: @k_text; }
+button.linha-tempo-grupo { background: none; border: none; box-shadow: none; border-radius: 4px; padding: 0; min-height: 0; }
+button.linha-tempo-grupo:hover { background: alpha(@k_realce, 0.04); }
+.linha-tempo-chip { font-size: 11px; font-weight: 600; color: @k_accent; background: alpha(@k_accent, 0.16); border-radius: 3px; padding: 1px 6px; }
+.linha-tempo-itens { padding: 0 0 6px 26px; }
+.linha-tempo-item { font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; font-size: 12px; color: @k_muted; }
 .agente-chip-nome { font-size: 13px; font-weight: 600; color: @k_text; }
 .entrada-campo { border: 1px solid @k_border; border-radius: 4px; padding: 0 4px 0 10px; min-height: 28px; }
 .entrada-campo.chave { border-color: transparent; padding: 0 2px; }
@@ -3278,3 +3487,34 @@ entry.entrada-campo-valor { min-width: 0; background: none; border: none; box-sh
 .saida-valor { font-size: 12px; color: @k_text; }
 .resposta-rodape { font-size: 11px; color: @k_muted; margin-top: 2px; }
 .conversas-chip-agente { padding: 1px 7px 1px 3px; }
+/* the agent's icon picker (design 44/50; agent_icon_picker.rs) */
+button.fx-icone-botao { background: none; border: 1px solid transparent; box-shadow: none; padding: 0; border-radius: 7px; }
+button.fx-icone-botao:hover, button.fx-icone-botao:checked { border-color: @k_accent; }
+.fx-icones-corpo { padding: 12px; min-width: 312px; }
+button.fx-icone-opcao { background: none; border: 1px solid transparent; box-shadow: none; border-radius: 4px; min-width: 32px; min-height: 32px; padding: 0; }
+button.fx-icone-opcao:hover { background: alpha(@k_realce, 0.06); }
+button.fx-icone-opcao.ativo { border-color: @k_accent; background: alpha(@k_accent, 0.10); }
+button.fx-icone-cor { min-width: 28px; min-height: 28px; padding: 0; border-radius: 4px; border: 1px solid transparent; box-shadow: none; }
+button.fx-icone-cor.acento { background: alpha(@k_accent, 0.30); } button.fx-icone-cor.teal { background: alpha(@k_teal, 0.28); }
+button.fx-icone-cor.azul { background: alpha(@k_blue, 0.28); } button.fx-icone-cor.ouro { background: alpha(@k_gold, 0.28); }
+button.fx-icone-cor.coral { background: alpha(@k_coral, 0.28); } button.fx-icone-cor.lilas { background: alpha(@k_purple, 0.30); }
+button.fx-icone-cor.cinza { background: alpha(@k_realce, 0.14); }
+button.fx-icone-cor.ativo { border-color: @k_text2; }
+.fx-icones-svg { margin-top: 14px; padding-top: 12px; border-top: 1px solid @k_divider; }
+/* structured input/output tables, the task list and the test form (designs 41/42/47/48; agent_structured.rs) */
+.fx-tabela { border: 1px solid @k_divider; border-radius: 6px; }
+.fx-tabela-cab { padding: 10px 12px 8px 12px; border-bottom: 1px solid @k_divider; }
+.fx-tabela-titulo { font-size: 11px; font-weight: 600; letter-spacing: 1px; color: @k_muted; }
+.fx-tabela-linha { padding: 6px 12px; border-bottom: 1px solid @k_divider; min-height: 40px; }
+entry.fx-tabela-campo { background: transparent; border-color: transparent; }
+entry.fx-tabela-campo:focus-within { border-color: @k_accent; }
+button.fx-tabela-mais { margin: 8px 12px; }
+button.fx-tabela-menos { background: none; border: none; box-shadow: none; min-width: 24px; min-height: 24px; padding: 0; border-radius: 4px; }
+button.fx-tabela-menos:hover { background: alpha(@k_realce, 0.06); }
+.fx-tarefa { border: 1px solid @k_divider; border-radius: 6px; padding: 12px; }
+.fx-teste-form { background: @k_field; border: 1px solid @k_border; border-radius: 6px; padding: 12px; }
+.fx-teste-campo { font-size: 12px; color: @k_text2; }
+.fx-teste-tipo { font-size: 12px; color: @k_dim; }
+entry.erro { border-color: @k_coral; }
+button.fx-link-botao { background: none; border: none; box-shadow: none; padding: 0 4px; min-height: 24px; }
+label.fx-link { font-size: 12px; font-weight: 600; color: @k_accent; }

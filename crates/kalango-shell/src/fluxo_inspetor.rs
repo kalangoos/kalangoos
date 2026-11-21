@@ -19,6 +19,9 @@ use std::rc::Rc;
 fn label(t: &str) -> gtk::Label {
     let l = rotulo(t, "fluxo-campo-rotulo");
     l.set_xalign(0.0);
+    // (a long field name wraps: the inspector has a fixed width and must not scroll sideways)
+    l.set_wrap(true);
+    l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     l
 }
 
@@ -39,6 +42,10 @@ fn area(text: &str, mono: bool, on_change: impl Fn(String) + 'static) -> gtk::Bo
         tv.add_css_class("mono");
     }
     tv.set_wrap_mode(gtk::WrapMode::WordChar);
+    // (the text view fills its box: measured before its lines are laid out, a one-line text view asks for no height
+    // at all, and then shows nothing and takes no click)
+    tv.set_vexpand(true);
+    tv.set_size_request(-1, 34);
     tv.buffer().set_text(text);
     tv.buffer().connect_changed(move |b| on_change(b.text(&b.start_iter(), &b.end_iter(), false).to_string()));
     b.append(&tv);
@@ -186,6 +193,7 @@ fn chip_to_value(t: &str) -> Value {
 /// Builds the inspector for what is chosen now into the page's panel.
 pub fn build(page: &Rc<FlowPage>) {
     *page.issue_label.borrow_mut() = None;
+    *page.insp_title.borrow_mut() = None;
     *page.on_issues.borrow_mut() = None;
     let content = &page.insp_content;
     while let Some(c) = content.first_child() {
@@ -196,6 +204,9 @@ pub fn build(page: &Rc<FlowPage>) {
         footer.remove(&c);
     }
     let sel = page.selected.borrow().clone();
+    if page.chosen.borrow().len() > 1 {
+        return selection_panel(page);
+    }
     match sel {
         // a trigger: the flow's start (its input fields), and a click away the trigger's own settings
         Some(id) if id.starts_with(m::TRIGGER_PREFIX) && *page.insp_tab.borrow() == "gatilho" => trigger_panel(page, id.trim_start_matches(m::TRIGGER_PREFIX)),
@@ -215,6 +226,10 @@ fn empty_panel(page: &Rc<FlowPage>) {
     t.set_xalign(0.0);
     t.set_wrap(true);
     c.append(&t);
+    // (a block taken out of the middle of a path, until something else is chosen)
+    if let Some(n) = page.note.borrow().as_ref() {
+        c.append(&gold_note(n));
+    }
     // (a flow without triggers starts by hand: its input fields are set here)
     if page.triggers.borrow().is_empty() {
         input_sections(page, None);
@@ -233,11 +248,17 @@ fn empty_panel(page: &Rc<FlowPage>) {
     }
 }
 
-fn header(page: &Rc<FlowPage>, glyph: &str, tone: m::Tone, title: &str, sub: &str, caps: &str) {
+fn header(page: &Rc<FlowPage>, glyph: &str, tone: m::Tone, title: &str, sub: &str, caps: &str) -> gtk::Label {
     let c = &page.insp_content;
     if !page.narrow.get() {
         let cab = caixa(Orientation::Horizontal, 8, "");
-        cab.append(&ui_icon(if caps == tr("TRIGGER") { "raio" } else { "compartilhar" }, "#A5A1E2", 14));
+        // (the kind's own glyph: the agent's star, the sandbox's shield — designs "editor · inspetor", "em sandbox")
+        let g = if caps == tr("TRIGGER") { "raio" } else { glyph };
+        if g == "spark" {
+            cab.append(&estrela(13, "#A5A1E2"));
+        } else {
+            cab.append(&ui_icon(g, "#A5A1E2", 14));
+        }
         cab.append(&rotulo(caps, "fluxo-secao-cab"));
         c.append(&cab);
     }
@@ -255,6 +276,7 @@ fn header(page: &Rc<FlowPage>, glyph: &str, tone: m::Tone, title: &str, sub: &st
     col.append(&s);
     row.append(&col);
     c.append(&row);
+    t
 }
 
 fn block_panel(page: &Rc<FlowPage>, id: &str) {
@@ -263,14 +285,21 @@ fn block_panel(page: &Rc<FlowPage>, id: &str) {
     let (title, _) = m::node_text(&n, &page.agent_names(), None);
     let nways = m::ways(&n).len();
     let kind_name = tr(look.caps).to_lowercase();
+    let inside = page.doc.borrow().nodes.iter().filter(|x| x.parent.as_deref() == Some(id)).count();
     let sub = if n.kind == "decide" {
         tr("one pass, without generating text").to_string()
+    } else if n.kind == "sandbox" {
+        trf("{n} blocks inside · disposable machine", &[("n", inside.to_string())])
     } else if nways > 1 {
         trf("{kind} · {n} ways out", &[("kind", kind_name), ("n", nways.to_string())])
     } else {
         kind_name
     };
-    header(page, look.glyph, look.tone, if n.kind == "decide" { tr("Decide") } else { &title }, &sub, tr("SELECTED BLOCK"));
+    let title_label = header(page, look.glyph, look.tone, if n.kind == "decide" { tr("Decide") } else { &title }, &sub, if n.kind == "sandbox" { tr("SELECTED BLOCK") } else { tr("BLOCK") });
+    // (the name follows the block's edits: a tool chosen, an agent, a question typed)
+    if n.kind != "decide" {
+        *page.insp_title.borrow_mut() = Some((id.to_string(), title_label, None));
+    }
     let c = &page.insp_content;
     let tab = page.insp_tab.borrow().clone();
     let tabs_row = caixa(Orientation::Horizontal, 0, "");
@@ -283,9 +312,29 @@ fn block_panel(page: &Rc<FlowPage>, id: &str) {
         }
     });
     tabs_row.append(&tabs);
-    // (a decision's panel goes straight to its settings, as the design draws it)
-    if n.kind != "decide" {
+    // (a decision's and a sandbox's panels go straight to their settings, as the design draws them)
+    if n.kind != "decide" && n.kind != "sandbox" {
         c.append(&tabs_row);
+    }
+    // switched off: a run passes its input straight on
+    if n.disabled {
+        let row = caixa(Orientation::Horizontal, 8, "fluxo-desativado");
+        row.append(&ui_icon("olho", "#8E8F99", 14));
+        let l = rotulo(tr("Off: a run passes its input straight on"), "fluxo-chave-sub");
+        l.set_xalign(0.0);
+        l.set_wrap(true);
+        l.set_hexpand(true);
+        row.append(&l);
+        let on = gtk::Button::with_label(tr("Turn on"));
+        on.add_css_class("fluxo-adicionar");
+        let w = Rc::downgrade(page);
+        on.connect_clicked(move |_| {
+            if let Some(p) = w.upgrade() {
+                p.toggle_disabled();
+            }
+        });
+        row.append(&on);
+        c.append(&row);
     }
     // the service's word on this block (kept current as the flow is checked again)
     let l = rotulo(&m::issue_text(page.issues.borrow().get(id).map(String::as_str).unwrap_or("")), "fluxo-problema");
@@ -295,6 +344,7 @@ fn block_panel(page: &Rc<FlowPage>, id: &str) {
     c.append(&l);
     *page.issue_label.borrow_mut() = Some((id.to_string(), l));
     match tab.as_str() {
+        _ if n.kind == "sandbox" => return sandbox_settings(page, &n, inside),
         "dados" if n.kind != "decide" => data_tab(page, &n),
         "execucoes" if n.kind != "decide" => runs_tab(page, &n),
         _ => {
@@ -356,10 +406,15 @@ enum Field {
     Tool(&'static str),
     Json(&'static str, &'static str),
     Choice(&'static str, &'static str, &'static [(&'static str, &'static str)]),
+    /// a For each's list: the previous output or one of the flow's variables
+    Items(&'static str),
 }
 
 const EXPIRIES: &[(&str, &str)] = &[("3600", n_("1 hour")), ("7200", n_("2 hours")), ("28800", n_("8 hours")), ("86400", n_("1 day")), ("604800", n_("7 days"))];
 const VOICES: &[(&str, &str)] = &[("female", n_("Female")), ("male", n_("Male"))];
+/// What LFM3-Audio transcribes (saved by their English names, as the engine takes them).
+const LANGUAGES: &[(&str, &str)] =
+    &[("Portuguese", n_("Portuguese")), ("English", n_("English")), ("Spanish", n_("Spanish")), ("French", n_("French")), ("German", n_("German")), ("Italian", n_("Italian"))];
 
 fn fields(kind: &str) -> Vec<Field> {
     use Field::*;
@@ -369,7 +424,7 @@ fn fields(kind: &str) -> Vec<Field> {
         "wait" => vec![Number("seconds", n_("Seconds"))],
         "ask" => vec![Long("message", n_("Question")), Text("save_as", n_("Save the answer as"), "resposta")],
         "for_each" => vec![
-            Text("items", n_("Items"), "var:anexos"),
+            Items("items"),
             Agent("agent_id"),
             Long("message", n_("Message per item ({item}, {indice}, {total})")),
             Number("max_items", n_("At most (items)")),
@@ -383,10 +438,10 @@ fn fields(kind: &str) -> Vec<Field> {
         ],
         "notify" => vec![Text("title", n_("Title"), ""), Long("body", n_("Text"))],
         "subflow" => vec![Flow("flow_id")],
-        "transcribe" => vec![Text("file", n_("Audio file (a variable or a path)"), "{audio}"), Text("language", n_("Language"), "Portuguese"), Text("save_as", n_("Save the text as"), "")],
+        "transcribe" => vec![Text("file", n_("Audio file (a variable or a path)"), "{audio}"), Choice("language", n_("Language"), LANGUAGES), Text("save_as", n_("Save the text as"), "")],
         "describe_image" => vec![Text("file", n_("Image (empty: the screen)"), "{imagem}"), Long("question", n_("Question")), Text("save_as", n_("Save the answer as"), "")],
         "speak" => vec![Long("text", n_("Text")), Choice("voice", n_("Voice"), VOICES), Text("out", n_("Save the audio in"), "~/Música/fala.wav")],
-        "set_variables" => vec![Json("variables", n_("Variables (name, op: set | previous | increment | clear, value)"))],
+        "set_variables" => vec![],
         _ => vec![],
     }
 }
@@ -397,11 +452,15 @@ fn settings_tab(page: &Rc<FlowPage>, n: &NodeDoc) {
     let (auto, _) = m::node_text(&NodeDoc { title: String::new(), ..n.clone() }, &page.agent_names(), None);
     let id = n.id.clone();
     let w = Rc::downgrade(page);
-    c.append(&entry(&n.title, &auto, move |t| {
+    let name = entry(&n.title, &auto, move |t| {
         if let Some(p) = w.upgrade() {
             p.edit_node(&id, |x| x.title = t.trim().to_string());
         }
-    }));
+    });
+    if let Some(t) = page.insp_title.borrow_mut().as_mut().filter(|t| t.0 == n.id) {
+        t.2 = Some(name.clone());
+    }
+    c.append(&name);
     if n.kind == "condition" {
         condition_rules(page, n);
     }
@@ -448,18 +507,39 @@ fn settings_tab(page: &Rc<FlowPage>, n: &NodeDoc) {
             }
             Field::Tool(k) => {
                 c.append(&label(tr("System action")));
-                let tools = page.tools.borrow().clone();
                 let cur = d[k].as_str().unwrap_or("").to_string();
-                if tools.is_empty() {
+                if page.tool_items.borrow().is_empty() {
                     c.append(&entry(&cur, "arquivos.mover", move |t| set(k, json!(t.trim()))));
                 } else {
-                    let mut opts: Vec<(String, String)> = tools.iter().map(|t| (t.clone(), t.clone())).collect();
-                    if !cur.is_empty() && !tools.contains(&cur) {
-                        opts.insert(0, (cur.clone(), cur.clone()));
-                    }
-                    opts.insert(0, (String::new(), tr("— choose —").into()));
-                    c.append(&dropdown(&opts, &cur, move |id| set(k, json!(id))));
+                    // (the picker: the actions with what each does and its level, and the connectors' tools)
+                    let b = gtk::Button::new();
+                    b.add_css_class("fluxo-escolher-ferr");
+                    let row = caixa(Orientation::Horizontal, 8, "");
+                    let l = rotulo(if cur.is_empty() || cur == "mcp." { tr("— choose —") } else { &cur }, "fluxo-ferr-nome");
+                    l.set_xalign(0.0);
+                    l.set_hexpand(true);
+                    l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                    row.append(&l);
+                    row.append(&ui_icon("chevron-baixo", "#8E8F99", 12));
+                    b.set_child(Some(&row));
+                    let (w, id) = (Rc::downgrade(page), n.id.clone());
+                    b.connect_clicked(move |_| {
+                        if let Some(p) = w.upgrade() {
+                            tool_picker(&p, &id);
+                        }
+                    });
+                    c.append(&b);
                 }
+            }
+            Field::Items(k) => {
+                c.append(&label(tr("Items")));
+                let cur = d[k].as_str().unwrap_or("content").to_string();
+                let mut opts: Vec<(String, String)> = vec![("content".into(), tr("the previous block's output").into())];
+                opts.extend(page.doc.borrow().variable_names().into_iter().map(|v| (format!("var:{v}"), format!("{{{v}}}"))));
+                if !opts.iter().any(|o| o.0 == cur) {
+                    opts.push((cur.clone(), m::field_text(&cur)));
+                }
+                c.append(&dropdown(&opts, &cur, move |id| set(k, json!(id))));
             }
             Field::Json(k, name) => {
                 c.append(&label(tr(name)));
@@ -484,6 +564,15 @@ fn settings_tab(page: &Rc<FlowPage>, n: &NodeDoc) {
     }
     if n.kind == "subflow" {
         subflow_inputs(page, n);
+    }
+    if n.kind == "agent" {
+        agent_sections(page, n);
+    }
+    if n.kind == "set_variables" {
+        variables_rows(page, n);
+    }
+    if page.doc.borrow().needs_join(&n.id) {
+        c.append(&gold_note(tr("These ways run at the same time and never meet again: add a Join where they should wait for each other.")));
     }
     ways_section(page, n);
     last_run_section(page, n);
@@ -544,15 +633,18 @@ fn condition_rules(page: &Rc<FlowPage>, n: &NodeDoc) {
         });
         row.append(&fe);
         let opts: Vec<(String, String)> = m::OPERATORS.iter().map(|(id, name, _)| (id.to_string(), tr(name).to_string())).collect();
-        let (st, sv) = (state.clone(), save.clone());
+        let ve = gtk::Entry::new();
+        // ("is filled" and "is empty" compare with nothing)
+        ve.set_visible(m::takes_value(&o));
+        let (st, sv, ve2) = (state.clone(), save.clone(), ve.clone());
         let od = dropdown(&opts, &o, move |id| {
+            ve2.set_visible(m::takes_value(&id));
             st.borrow_mut().0[i].1 = id;
             let s = st.borrow();
             sv(s.0.clone(), s.1);
         });
         od.add_css_class("fluxo-chip-op");
         row.append(&od);
-        let ve = gtk::Entry::new();
         ve.add_css_class("fluxo-chip-campo");
         ve.set_text(&m::value_text(&v));
         let n = m::value_text(&v).chars().count() as i32;
@@ -985,12 +1077,11 @@ fn decide_settings(page: &Rc<FlowPage>, n: &NodeDoc) {
     nota.append(&nt);
     c.append(&nota);
     c.append(&label(tr("Ready uses")));
-    let chips = gtk::FlowBox::new();
-    chips.add_css_class("fluxo-usos");
-    chips.set_selection_mode(gtk::SelectionMode::None);
-    chips.set_max_children_per_line(3);
-    chips.set_column_spacing(6);
-    chips.set_row_spacing(6);
+    // chips that flow like words (a FlowBox gives every column the widest chip's width: one chip per line)
+    let chips = caixa(Orientation::Vertical, 6, "fluxo-usos");
+    let mut line = caixa(Orientation::Horizontal, 6, "");
+    let mut used = 0;
+    let room = if page.narrow.get() { 600 } else { 300 };
     for (name, question, kind, options) in USES {
         let b = gtk::Button::with_label(tr(name));
         b.add_css_class("fluxo-uso");
@@ -1018,8 +1109,16 @@ fn decide_settings(page: &Rc<FlowPage>, n: &NodeDoc) {
             });
             rb();
         });
-        chips.insert(&b, -1);
+        let w = b.measure(Orientation::Horizontal, -1).1;
+        if used > 0 && used + 6 + w > room {
+            chips.append(&line);
+            line = caixa(Orientation::Horizontal, 6, "");
+            used = 0;
+        }
+        used += if used > 0 { 6 + w } else { w };
+        line.append(&b);
     }
+    chips.append(&line);
     c.append(&chips);
 }
 
@@ -1766,6 +1865,791 @@ fn subflow_inputs(page: &Rc<FlowPage>, n: &NodeDoc) {
     });
 }
 
+// ── several blocks, menus ───────────────────────────────────────────────────────────────────────────────────────
+
+/// The gold note (design "seleção e menus": "Apagar um bloco do meio liga o anterior ao seguinte; Ctrl+Z desfaz.").
+fn gold_note(text: &str) -> gtk::Box {
+    let b = caixa(Orientation::Horizontal, 8, "fluxo-nota-ouro");
+    let i = ui_icon("alerta", "#E5C98C", 14);
+    i.set_valign(Align::Start);
+    b.append(&i);
+    let l = rotulo(text, "fluxo-nota-ouro-texto");
+    l.set_xalign(0.0);
+    l.set_wrap(true);
+    l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    l.set_hexpand(true);
+    b.append(&l);
+    b
+}
+
+/// A row of the selection panel and of the menus: its glyph, what it does and its key.
+fn action_row(class: &str, icon: &str, text: &str, keys: &str, danger: bool, on: impl Fn() + 'static) -> gtk::Button {
+    let b = gtk::Button::new();
+    b.add_css_class(class);
+    if danger {
+        b.add_css_class("perigo");
+    }
+    let row = caixa(Orientation::Horizontal, 10, "");
+    row.append(&ui_icon(icon, if danger { "#EFA2A6" } else { "#B9BAC4" }, 14));
+    let l = rotulo(text, "fluxo-acao-nome");
+    l.set_xalign(0.0);
+    l.set_hexpand(true);
+    row.append(&l);
+    if !keys.is_empty() {
+        row.append(&rotulo(keys, "fluxo-acao-atalho"));
+    }
+    b.set_child(Some(&row));
+    b.connect_clicked(move |_| on());
+    b
+}
+
+/// Several blocks chosen (design "seleção e menus"): how many and of which kinds, and what can be done with all of
+/// them at once.
+fn selection_panel(page: &Rc<FlowPage>) {
+    let c = &page.insp_content;
+    let ids = page.chosen.borrow().clone();
+    let n = ids.len();
+    let cab = caixa(Orientation::Horizontal, 8, "");
+    cab.append(&ui_icon("lista", "#A5A1E2", 14));
+    cab.append(&rotulo(tr("SELECTION"), "fluxo-secao-cab"));
+    c.append(&cab);
+    let t = rotulo(&trf("{n} blocks selected", &[("n", n.to_string())]), "fluxo-selecao-titulo");
+    t.set_xalign(0.0);
+    c.append(&t);
+    let mut kinds: Vec<String> = Vec::new();
+    for id in &ids {
+        if let Some(k) = page.doc.borrow().node(id).map(|x| m::kind_name(&x.kind)) {
+            if !kinds.contains(&k) {
+                kinds.push(k);
+            }
+        }
+    }
+    let s = rotulo(&kinds.join(" · "), "fluxo-chave-sub");
+    s.set_xalign(0.0);
+    s.set_wrap(true);
+    c.append(&s);
+    let all_off = ids.iter().all(|i| page.doc.borrow().node(i).is_some_and(|x| x.disabled));
+    let list = caixa(Orientation::Vertical, 8, "fluxo-selecao-acoes");
+    let act = |f: fn(&Rc<FlowPage>)| {
+        let w = Rc::downgrade(page);
+        move || {
+            if let Some(p) = w.upgrade() {
+                f(&p);
+            }
+        }
+    };
+    list.append(&action_row("fluxo-selecao-acao", "compartilhar", &trf("Duplicate the {n}", &[("n", n.to_string())]), "Ctrl+D", false, act(|p| p.duplicate_selected())));
+    list.append(&action_row("fluxo-selecao-acao", "lista", tr("Copy"), "Ctrl+C", false, act(|p| p.copy_selected())));
+    list.append(&action_row("fluxo-selecao-acao", "olho", if all_off { tr("Turn on") } else { tr("Turn off") }, "", false, act(|p| p.toggle_disabled())));
+    list.append(&action_row("fluxo-selecao-acao", "apps-pontos", tr("Align vertically"), "", false, act(|p| p.align_selected())));
+    list.append(&action_row("fluxo-selecao-acao", "lixeira", &trf("Delete the {n}", &[("n", n.to_string())]), "Del", true, act(|p| p.remove_selected())));
+    c.append(&list);
+    let h = rotulo(tr("Drag to move them together. Shift+click adds or removes a block; dragging on the empty canvas draws the band."), "fluxo-chave-sub");
+    h.set_xalign(0.0);
+    h.set_wrap(true);
+    h.set_margin_top(12);
+    c.append(&h);
+    let note = gold_note(tr("Deleting a block in the middle connects the one before it to the next one; Ctrl+Z undoes."));
+    note.set_margin_top(12);
+    c.append(&note);
+}
+
+/// The right button's menu (design "seleção e menus"): on a block, what to do with it (or with the blocks chosen
+/// with it); on the empty canvas, adding, pasting, organising, choosing all, undoing.
+pub fn context_menu(page: &Rc<FlowPage>, id: Option<String>, at: (f64, f64), world: (f64, f64)) {
+    // (a block outside the ones chosen becomes the one chosen)
+    if let Some(i) = &id {
+        if !page.selection().contains(i) {
+            page.select(Some(i.clone()));
+        }
+    }
+    let pop = gtk::Popover::new();
+    pop.add_css_class("fluxo-pop");
+    pop.add_css_class("fluxo-menu");
+    pop.set_has_arrow(false);
+    pop.set_autohide(true);
+    pop.set_position(gtk::PositionType::Bottom);
+    pop.set_halign(Align::Start);
+    pop.set_parent(&page.canvas.root);
+    pop.set_pointing_to(Some(&gtk::gdk::Rectangle::new(at.0 as i32, at.1 as i32, 1, 1)));
+    let list = caixa(Orientation::Vertical, 0, "fluxo-menu-lista");
+    let pw = pop.downgrade();
+    let item = |icon: &str, text: &str, keys: &str, danger: bool, f: Box<dyn Fn(&Rc<FlowPage>)>| {
+        let (w, pw) = (Rc::downgrade(page), pw.clone());
+        action_row("fluxo-menu-item", icon, text, keys, danger, move || {
+            if let Some(p) = pw.upgrade() {
+                p.popdown();
+            }
+            if let Some(page) = w.upgrade() {
+                f(&page);
+            }
+        })
+    };
+    let sep = || {
+        let s = gtk::Separator::new(Orientation::Horizontal);
+        s.add_css_class("fluxo-menu-sep");
+        s
+    };
+    if id.is_some() {
+        let all_off = page.selection().iter().all(|i| page.doc.borrow().node(i).is_some_and(|x| x.disabled));
+        list.append(&item("doc", tr("Rename"), "F2", false, Box::new(|p| p.rename_selected())));
+        list.append(&item("compartilhar", tr("Duplicate it"), "Ctrl+D", false, Box::new(|p| p.duplicate_selected())));
+        list.append(&item("lista", tr("Copy"), "Ctrl+C", false, Box::new(|p| p.copy_selected())));
+        list.append(&item("olho", if all_off { tr("Turn on") } else { tr("Turn off") }, "", false, Box::new(|p| p.toggle_disabled())));
+        list.append(&sep());
+        list.append(&item("lixeira", tr("Delete"), "Del", true, Box::new(|p| p.remove_selected())));
+    } else {
+        list.append(&item("mais", tr("Add a block here…"), "/", false, Box::new(move |p| p.add_here(world))));
+        list.append(&item("baixar", tr("Paste"), "Ctrl+V", false, Box::new(move |p| p.paste(Some(world)))));
+        list.append(&item("apps-pontos", tr("Organise the flow"), "", false, Box::new(|p| p.arrange())));
+        list.append(&item("check", tr("Select all"), "Ctrl+A", false, Box::new(|p| p.select_all())));
+        list.append(&sep());
+        list.append(&item("seta-esquerda", tr("Undo"), "Ctrl+Z", false, Box::new(|p| p.undo())));
+        list.append(&item("seta-direita", tr("Redo"), "Ctrl+Shift+Z", false, Box::new(|p| p.redo())));
+    }
+    pop.set_child(Some(&list));
+    pop.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || p.unparent());
+    });
+    pop.popup();
+}
+
+// ── the tool picker ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A level as its badge says it.
+fn level_word(level: &str) -> String {
+    match level {
+        "observar" => tr("observe").to_string(),
+        "usuario" => tr("user").to_string(),
+        "sistema" => tr("system").to_string(),
+        "total" => tr("full").to_string(),
+        l => l.to_string(),
+    }
+}
+
+/// The system action of a block, picked (design "editor · inspetor", N1/N2): a search, the system's actions with
+/// what each does and its level ("AÇÃO DO SISTEMA · 3 DE 82"), and the connectors' tools (a connector opens its own
+/// list). Opens over the block on the canvas.
+pub fn tool_picker(page: &Rc<FlowPage>, node: &str) {
+    let items = page.tool_items.borrow().clone();
+    if items.is_empty() {
+        return;
+    }
+    let pop = gtk::Popover::new();
+    pop.add_css_class("fluxo-pop");
+    pop.add_css_class("fluxo-ferr-pop");
+    pop.set_has_arrow(false);
+    pop.set_autohide(true);
+    pop.set_position(gtk::PositionType::Bottom);
+    pop.set_parent(&page.canvas.root);
+    page.canvas.reveal(node);
+    let r = page.canvas.screen_rect(node).unwrap_or(gtk::gdk::Rectangle::new(page.canvas.root.width() / 2, 80, 1, 1));
+    pop.set_pointing_to(Some(&gtk::gdk::Rectangle::new(r.x() + r.width() / 2, r.y() + 40, 1, 1)));
+    let body = caixa(Orientation::Vertical, 0, "fluxo-ferr-corpo");
+    body.set_size_request(370, -1);
+    let busca = caixa(Orientation::Horizontal, 7, "fluxo-busca");
+    busca.append(&ui_icon("busca", "#8E8F99", 14));
+    let search = gtk::Entry::new();
+    search.add_css_class("fluxo-busca-campo");
+    search.set_placeholder_text(Some(tr("Search actions…")));
+    search.set_hexpand(true);
+    busca.append(&search);
+    body.append(&busca);
+    let list = caixa(Orientation::Vertical, 0, "fluxo-ferr-lista");
+    let sc = gtk::ScrolledWindow::new();
+    sc.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    sc.set_propagate_natural_height(true);
+    sc.set_max_content_height(380);
+    sc.set_child(Some(&list));
+    body.append(&sc);
+    pop.set_child(Some(&body));
+    // (the connector open, when one is)
+    let open: Rc<std::cell::RefCell<Option<String>>> = Rc::default();
+    let render: Rc<std::cell::RefCell<Option<Box<dyn Fn()>>>> = Rc::default();
+    let pick = {
+        let (w, pw, node) = (Rc::downgrade(page), pop.downgrade(), node.to_string());
+        Rc::new(move |tool: String| {
+            if let Some(p) = pw.upgrade() {
+                p.popdown();
+            }
+            if let Some(page) = w.upgrade() {
+                page.edit_node(&node, |x| {
+                    if !x.data.is_object() {
+                        x.data = json!({});
+                    }
+                    x.data["tool"] = json!(tool);
+                });
+                page.refresh_inspector();
+            }
+        })
+    };
+    let tool_row = {
+        let pick = pick.clone();
+        move |name: &str, shown: &str, desc: &str, level: &str| -> gtk::Button {
+            let b = gtk::Button::new();
+            b.add_css_class("fluxo-ferr-item");
+            let row = caixa(Orientation::Horizontal, 10, "");
+            let col = caixa(Orientation::Vertical, 2, "");
+            col.set_hexpand(true);
+            let n = rotulo(shown, "fluxo-ferr-nome");
+            n.set_xalign(0.0);
+            n.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            col.append(&n);
+            let d = rotulo(&m::tool_title(desc), "fluxo-ferr-desc");
+            d.set_xalign(0.0);
+            d.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            d.set_max_width_chars(40);
+            col.append(&d);
+            row.append(&col);
+            if !level.is_empty() {
+                let l = rotulo(&level_word(level), "fluxo-nivel");
+                l.add_css_class(level);
+                l.set_valign(Align::Center);
+                row.append(&l);
+            }
+            b.set_child(Some(&row));
+            let (pick, name) = (pick.clone(), name.to_string());
+            b.connect_clicked(move |_| pick(name.clone()));
+            b
+        }
+    };
+    let group = |t: &str| {
+        let g = rotulo(t, "fluxo-paleta-grupo");
+        g.set_xalign(0.0);
+        g
+    };
+    let connectors: Vec<String> = {
+        let mut v: Vec<String> = items.iter().filter(|i| i.origin == "connector").map(|i| crate::fluxos_ui::tool_prefix(&i.name).to_string()).collect();
+        v.dedup();
+        v
+    };
+    {
+        let (list, search, open, render2) = (list.clone(), search.clone(), open.clone(), render.clone());
+        *render.borrow_mut() = Some(Box::new(move || {
+            while let Some(x) = list.first_child() {
+                list.remove(&x);
+            }
+            let q = search.text().to_string();
+            let hit = |i: &crate::fluxos_ferramentas::ToolItem| m::palette_matches(&i.name, &i.description, &q);
+            // (the first row found stands out: Enter picks it — design "editor · inspetor")
+            let mark_first = |list: &gtk::Box| {
+                let mut c = list.first_child();
+                while let Some(w) = c {
+                    if w.has_css_class("fluxo-ferr-item") && !w.has_css_class("voltar") {
+                        w.add_css_class("atual");
+                        break;
+                    }
+                    c = w.next_sibling();
+                }
+            };
+            match open.borrow().clone() {
+                Some(server) => {
+                    let mine: Vec<_> = items.iter().filter(|i| i.origin == "connector" && crate::fluxos_ui::tool_prefix(&i.name) == server).collect();
+                    let back = gtk::Button::new();
+                    back.add_css_class("fluxo-ferr-item");
+                    back.add_css_class("voltar");
+                    let row = caixa(Orientation::Horizontal, 8, "");
+                    row.append(&ui_icon("seta-esquerda", "#B9BAC4", 12));
+                    row.append(&rotulo(tr("All actions"), "fluxo-ferr-desc"));
+                    back.set_child(Some(&row));
+                    let (open, r) = (open.clone(), render2.clone());
+                    back.connect_clicked(move |_| {
+                        *open.borrow_mut() = None;
+                        let r = r.clone();
+                        glib::idle_add_local_once(move || {
+                            if let Some(f) = r.borrow().as_ref() {
+                                f();
+                            }
+                        });
+                    });
+                    list.append(&back);
+                    let shown: Vec<_> = mine.iter().filter(|i| hit(i)).collect();
+                    list.append(&group(&format!("{} {server} · {}", tr("CONNECTOR"), trf("{x} OF {n}", &[("x", shown.len().to_string()), ("n", mine.len().to_string())]))));
+                    for i in shown {
+                        let short = i.name.split_once('.').map(|x| x.1).unwrap_or(&i.name);
+                        list.append(&tool_row(&i.name, short, &i.description, &i.level));
+                    }
+                }
+                None => {
+                    let sys: Vec<_> = items.iter().filter(|i| i.origin != "connector").collect();
+                    let shown: Vec<_> = sys.iter().filter(|i| hit(i)).collect();
+                    list.append(&group(&format!("{} · {}", tr("SYSTEM ACTION"), trf("{x} OF {n}", &[("x", shown.len().to_string()), ("n", sys.len().to_string())]))));
+                    for i in shown.iter().take(60) {
+                        list.append(&tool_row(&i.name, &i.name, &i.description, &i.level));
+                    }
+                    let mut any = false;
+                    for server in &connectors {
+                        let tools: Vec<_> = items.iter().filter(|i| i.origin == "connector" && crate::fluxos_ui::tool_prefix(&i.name) == server).collect();
+                        let Some(first) = tools.iter().find(|i| hit(i)).or(if q.trim().is_empty() || m::palette_matches(server, server, &q) { tools.first() } else { None }) else { continue };
+                        if !any {
+                            list.append(&group(tr("CONNECTORS (MCP)")));
+                            any = true;
+                        }
+                        let b = gtk::Button::new();
+                        b.add_css_class("fluxo-ferr-item");
+                        let row = caixa(Orientation::Horizontal, 10, "");
+                        let tile = caixa(Orientation::Horizontal, 0, "fluxo-paleta-tile");
+                        tile.add_css_class(m::Tone::Accent.class());
+                        tile.set_size_request(22, 22);
+                        tile.set_valign(Align::Center);
+                        let g = ui_icon("ramo", m::Tone::Accent.color(), 13);
+                        g.set_hexpand(true);
+                        tile.append(&g);
+                        row.append(&tile);
+                        let col = caixa(Orientation::Vertical, 2, "");
+                        col.set_hexpand(true);
+                        let short = first.name.split_once('.').map(|x| x.1).unwrap_or(&first.name);
+                        let n = rotulo(&format!("{server} · {short}"), "fluxo-ferr-titulo");
+                        n.set_xalign(0.0);
+                        n.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                        col.append(&n);
+                        let d = rotulo(&format!("{} {server} · {}", tr("connector"), trf("{n} tools", &[("n", tools.len().to_string())])), "fluxo-ferr-desc");
+                        d.set_xalign(0.0);
+                        col.append(&d);
+                        row.append(&col);
+                        row.append(&ui_icon("chevron", "#B9BAC4", 12));
+                        b.set_child(Some(&row));
+                        let (open, r, server) = (open.clone(), render2.clone(), server.clone());
+                        b.connect_clicked(move |_| {
+                            *open.borrow_mut() = Some(server.clone());
+                            let r = r.clone();
+                            glib::idle_add_local_once(move || {
+                                if let Some(f) = r.borrow().as_ref() {
+                                    f();
+                                }
+                            });
+                        });
+                        list.append(&b);
+                    }
+                    if shown.is_empty() && !any {
+                        let l = rotulo(tr("No action with these words."), "fluxo-chave-sub");
+                        l.set_xalign(0.0);
+                        l.set_margin_top(8);
+                        list.append(&l);
+                    }
+                }
+            }
+            mark_first(&list);
+        }));
+    }
+    let r = render.clone();
+    search.connect_changed(move |_| {
+        if let Some(f) = r.borrow().as_ref() {
+            f();
+        }
+    });
+    // Enter: the first action found
+    let l = list.downgrade();
+    search.connect_activate(move |_| {
+        let first = l.upgrade().and_then(|l| {
+            let mut c = l.first_child();
+            while let Some(w) = c {
+                if let Some(b) = w.downcast_ref::<gtk::Button>().filter(|b| b.has_css_class("fluxo-ferr-item") && !b.has_css_class("voltar")) {
+                    return Some(b.clone());
+                }
+                c = w.next_sibling();
+            }
+            None
+        });
+        if let Some(b) = first {
+            b.emit_clicked();
+        }
+    });
+    if let Some(f) = render.borrow().as_ref() {
+        f();
+    }
+    let r = render.clone();
+    pop.connect_closed(move |p| {
+        // (the closure holds the list that holds it: let it go)
+        r.borrow_mut().take();
+        let p = p.clone();
+        glib::idle_add_local_once(move || p.unparent());
+    });
+    pop.popup();
+    // (once the popover is on screen: the search takes the keys)
+    glib::idle_add_local_once(move || {
+        search.grab_focus();
+    });
+}
+
+// ── the Agente block (design "editor · inspetor", N3) ───────────────────────────────────────────────────────────
+
+/// A section's title with its muted words beside it ("Entrada do agente  os campos que o Organizador recebe").
+fn titled(t: &str, sub: &str) -> gtk::Box {
+    let row = caixa(Orientation::Horizontal, 8, "fluxo-secao-linha");
+    let l = rotulo(t, "fluxo-secao-titulo");
+    l.set_xalign(0.0);
+    row.append(&l);
+    if !sub.is_empty() {
+        let s = rotulo(sub, "fluxo-chave-sub");
+        s.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        s.set_xalign(0.0);
+        s.set_valign(Align::Baseline);
+        row.append(&s);
+    }
+    row
+}
+
+/// "Entrada do agente", "Caminhos", "Seguir todos os caminhos que valerem" and "Se falhar".
+fn agent_sections(page: &Rc<FlowPage>, n: &NodeDoc) {
+    let c = &page.insp_content;
+    let node = n.id.clone();
+    let agent = n.data["agent_id"].as_str().unwrap_or("").to_string();
+    // the agent's input fields, each filled from a template over the flow's variables (`input`)
+    let fields = page.agent_fields.borrow().get(&agent).cloned().unwrap_or_default();
+    if !fields.is_empty() {
+        let name = page.agents.borrow().iter().find(|a| a.0 == agent).map(|a| a.1.clone()).unwrap_or_default();
+        c.append(&titled(tr("Agent input"), &trf("the fields {agent} receives", &[("agent", name)])));
+        let input = n.data["input"].as_object().cloned().unwrap_or_default();
+        let list = caixa(Orientation::Vertical, 0, "fluxo-campos");
+        for f in &fields {
+            let fname = f["name"].as_str().unwrap_or("").to_string();
+            let kind = f["kind"].as_str().unwrap_or("text");
+            let required = f["required"].as_bool().unwrap_or(false);
+            let row = caixa(Orientation::Horizontal, 8, "fluxo-entrada-linha");
+            let left = caixa(Orientation::Horizontal, 6, "");
+            left.set_hexpand(true);
+            left.set_size_request(120, -1);
+            let nm = rotulo(&fname, "fluxo-campo-nome");
+            nm.set_xalign(0.0);
+            nm.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            left.append(&nm);
+            if required {
+                let b = rotulo(tr("required"), "fluxo-obrigatorio");
+                b.set_valign(Align::Center);
+                left.append(&b);
+            }
+            row.append(&left);
+            let cur = input.get(&fname).and_then(Value::as_str).unwrap_or("").to_string();
+            let hint = if matches!(kind, "list" | "object") { "{…}".to_string() } else { format!("{{{fname}}}") };
+            let (w, nd, fd) = (Rc::downgrade(page), node.clone(), fname.clone());
+            let e = gtk::Entry::new();
+            e.add_css_class("fluxo-campo");
+            e.add_css_class("mono");
+            e.set_text(&cur);
+            e.set_placeholder_text(Some(&hint));
+            e.set_width_chars(12);
+            e.set_hexpand(true);
+            // (a required field left empty: red, before the service says so)
+            if required && cur.trim().is_empty() {
+                e.add_css_class("erro");
+            }
+            e.connect_changed(move |e| {
+                let t = e.text().to_string();
+                if required && t.trim().is_empty() { e.add_css_class("erro") } else { e.remove_css_class("erro") }
+                if let Some(p) = w.upgrade() {
+                    p.edit_node(&nd, |x| {
+                        let mut m = x.data["input"].as_object().cloned().unwrap_or_default();
+                        m::set_template(&mut m, &fd, &t);
+                        if m.is_empty() {
+                            x.data.as_object_mut().map(|o| o.remove("input"));
+                        } else {
+                            x.data["input"] = Value::Object(m);
+                        }
+                    });
+                }
+            });
+            row.append(&e);
+            list.append(&row);
+        }
+        c.append(&list);
+    }
+    // the ways the agent may choose (it gets a tool to pick one), up to 8
+    c.append(&titled(tr("Ways"), tr("when to follow each way out")));
+    let routes: Vec<Value> = n.data["routes"].as_array().cloned().unwrap_or_default();
+    let list = caixa(Orientation::Vertical, 4, "fluxo-caminhos");
+    let save = {
+        let (w, nd) = (Rc::downgrade(page), node.clone());
+        Rc::new(move |routes: Vec<Value>, rebuild: bool| {
+            if let Some(p) = w.upgrade() {
+                p.edit_node(&nd, |x| {
+                    if routes.is_empty() {
+                        x.data.as_object_mut().map(|o| o.remove("routes"));
+                    } else {
+                        x.data["routes"] = json!(routes);
+                    }
+                });
+                if rebuild {
+                    glib::idle_add_local_once(move || build(&p));
+                }
+            }
+        })
+    };
+    let state = Rc::new(std::cell::RefCell::new(routes.clone()));
+    for (i, r) in routes.iter().enumerate() {
+        let row = caixa(Orientation::Horizontal, 8, "fluxo-caminho");
+        let dot = caixa(Orientation::Horizontal, 0, "fluxo-caminho-ponto");
+        dot.set_size_request(6, 6);
+        dot.set_valign(Align::Center);
+        row.append(&dot);
+        let id = gtk::Entry::new();
+        id.add_css_class("fluxo-caminho-id");
+        id.set_text(r["id"].as_str().unwrap_or(""));
+        id.set_width_chars(6);
+        id.set_max_width_chars(10);
+        let (st, sv) = (state.clone(), save.clone());
+        id.connect_changed(move |e| {
+            let t: String = e.text().chars().filter(|c| c.is_alphanumeric() || *c == '_').collect();
+            st.borrow_mut()[i]["id"] = json!(t);
+            st.borrow_mut()[i]["label"] = json!(t);
+            sv(st.borrow().clone(), false);
+        });
+        row.append(&id);
+        let d = gtk::Entry::new();
+        d.add_css_class("fluxo-caminho-desc");
+        d.set_text(r["description"].as_str().unwrap_or(""));
+        d.set_placeholder_text(Some(tr("when to follow it")));
+        d.set_hexpand(true);
+        d.set_width_chars(8);
+        let (st, sv) = (state.clone(), save.clone());
+        d.connect_changed(move |e| {
+            st.borrow_mut()[i]["description"] = json!(e.text().to_string());
+            sv(st.borrow().clone(), false);
+        });
+        row.append(&d);
+        let x = gtk::Button::new();
+        x.add_css_class("fluxo-x");
+        x.set_child(Some(&ui_icon("fechar", "#8E8F99", 12)));
+        x.set_tooltip_text(Some(tr("Remove this way")));
+        let (st, sv) = (state.clone(), save.clone());
+        x.connect_clicked(move |_| {
+            st.borrow_mut().remove(i);
+            sv(st.borrow().clone(), true);
+        });
+        row.append(&x);
+        list.append(&row);
+    }
+    if routes.len() < 8 {
+        let (st, sv) = (state.clone(), save.clone());
+        list.append(&add_button(tr("Add a way (up to 8)"), move || {
+            let taken: Vec<String> = st.borrow().iter().filter_map(|r| r["id"].as_str().map(str::to_string)).collect();
+            let id = (1..).map(|i| format!("caminho_{i}")).find(|x| !taken.contains(x)).unwrap();
+            st.borrow_mut().push(json!({"id": id, "label": id, "description": ""}));
+            sv(st.borrow().clone(), true);
+        }));
+    }
+    c.append(&list);
+    let (w, nd) = (Rc::downgrade(page), node.clone());
+    let multi = switch_row(tr("Follow every way that holds"), "", n.data["multiple_ways"].as_bool().unwrap_or(false), true, move |on| {
+        if let Some(p) = w.upgrade() {
+            p.edit_node(&nd, |x| {
+                if on {
+                    x.data["multiple_ways"] = json!(true);
+                } else {
+                    x.data.as_object_mut().map(|o| o.remove("multiple_ways"));
+                }
+            });
+        }
+    });
+    multi.add_css_class("simples");
+    c.append(&multi);
+    // Se falhar: attempts, first wait (doubles each time) and the limit of each attempt
+    c.append(&titled(tr("If it fails"), ""));
+    let retry = n.data["retry"].clone();
+    let grid = caixa(Orientation::Horizontal, 8, "fluxo-tentativas");
+    grid.set_homogeneous(true);
+    let boxes: Rc<std::cell::RefCell<Vec<gtk::Entry>>> = Rc::default();
+    let cols = [
+        (tr("Attempts"), retry["max_attempts"].as_u64().map(|x| x.to_string()), "3"),
+        (tr("First wait"), retry["initial_delay_s"].as_f64().map(|x| format!("{} s", m::decimal(x, if x.fract() == 0.0 { 0 } else { 1 }))), "2 s"),
+        (tr("Limit"), retry["timeout_s"].as_u64().map(|x| format!("{x} s")), "—"),
+    ];
+    for (name, cur, hint) in cols {
+        let col = caixa(Orientation::Vertical, 4, "");
+        col.append(&label(name));
+        let e = gtk::Entry::new();
+        e.add_css_class("fluxo-campo");
+        e.set_width_chars(4);
+        e.set_text(cur.as_deref().unwrap_or(""));
+        e.set_placeholder_text(Some(hint));
+        col.append(&e);
+        boxes.borrow_mut().push(e);
+        grid.append(&col);
+    }
+    for e in boxes.borrow().iter() {
+        let (w, nd, bs) = (Rc::downgrade(page), node.clone(), boxes.clone());
+        e.connect_changed(move |_| {
+            let v: Vec<String> = bs.borrow().iter().map(|b| b.text().to_string()).collect();
+            if let Some(p) = w.upgrade() {
+                p.edit_node(&nd, |x| match m::retry_from(&v[0], &v[1], &v[2]) {
+                    Some(r) => x.data["retry"] = r,
+                    None => {
+                        x.data.as_object_mut().map(|o| o.remove("retry"));
+                    }
+                });
+            }
+        });
+    }
+    c.append(&grid);
+}
+
+/// A Variables block (N4): one row per variable, "nome = valor" (the value takes {variables}).
+fn variables_rows(page: &Rc<FlowPage>, n: &NodeDoc) {
+    let c = &page.insp_content;
+    c.append(&titled(tr("Variables"), ""));
+    let vars: Vec<Value> = n.data["variables"].as_array().cloned().unwrap_or_default();
+    let state = Rc::new(std::cell::RefCell::new(vars.clone()));
+    let save = {
+        let (w, nd) = (Rc::downgrade(page), n.id.clone());
+        Rc::new(move |vars: Vec<Value>, rebuild: bool| {
+            if let Some(p) = w.upgrade() {
+                p.edit_node(&nd, |x| x.data["variables"] = json!(vars));
+                if rebuild {
+                    glib::idle_add_local_once(move || build(&p));
+                }
+            }
+        })
+    };
+    let list = caixa(Orientation::Vertical, 6, "fluxo-variaveis");
+    for (i, v) in vars.iter().enumerate() {
+        let row = caixa(Orientation::Horizontal, 6, "");
+        let name = gtk::Entry::new();
+        name.add_css_class("fluxo-campo");
+        name.add_css_class("mono");
+        name.set_text(v["name"].as_str().unwrap_or(""));
+        name.set_placeholder_text(Some("nome"));
+        name.set_width_chars(8);
+        name.set_hexpand(true);
+        let (st, sv) = (state.clone(), save.clone());
+        name.connect_changed(move |e| {
+            st.borrow_mut()[i]["name"] = json!(e.text().to_string());
+            sv(st.borrow().clone(), false);
+        });
+        row.append(&name);
+        let op = v["op"].as_str().unwrap_or("set");
+        // (the other operations say what they do in place of "=")
+        let sign = match op {
+            "increment" => "+=",
+            "previous" => "←",
+            "clear" => "∅",
+            _ => "=",
+        };
+        let eq = rotulo(sign, "fluxo-saida-seta");
+        eq.set_tooltip_text(Some(match op {
+            "increment" => tr("adds to it"),
+            "previous" => tr("the previous block's output"),
+            "clear" => tr("clears it"),
+            _ => tr("sets it"),
+        }));
+        row.append(&eq);
+        let val = gtk::Entry::new();
+        val.add_css_class("fluxo-campo");
+        val.add_css_class("mono");
+        val.set_text(&match &v["value"] {
+            Value::Null => String::new(),
+            Value::String(s) => s.clone(),
+            x => x.to_string(),
+        });
+        val.set_width_chars(8);
+        val.set_hexpand(true);
+        val.set_sensitive(op == "set" || op == "increment");
+        let (st, sv) = (state.clone(), save.clone());
+        val.connect_changed(move |e| {
+            let t = e.text().to_string();
+            // (a list or an object typed as JSON stays one; anything else is text with {variables})
+            let v = if st.borrow()[i]["op"] == json!("increment") {
+                chip_to_value(&t)
+            } else {
+                serde_json::from_str::<Value>(t.trim()).ok().filter(|v| v.is_array() || v.is_object()).unwrap_or(json!(t))
+            };
+            st.borrow_mut()[i]["value"] = v;
+            sv(st.borrow().clone(), false);
+        });
+        row.append(&val);
+        let x = gtk::Button::new();
+        x.add_css_class("fluxo-x");
+        x.set_child(Some(&ui_icon("fechar", "#8E8F99", 12)));
+        x.set_tooltip_text(Some(tr("Remove this variable")));
+        let (st, sv) = (state.clone(), save.clone());
+        x.connect_clicked(move |_| {
+            st.borrow_mut().remove(i);
+            sv(st.borrow().clone(), true);
+        });
+        row.append(&x);
+        list.append(&row);
+    }
+    let (st, sv) = (state.clone(), save.clone());
+    list.append(&add_button(tr("Add a variable"), move || {
+        let taken: Vec<String> = st.borrow().iter().filter_map(|r| r["name"].as_str().map(str::to_string)).collect();
+        let name = std::iter::once("valor".to_string()).chain((2..).map(|i| format!("valor_{i}"))).find(|x| !taken.contains(x)).unwrap();
+        st.borrow_mut().push(json!({"name": name, "op": "set", "value": ""}));
+        sv(st.borrow().clone(), true);
+    }));
+    c.append(&list);
+}
+
+// ── Em sandbox (design "Bloco em sandbox") ──────────────────────────────────────────────────────────────────────
+
+fn sandbox_settings(page: &Rc<FlowPage>, n: &NodeDoc, _inside: usize) {
+    let c = &page.insp_content;
+    let id = n.id.clone();
+    let set = {
+        let (w, id) = (Rc::downgrade(page), id.clone());
+        Rc::new(move |k: &'static str, v: Value| {
+            if let Some(p) = w.upgrade() {
+                p.edit_node(&id, |x| {
+                    if !x.data.is_object() {
+                        x.data = json!({});
+                    }
+                    x.data[k] = v;
+                });
+            }
+        })
+    };
+    c.append(&label(tr("Machine template")));
+    let cur = n.data["template"].as_str().unwrap_or("").to_string();
+    let mut opts: Vec<(String, String)> = vec![(String::new(), tr("— choose —").into())];
+    opts.extend(page.templates.borrow().iter().cloned());
+    if !cur.is_empty() && !opts.iter().any(|o| o.0 == cur) {
+        opts.push((cur.clone(), cur.clone()));
+    }
+    let s = set.clone();
+    c.append(&dropdown(&opts, &cur, move |v| s("template", json!(v))));
+    if page.templates.borrow().is_empty() {
+        let l = rotulo(tr("No VirtualDesk machine found: make one in VirtualDesk to use as the template."), "fluxo-chave-sub");
+        l.set_xalign(0.0);
+        l.set_wrap(true);
+        c.append(&l);
+    }
+    c.append(&label(tr("Network")));
+    let nets: Vec<(&str, String)> = m::SANDBOX_NETWORKS.iter().map(|x| (x.0, tr(x.1).to_string())).collect();
+    let s = set.clone();
+    c.append(&segmented(&nets, n.data["network"].as_str().unwrap_or("nenhuma"), move |v| s("network", json!(v))));
+    c.append(&label(tr("At the end")));
+    let ends: Vec<(&str, String)> = m::SANDBOX_ENDS.iter().map(|x| (x.0, tr(x.1).to_string())).collect();
+    let s = set.clone();
+    c.append(&segmented(&ends, n.data["on_end"].as_str().unwrap_or("apagar"), move |v| s("on_end", json!(v))));
+    c.append(&label(tr("Goes into the machine")));
+    let s = set.clone();
+    let a = area(&m::crossings_text(&n.data["inputs"]), true, move |t| s("inputs", m::parse_crossings(&t)));
+    a.set_vexpand(false);
+    a.set_tooltip_text(Some(tr("One per line: <variable or path> → /folder/in/the/machine/")));
+    c.append(&a);
+    c.append(&label(tr("Comes back to the computer")));
+    let s = set.clone();
+    let a = area(&m::crossings_text(&n.data["outputs"]), true, move |t| s("outputs", m::parse_crossings(&t)));
+    a.set_vexpand(false);
+    a.set_tooltip_text(Some(tr("One per line: /folder/in/the/machine/* → ~/folder/")));
+    c.append(&a);
+    // (no shared folders: only the declared files cross)
+    let share = switch_row(tr("Share folders"), tr("none (default)"), false, false, |_| {});
+    share.set_tooltip_text(Some(tr("Only the files declared above go in and come back.")));
+    c.append(&share);
+    last_run_section(page, n);
+    let f = &page.insp_footer;
+    let info = caixa(Orientation::Horizontal, 8, "fluxo-sandbox-dica");
+    let i = ui_icon("info", "#8E8F99", 14);
+    i.set_valign(Align::Start);
+    info.append(&i);
+    let l = rotulo(tr("Drag blocks into the dashed area. Blocks outside do not see the machine; only the declared outputs pass."), "fluxo-chave-sub");
+    l.set_xalign(0.0);
+    l.set_wrap(true);
+    l.set_hexpand(true);
+    info.append(&l);
+    f.append(&info);
+}
+
 /// A kind in one word, for the live log ("agente", "condição", "ação").
 pub fn kind_word(kind: &str) -> String {
     tr(m::look(kind).caps).to_lowercase()
@@ -1800,7 +2684,7 @@ mod tests {
             for f in fields(k) {
                 let key = match f {
                     Field::Text(k, ..) | Field::Long(k, _) | Field::Number(k, _) | Field::Json(k, _) | Field::Choice(k, ..) => k,
-                    Field::Agent(k) | Field::Flow(k) | Field::Tool(k) => k,
+                    Field::Agent(k) | Field::Flow(k) | Field::Tool(k) | Field::Items(k) => k,
                 };
                 assert!(d.get(key).is_some() || ["save_as", "max_items"].contains(&key), "{k}.{key}");
             }

@@ -145,7 +145,7 @@ fn weekday_short(n: i32) -> &'static str {
     [tr("MON"), tr("TUE"), tr("WED"), tr("THU"), tr("FRI"), tr("SAT"), tr("SUN")][((n - 1).rem_euclid(7)) as usize]
 }
 
-fn month_name(m: i32) -> &'static str {
+pub(crate) fn month_name(m: i32) -> &'static str {
     [tr("January"), tr("February"), tr("March"), tr("April"), tr("May"), tr("June"), tr("July"), tr("August"), tr("September"),
         tr("October"), tr("November"), tr("December")][((m - 1).rem_euclid(12)) as usize]
 }

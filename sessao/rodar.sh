@@ -9,11 +9,13 @@ set -u
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 R="$ROOT/poc/.deps/root"; LIBS="$R/usr/lib/x86_64-linux-gnu"
+# the dev session builds with the "sessao" profile (incremental, no LTO: seconds to rebuild); KALANGO_PERFIL=release for the real thing
+PERFIL="${KALANGO_PERFIL:-sessao}"
 [ -f "$R/fonts.conf" ] && export FONTCONFIG_FILE="$R/fonts.conf"   # Inter, a fonte do Design System
 export LD_LIBRARY_PATH="$LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" PATH="$R/usr/bin:$PATH"
 N="${KALANGO_NIRI:-$ROOT/poc/.deps/src/niri/target/release/niri}"
 [ -x "$N" ] || { echo "falta o niri em poc/.deps/src/niri (cargo build --release lá)"; exit 1; }
-PKG_CONFIG_PATH="$LIBS/pkgconfig" cargo build --release -q -p kalango-shell -p kalango-aprovacao -p kalangod -p kalango-agente -p kalango-tela || exit 1
+PKG_CONFIG_PATH="$LIBS/pkgconfig" cargo build --profile "$PERFIL" -q -p kalango-shell -p kalango-aprovacao -p kalangod -p kalango-agente -p kalango-tela || exit 1
 T=$(mktemp -d /tmp/kalango-sessao-XXXX)
 mkdir -p "$T/raiz/etc"
 # KALANGO_AREA_TESTE: the only folder the agents may touch (tests and captures: never the person's real home, which
@@ -30,16 +32,16 @@ restore_root = "$T/raiz"
 # who may capture the screen and inject input in this niri (patch 0008): the shell types (on-screen keyboard);
 # Kalango Remote (the repository next to this one, or KALANGO_REMOTE_APP) asks for its core after an approval
 controle_remoto = "$T/controle-remoto"
-controle_remoto_sempre = ["$ROOT/target/release/kalango-shell teclado"]
+controle_remoto_sempre = ["$ROOT/target/$PERFIL/kalango-shell teclado"]
 controle_remoto_apps = ["${KALANGO_REMOTE_APP:-$ROOT/../kalango-remote/target/release/kalango-remote}", "$ROOT/../kalango-remote/target/debug/kalango-remote", "/usr/bin/kalango-remote"]
 # an agent operating the screen (tela.*): the helper kalangod starts for a session, as the person
-tela_auxiliar = "$ROOT/target/release/kalango-tela"
+tela_auxiliar = "$ROOT/target/$PERFIL/kalango-tela"
 [[callers]]
 name = "voce"
 max_level = "total"
 allowed_paths = ["${KALANGO_AREA_TESTE:-~}"]
 CFG
-"$ROOT/target/release/kalangod" servir --config "$T/kalangod.toml" 2>"$T/kalangod.log" &
+"$ROOT/target/$PERFIL/kalangod" servir --config "$T/kalangod.toml" 2>"$T/kalangod.log" &
 KP=$!
 # supervisão como na sessão real (Restart=always, 200 ms): se o processo cair, volta sozinho.
 # Recarga ao vivo: quando o binário é recompilado, o processo é reiniciado com a versão nova.
@@ -64,18 +66,18 @@ done
 SH
 chmod +x "$T/$1.sh"
 }
-supervisor shell "$ROOT/target/release/kalango-shell"
-supervisor aprovacao "$ROOT/target/release/kalango-aprovacao"
+supervisor shell "$ROOT/target/$PERFIL/kalango-shell"
+supervisor aprovacao "$ROOT/target/$PERFIL/kalango-aprovacao"
 # o comando do atalho fala com o shell que já está rodando (mesma instância GApplication)
 cat > "$T/kalango-shell" <<SH
 #!/bin/sh
-exec env KALANGO_SHELL_DEV=1 LD_PRELOAD=$LIBS/libgtk4-layer-shell.so GDK_BACKEND=wayland $ROOT/target/release/kalango-shell "\$@"
+exec env KALANGO_SHELL_DEV=1 LD_PRELOAD=$LIBS/libgtk4-layer-shell.so GDK_BACKEND=wayland $ROOT/target/$PERFIL/kalango-shell "\$@"
 SH
 chmod +x "$T/kalango-shell"
 # the person's own mouse or keyboard while an agent controls the screen (niri patch 0011): the session ends
 cat > "$T/tela-pessoa" <<SH
 #!/bin/sh
-exec env KALANGOD_SOCKET=$T/mcp.sock $ROOT/target/release/kalangod tela pessoa
+exec env KALANGOD_SOCKET=$T/mcp.sock $ROOT/target/$PERFIL/kalangod tela pessoa
 SH
 chmod +x "$T/tela-pessoa"
 # Super alone (niri patch 0003; in this nested session the Mod key is Alt): a tap opens the search, held it is voice mode

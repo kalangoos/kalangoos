@@ -22,6 +22,23 @@ pub fn caixa(o: Orientation, esp: i32, classe: &str) -> gtk::Box {
     b
 }
 
+/// Hides `b` while it has no children (GTK's CSS has no `:empty`): a footer that is sometimes empty keeps no padding.
+pub fn hide_when_empty(b: &gtk::Box) {
+    b.set_visible(b.first_child().is_some());
+    let w = b.downgrade();
+    let children = b.observe_children();
+    children.connect_items_changed(move |m, _, _, _| {
+        if let Some(b) = w.upgrade() {
+            b.set_visible(m.n_items() > 0);
+        }
+    });
+    // (the box keeps the list alive: dropped here, it stopped telling, and a footer hidden while empty never came
+    // back — the runs' "Decidir agora" and "Repetir" were never shown)
+    unsafe {
+        b.set_data("kalango-filhos-observados", children);
+    }
+}
+
 pub fn rotulo(t: &str, classe: &str) -> gtk::Label {
     let l = gtk::Label::new(Some(t));
     if !classe.is_empty() {

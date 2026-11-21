@@ -24,7 +24,7 @@ const NARROW: i32 = 1000;
 const TOKEN_LIMITS: [Option<u64>; 6] = [None, Some(5_000), Some(10_000), Some(20_000), Some(50_000), Some(100_000)];
 
 /// The kinds, in the order of the "Que tipo de agente" choice.
-const KINDS: [&str; 6] = ["assistant", "sequential", "parallel", "loop", "remote", "flow"];
+const KINDS: [&str; 7] = ["assistant", "sequential", "parallel", "loop", "tasks", "remote", "flow"];
 
 // ---------------------------------------------------------------- the draft (pure)
 
@@ -56,6 +56,8 @@ pub struct Draft {
     pub subs: Vec<String>,
     pub sub_modes: Vec<String>,
     pub output_key: String,
+    /// a team's word to every member, on top of its own instructions ("responda numa linha")
+    pub member_instruction: String,
     pub conversation: bool,
     pub keep_exchanges: u64,
     pub long_term: bool,
@@ -66,6 +68,15 @@ pub struct Draft {
     pub key_secret: String,
     pub timeout_s: u64,
     pub flow_id: String,
+    /// the agent's own icon ({name, color} or {svg, monochrome, color}); null = the default from its name and kind
+    pub icon: Value,
+    /// the structured input and output (fields {name, kind, required, description}); null = none
+    pub input_fields: Value,
+    pub output_fields: Value,
+    /// a task list's tasks ([{agent, description, expected_output, tools}])
+    pub tasks: Value,
+    /// where an assistant runs: null = this computer; else its sandbox (`config.sandbox`)
+    pub sandbox: Value,
 }
 
 impl Draft {
@@ -107,6 +118,7 @@ impl Draft {
             subs,
             sub_modes,
             output_key: c["output_key"].as_str().unwrap_or("").to_string(),
+            member_instruction: c["member_instruction"].as_str().unwrap_or("").to_string(),
             conversation: m["conversation"].as_bool().unwrap_or(true),
             keep_exchanges: m["keep_exchanges"].as_u64().unwrap_or(20),
             long_term: m["long_term"].as_bool().unwrap_or(false),
@@ -117,7 +129,17 @@ impl Draft {
             key_secret: c["key_secret"].as_str().unwrap_or("").to_string(),
             timeout_s: c["timeout_s"].as_u64().unwrap_or(300),
             flow_id: c["flow_id"].as_str().unwrap_or("").to_string(),
+            icon: a["icon"].clone(),
+            input_fields: a["input_fields"].clone(),
+            output_fields: a["output_fields"].clone(),
+            tasks: if c["tasks"].is_array() { c["tasks"].clone() } else { json!([]) },
+            sandbox: if c["sandbox"].is_object() { c["sandbox"].clone() } else { Value::Null },
         }
+    }
+
+    /// The agent as its tile shows it (agent_picker::icon_tile).
+    pub fn tile_agent(&self) -> Value {
+        json!({"name": self.name, "description": self.description, "kind": self.kind, "icon": self.icon})
     }
 
     /// The agent as the service saves it.
@@ -145,13 +167,30 @@ impl Draft {
                 c["max_tokens_per_run"] = json!(self.max_tokens);
                 c["allow_cloud"] = json!(self.allow_cloud);
                 c["reply_with_voice"] = json!(self.reply_with_voice);
+                if self.sandbox.is_object() {
+                    c["sandbox"] = self.sandbox.clone();
+                } else if let Some(o) = c.as_object_mut() {
+                    o.remove("sandbox");
+                }
             }
             "sequential" | "parallel" | "loop" => {
                 c["sub_agents"] = json!(self.subs);
                 c["output_key"] = key;
+                match self.member_instruction.trim() {
+                    "" => {
+                        if let Some(o) = c.as_object_mut() {
+                            o.remove("member_instruction");
+                        }
+                    }
+                    t => c["member_instruction"] = json!(t),
+                }
                 if self.kind == "loop" {
                     c["max_iterations"] = json!(self.max_iterations);
                 }
+            }
+            "tasks" => {
+                c["tasks"] = self.tasks.clone();
+                c["output_key"] = key;
             }
             "remote" => {
                 c["card_url"] = json!(self.card_url.trim());
@@ -163,6 +202,13 @@ impl Draft {
         let mut a = json!({"id": self.id, "name": self.name.trim(), "description": self.description.trim(), "kind": self.kind, "config": c});
         if !self.folder_id.is_null() {
             a["folder_id"] = self.folder_id.clone();
+        }
+        // (the top-level fields this editor does not change go back as they came)
+        let output = if output_allowed(&self.kind) { &self.output_fields } else { &Value::Null };
+        for (k, v) in [("icon", &self.icon), ("input_fields", &self.input_fields), ("output_fields", output)] {
+            if !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty()) {
+                a[k] = v.clone();
+            }
         }
         a
     }
@@ -202,6 +248,11 @@ pub fn draft_issues(d: &Draft) -> Vec<(&'static str, String)> {
                 v.push(("times", tr("Repeat from 1 to 20 times.").into()));
             }
         }
+        "tasks" => {
+            if let Some(t) = crate::agent_structured::tasks_issues(&d.tasks).into_iter().next() {
+                v.push(("tasks", t));
+            }
+        }
         "remote" => {
             if !(d.card_url.trim().starts_with("http://") || d.card_url.trim().starts_with("https://")) {
                 v.push(("card_url", tr("The address starts with http:// or https://.").into()));
@@ -215,6 +266,11 @@ pub fn draft_issues(d: &Draft) -> Vec<(&'static str, String)> {
     }
     if d.subs.contains(&d.id) {
         v.push(("subs", tr("An agent cannot use itself.").into()));
+    }
+    for f in [&d.input_fields, &d.output_fields] {
+        if let Some(t) = crate::agent_structured::fields_issues(f).into_iter().next() {
+            v.push(("fields", t));
+        }
     }
     v
 }
@@ -232,6 +288,7 @@ pub fn issue_text(msg: &str) -> String {
             "choose the flow" => tr("Choose the flow.").to_string(),
             "the remote agent's address starts with http:// or https://" => tr("The address starts with http:// or https://.").to_string(),
             "the time limit goes from 1 to 600 s" => tr("The time limit goes from 1 to 600 s.").to_string(),
+            "structured output is for assistants and task lists" => tr("Only assistants and task lists have a structured output.").to_string(),
             m if m.starts_with("repeat from 1 to") => tr("Repeat from 1 to 20 times.").to_string(),
             m => m.to_string(),
         })
@@ -239,10 +296,17 @@ pub fn issue_text(msg: &str) -> String {
         .join(" ")
 }
 
+/// Whether an agent of this kind can have a structured output (kalango-fluxos: assistants and task lists).
+fn output_allowed(kind: &str) -> bool {
+    matches!(kind, "assistant" | "tasks")
+}
+
 fn kind_note(kind: &str) -> &'static str {
     match kind {
         "remote" => tr("An agent of another machine, through the A2A protocol: it gets the request and answers."),
         "flow" => tr("The agent is a flow: blocks, conditions and approvals in the visual builder."),
+        // (design 41: the tasks' own words)
+        "tasks" => tr("An assistant talks and uses tools. Sequence, parallel and repetition combine other agents; tasks give each assistant a part of the work; flow opens the visual builder."),
         _ => tr("An assistant talks and uses tools. Sequence, parallel and repetition combine other agents; flow opens the visual builder."),
     }
 }
@@ -256,21 +320,16 @@ fn mode_note_text(mode: &str, times: u64) -> String {
     }
 }
 
-/// How a tool call of a test run shows as a step of the main chat (conversa.rs `step_row`): its icon and colour,
-/// title, title class and the detail in mono. The engine gives `[name, ok, summary]`.
-pub fn call_step(call: &Value) -> (&'static str, &'static str, String, &'static str, String) {
-    let name = call[0].as_str().unwrap_or("");
-    let ok = call[1].as_bool().unwrap_or(false);
-    let summary = call[2].as_str().unwrap_or("");
-    if ok {
-        ("check", ui::tone_color("teal"), name.to_string(), "passo-titulo-feito", crate::chat_blocks::short_path(summary))
-    } else {
-        ("erro", ui::tone_color("coral"), name.to_string(), "passo-titulo-falhou", tr("did not work").to_string())
+/// The model an agent of this draft thinks with, as its header's chip ("LFM3 local").
+fn draft_models(d: &Draft) -> Vec<String> {
+    if d.kind != "assistant" {
+        return Vec::new();
     }
+    vec![if d.model_mode == "auto" { tr("LFM3 local").to_string() } else { ui::model_label(&d.model) }]
 }
 
 /// A tool that would have asked for approval in a real run (design 02: "arquivos.apagar pediria aprovação
-/// (simulado)"): the engine's `would_ask` entry `{tool, arguments}` → the step's title and detail.
+/// (simulado)"): the engine's `would_ask` entry `{tool, arguments}` → the tool and what it would work on.
 pub fn would_ask_step(entry: &Value) -> (String, String) {
     let tool = entry["tool"].as_str().unwrap_or("");
     let args = &entry["arguments"];
@@ -279,7 +338,7 @@ pub fn would_ask_step(entry: &Value) -> (String, String) {
     if detail.is_empty() {
         detail = args.as_object().and_then(|o| o.values().find_map(|v| v.as_str().map(str::to_string))).unwrap_or_default();
     }
-    (trf("{tool} would ask for approval (simulated)", &[("tool", tool.to_string())]), detail)
+    (tool.to_string(), detail)
 }
 
 /// Why a test run failed, as the person reads it. The service, the engine and ADK answer in English (or, for the
@@ -318,6 +377,13 @@ pub fn run_error_text(msg: &str) -> String {
     if low.contains("is not an assistant") {
         return tr("Only assistants can do a task or use tools: check who does each one.").to_string();
     }
+    // a remote (A2A) agent: the other side refused the key, or is not there
+    if low.contains("401") || low.contains("403") || low.contains("unauthorized") || low.contains("forbidden") {
+        return tr("The remote agent refused the key: choose its key in Key (from the vault).").to_string();
+    }
+    if low.contains("connection refused") || low.contains("error sending request") || low.contains("dns error") {
+        return tr("The remote agent is not answering at this address.").to_string();
+    }
     if low.contains("remote (a2a) agents are not available") {
         return tr("Remote (A2A) agents cannot be tested here yet.").to_string();
     }
@@ -353,17 +419,14 @@ pub fn stop_text(why: &str) -> String {
     tr("Stopped by the defence: content read during the task tried to steer it.").to_string()
 }
 
-fn seconds_label(ms: u128) -> String {
-    format!("{} s", format!("{:.1}", ms as f64 / 1000.0).replace('.', ","))
-}
 
 // ---------------------------------------------------------------- the page
 
 pub struct AgentEditor {
     pub root: gtk::Overlay,
-    /// the sandbox section's place, at the end of "Avançado" (filled by the sandbox's own code)
-    #[allow(dead_code)]
+    /// the sandbox section's place, first in "Avançado"
     pub sandbox_slot: gtk::Box,
+    sandbox: Rc<crate::agent_sandbox::SandboxSection>,
     pub nav: RefCell<Option<Nav>>,
     /// tells the window the agent's name (the breadcrumb "Agentes › …")
     pub on_title: RefCell<Option<Rc<dyn Fn(&str)>>>,
@@ -375,7 +438,17 @@ pub struct AgentEditor {
     saved_at: Cell<i64>,
     narrow: Cell<bool>,
     // header
-    tile: gtk::Box,
+    /// the structured parts (agent_structured.rs): the task list, the input and output tables, the test form
+    tasks_editor: Rc<crate::agent_structured::TasksEditor>,
+    tasks_err: gtk::Label,
+    input_table: Rc<crate::agent_structured::FieldsTable>,
+    output_table: Rc<crate::agent_structured::FieldsTable>,
+    fields_err: gtk::Label,
+    test_form: Rc<crate::agent_structured::TestForm>,
+    test_note: gtk::Label,
+    chat_input: gtk::Box,
+    /// the agent's icon on the header's tile, and its picker (design 44)
+    icon_picker: Rc<crate::agent_icon_picker::IconPicker>,
     name: gtk::Entry,
     sub_kind: gtk::Label,
     sub_state: gtk::Label,
@@ -424,6 +497,9 @@ pub struct AgentEditor {
     mode_note: gtk::Label,
     times_row: gtk::Box,
     times: gtk::SpinButton,
+    member_box: gtk::Box,
+    member_entry: gtk::Entry,
+    output_box: gtk::Box,
     subs_count: gtk::Label,
     subs_list: gtk::Box,
     subs_err: gtk::Label,
@@ -454,6 +530,9 @@ pub struct AgentEditor {
     session: RefCell<String>,
     preview: gtk::Box,
     main: gtk::Stack,
+    /// the test panel's width limit and the form's (see `set_width`)
+    side_limit: crate::limite::Limite,
+    form: crate::limite::Limite,
     row: gtk::Box,
     holder: gtk::Box,
     // what the service knows
@@ -503,6 +582,25 @@ fn spin(min: f64, max: f64, step: f64) -> gtk::SpinButton {
     s.add_css_class("fx-numero");
     s.set_valign(Align::Center);
     s
+}
+
+/// The widest the form gets (frame 02: about 900 px of fields beside the test panel); on wider windows it stays this
+/// wide, centred (crate::limite: the limit gives way, so it never holds the window wide).
+const FORM_MAX: i32 = 920;
+
+/// The narrowest the test panel is beside the form.
+const PANEL_MIN: i32 = 360;
+
+/// Whether the editor shows the test panel as a page of its own (behind "Testar") at this width, with a form that
+/// cannot be narrower than `form_min`.
+fn is_narrow(width: i32, form_min: i32) -> bool {
+    width < NARROW.max(form_min + PANEL_MIN)
+}
+
+/// The test panel's width beside the form: frame 02's on usual windows, a little more on wide ones (it holds a
+/// conversation), never so much that the form is squeezed.
+fn side_width(width: i32) -> i32 {
+    ((width as f64 * 0.3) as i32).clamp(ui::panel_width(width), 600)
 }
 
 impl AgentEditor {
@@ -575,6 +673,15 @@ impl AgentEditor {
         pages.set_transition_type(gtk::StackTransitionType::Crossfade);
         pages.set_transition_duration(120);
         let ed: Rc<RefCell<Weak<AgentEditor>>> = Rc::default();
+        // the header's tile is the icon picker (design 44)
+        let e2 = ed.clone();
+        let icon_picker = crate::agent_icon_picker::IconPicker::new(move |icon| {
+            if let Some(e) = e2.borrow().upgrade() {
+                e.draft.borrow_mut().icon = icon;
+                e.changed();
+            }
+        });
+        tile.append(&icon_picker.button);
         let e2 = ed.clone();
         let tabs = Tabs::new(
             &[("geral", tr("General")), ("ferramentas", tr("Tools")), ("conectores", tr("Connectors")), ("subagentes", tr("Sub-agents")), ("memoria", tr("Memory")), ("avancado", tr("Advanced"))],
@@ -604,6 +711,7 @@ impl AgentEditor {
                 ("sequential".into(), tr("Sequence").into()),
                 ("parallel".into(), tr("Parallel").into()),
                 ("loop".into(), tr("Repetition").into()),
+                ("tasks".into(), tr("Tasks").into()),
                 ("remote".into(), tr("Remote (A2A)").into()),
                 ("flow".into(), tr("Flow").into()),
             ],
@@ -725,6 +833,20 @@ impl AgentEditor {
         team_box.append(&to_subs);
         g.append(&team_box);
 
+        // tasks: who does what, in order (design 41)
+        let e2 = ed.clone();
+        let tasks_editor = crate::agent_structured::TasksEditor::new(move || {
+            if let Some(e) = e2.borrow().upgrade().filter(|e| !e.filling.get()) {
+                let v = e.tasks_editor.value();
+                e.draft.borrow_mut().tasks = v;
+                e.changed();
+            }
+        });
+        tasks_editor.root.set_margin_top(24);
+        g.append(&tasks_editor.root);
+        let tasks_err = ui::error_label();
+        g.append(&tasks_err);
+
         // remote
         let remote_box = caixa(Orientation::Vertical, 12, "");
         remote_box.set_margin_top(24);
@@ -800,6 +922,14 @@ impl AgentEditor {
         times_row.append(&times);
         times_row.append(&rotulo(tr("times"), "fx-rotulo-linha"));
         s.append(&times_row);
+        // what every member hears in this team, on top of its own instructions (kalango-fluxos' member_instruction)
+        let member_box = caixa(Orientation::Vertical, 6, "");
+        member_box.set_margin_top(18);
+        member_box.append(&ui::left(tr("Every member hears"), "fx-rotulo-linha"));
+        let member_entry = ui::entry("", tr("on top of its own instructions, e.g. “answer in one line”"));
+        member_box.append(&member_entry);
+        member_box.append(&ui::wrapped(tr("Keeps the members' answers short and in one shape (most useful when they work at the same time)."), "fx-nota"));
+        s.append(&member_box);
         let sh = caixa(Orientation::Horizontal, 8, "");
         sh.set_margin_top(24);
         let st = section_title(tr("Sub-agents"));
@@ -863,7 +993,60 @@ impl AgentEditor {
 
         // ---- Avançado
         let a = new_page("avancado");
-        a.append(&section_title(tr("Name and result")));
+        // structured input and output (design 42)
+        let fields_changed = |e2: Rc<RefCell<Weak<AgentEditor>>>| {
+            move || {
+                if let Some(e) = e2.borrow().upgrade().filter(|e| !e.filling.get()) {
+                    e.read_fields();
+                }
+            }
+        };
+        a.append(&row_title(tr("Structured input"), tr("the fields every run must bring")));
+        let input_table = crate::agent_structured::FieldsTable::new(fields_changed(ed.clone()));
+        input_table.root.set_margin_top(12);
+        a.append(&input_table.root);
+        let inote = ui::wrapped(tr("The fields fill the variables of the same name in the instructions. Flows, the Chat, HTTP and MCP pass these fields; a run only starts when they check."), "fx-nota");
+        inote.set_margin_top(8);
+        a.append(&inote);
+        // (structured output: assistants and task lists only — kalango-fluxos refuses it on the others)
+        let output_box = caixa(Orientation::Vertical, 0, "");
+        let oh = caixa(Orientation::Horizontal, 8, "");
+        oh.set_margin_top(24);
+        let ot = row_title(tr("Structured output"), tr("what the answer must have"));
+        ot.set_hexpand(true);
+        oh.append(&ot);
+        let schema_btn = gtk::MenuButton::new();
+        schema_btn.add_css_class("fx-link-botao");
+        let sb = caixa(Orientation::Horizontal, 6, "");
+        sb.append(&ui::glyph("codigo", ui::ACCENT, 14));
+        sb.append(&rotulo(tr("See JSON Schema"), "fx-link"));
+        schema_btn.set_child(Some(&sb));
+        let schema_pop = gtk::Popover::new();
+        let schema_text = rotulo("", "cartao-codigo");
+        schema_text.set_selectable(true);
+        schema_text.set_xalign(0.0);
+        schema_pop.set_child(Some(&schema_text));
+        schema_btn.set_popover(Some(&schema_pop));
+        oh.append(&schema_btn);
+        output_box.append(&oh);
+        let output_table = crate::agent_structured::FieldsTable::new(fields_changed(ed.clone()));
+        output_table.root.set_margin_top(12);
+        output_box.append(&output_table.root);
+        let onote = ui::wrapped(tr("The model answers in this format; if it does not, it is corrected and answers again. Flows read the fields as <result>.<field>."), "fx-nota");
+        onote.set_margin_top(8);
+        output_box.append(&onote);
+        a.append(&output_box);
+        let fields_err = ui::error_label();
+        a.append(&fields_err);
+        {
+            let (t, ot) = (schema_text.clone(), output_table.clone());
+            schema_pop.connect_show(move |_| {
+                t.set_text(&serde_json::to_string_pretty(&crate::agent_structured::json_schema(&ot.value())).unwrap_or_default());
+            });
+        }
+        let nt = section_title(tr("Name and result"));
+        nt.set_margin_top(24);
+        a.append(&nt);
         let desc = ui::entry("", tr("what it does, in one line (the library shows it)"));
         let dl = ui::labelled(tr("Description"), &desc);
         dl.set_margin_top(12);
@@ -886,11 +1069,23 @@ impl AgentEditor {
         let (cl, cloud, _) = switch_row(tr("Allow cloud models"), tr("without it, the agent never leaves this computer, even when the local model fails"));
         cl.set_margin_top(14);
         a.append(&cl);
+        // where it runs (design "Agente · sandbox"): first in Avançado
         let sandbox_slot = caixa(Orientation::Vertical, 0, "");
-        sandbox_slot.set_margin_top(24);
-        a.append(&sandbox_slot);
+        sandbox_slot.set_margin_bottom(24);
+        a.prepend(&sandbox_slot);
+        let e2 = ed.clone();
+        let sandbox = crate::agent_sandbox::SandboxSection::new(move |v| {
+            if let Some(e) = e2.borrow().upgrade().filter(|e| !e.filling.get()) {
+                e.draft.borrow_mut().sandbox = v;
+                e.changed();
+                e.update_side();
+            }
+        });
+        sandbox_slot.append(&sandbox.root);
 
-        main.add_named(&page, Some("editor"));
+        let form = crate::limite::Limite::new(&page, FORM_MAX);
+        form.add_css_class("fx-pagina");
+        main.add_named(&form, Some("editor"));
         // ---- the side: Testar agora, or the team's preview
         let side = ui::side_panel(pw);
         let side_stack = gtk::Stack::new();
@@ -926,6 +1121,11 @@ impl AgentEditor {
         chat_send.set_child(Some(&ui::glyph("enviar", ui::ON_ACCENT, 14)));
         ib.append(&chat_send);
         chat_frame.append(&ib);
+        // an agent with a structured input is tested from a form of its fields (design 42)
+        let test_form = crate::agent_structured::TestForm::new();
+        test_form.root.set_margin_top(14);
+        test_form.root.set_visible(false);
+        chat.append(&test_form.root);
         chat.append(&chat_frame);
         let shield = ui::note("escudo", tr("What the agent reads from files and pages is data, never orders."));
         shield.set_margin_top(12);
@@ -947,6 +1147,7 @@ impl AgentEditor {
         tb.append(&as_flow);
         team.append(&tb);
         side_stack.add_named(&team, Some("equipe"));
+        side_stack.add_named(&sandbox.side, Some("sandbox"));
         side.append(&side_stack);
         // the side as a page on narrow windows
         let detail = caixa(Orientation::Vertical, 0, "fx-detalhe");
@@ -961,7 +1162,13 @@ impl AgentEditor {
         detail.append(&holder);
         main.add_named(&detail, Some("lado"));
         row.append(&main);
-        row.append(&side);
+        // the panel's width is a limit, not a minimum: a narrowing window squeezes it (until the editor turns narrow
+        // and the panel becomes a page) instead of being held wide by it, which pushed the panel out of sight
+        side.set_size_request(-1, -1);
+        let side_limit = crate::limite::Limite::new(&side, pw);
+        side_limit.set_hexpand(false);
+        side_limit.set_fill(true);
+        row.append(&side_limit);
         root.set_child(Some(&row));
         let meter = gtk::DrawingArea::new();
         meter.set_can_target(false);
@@ -971,12 +1178,12 @@ impl AgentEditor {
         root.set_measure_overlay(&meter, false);
 
         let e = Rc::new(AgentEditor {
-            root, sandbox_slot, nav: RefCell::default(), on_title: RefCell::default(), draft: RefCell::new(Draft::new_assistant("")), is_new: Cell::new(true), dirty: Cell::new(false),
-            filling: Cell::new(false), version: Cell::new(0), saved_at: Cell::new(0), narrow: Cell::new(false), tile, name: name.clone(), sub_kind, sub_state, sub_version, error,
+            root, sandbox_slot, sandbox, nav: RefCell::default(), on_title: RefCell::default(), draft: RefCell::new(Draft::new_assistant("")), is_new: Cell::new(true), dirty: Cell::new(false),
+            side_limit, form: form.clone(), filling: Cell::new(false), version: Cell::new(0), saved_at: Cell::new(0), narrow: Cell::new(false), icon_picker, tasks_editor, tasks_err, input_table, output_table, fields_err, test_form: test_form.clone(), test_note: cn.clone(), chat_input: ib.clone(), name: name.clone(), sub_kind, sub_state, sub_version, error,
             history_box, test_btn: test_btn.clone(), tabs, pages, kind_seg, kind_note, assistant_box, team_box, team_summary, remote_box, flow_box, instr: instr.clone(), instr_err, vars,
             model_dd: model_dd.clone(), model_name: model_name.clone(), model_err, fallback_dd: fallback_dd.clone(), fallback_name: fallback_name.clone(), routing, voice: voice.clone(),
             creativity: creativity.clone(), creativity_value, limit_dd: limit_dd.clone(), tools_summary, tools_list, remote_url: remote_url.clone(), remote_err, remote_key: remote_key.clone(),
-            remote_timeout: remote_timeout.clone(), flow_dd: flow_dd.clone(), flow_err, catalog_query: catalog_query.clone(), catalog, connectors_list, mode_seg, mode_note, times_row,
+            remote_timeout: remote_timeout.clone(), flow_dd: flow_dd.clone(), flow_err, catalog_query: catalog_query.clone(), catalog, connectors_list, mode_seg, mode_note, times_row, member_box: member_box.clone(), member_entry: member_entry.clone(), output_box: output_box.clone(),
             times: times.clone(), subs_count, subs_list, subs_err, add_sub_box, add_sub: add_sub.clone(), mem_box, mem_note, mem_conv: mem_conv.clone(), mem_conv_sub, mem_long: mem_long.clone(),
             mem_compact: mem_compact.clone(), docs, desc: desc.clone(), output_key: output_key.clone(), output_err, max_out: max_out.clone(), cloud: cloud.clone(), side, side_stack,
             chat_list, chat_scroll, chat_entry: chat_entry.clone(), chat_send: chat_send.clone(), chat_back: chat_back.clone(), session: RefCell::default(), preview, main, row, holder,
@@ -1052,6 +1259,8 @@ impl AgentEditor {
             e.render_preview();
         }));
         times.connect_value_changed(move |_| f());
+        let f = edit(&w, Box::new(|e| e.draft.borrow_mut().member_instruction = e.member_entry.text().to_string()));
+        member_entry.connect_changed(move |_| f());
         let f = edit(&w, Box::new(|e| e.draft.borrow_mut().conversation = e.mem_conv.is_active()));
         mem_conv.connect_active_notify(move |_| f());
         let f = edit(&w, Box::new(|e| e.draft.borrow_mut().long_term = e.mem_long.is_active()));
@@ -1125,6 +1334,8 @@ impl AgentEditor {
         };
         let s2 = send.clone();
         chat_send.connect_clicked(move |_| s2());
+        let s3 = send.clone();
+        test_form.run.connect_clicked(move |_| s3());
         chat_entry.connect_activate(move |_| send());
         let w2 = w.clone();
         test_team.connect_clicked(move |_| {
@@ -1232,6 +1443,7 @@ impl AgentEditor {
             let Some(e) = w.upgrade() else { return };
             *e.agents.borrow_mut() = r.ok().and_then(|v| v.as_array().cloned()).unwrap_or_default().into_iter().map(|x| x["agent"].clone()).collect();
             e.render_subs();
+            e.render_tasks();
             e.render_preview();
         });
         let w = Rc::downgrade(self);
@@ -1266,22 +1478,25 @@ impl AgentEditor {
     }
 
     fn set_width(&self, width: i32) {
-        let narrow = width < NARROW;
+        // narrow: under NARROW, or when the form at its narrowest and the panel at its narrowest do not fit side by
+        // side (then the window could not be as narrow as the compositor wants, and the panel would be cut off)
+        let narrow = is_narrow(width, self.form.measure(Orientation::Horizontal, -1).0);
+        // wide: the test panel grows a little (the form keeps frame 02's width: `FORM_MAX`, in `new`)
+        self.side_limit.set_max(if narrow { i32::MAX / 2 } else { side_width(width) });
+        self.side_limit.set_fill(!narrow);
         if narrow == self.narrow.get() {
             return;
         }
         self.narrow.set(narrow);
         if narrow {
-            self.row.remove(&self.side);
-            self.holder.append(&self.side);
-            self.side.set_hexpand(true);
-            self.side.set_size_request(-1, -1);
+            self.row.remove(&self.side_limit);
+            self.holder.append(&self.side_limit);
+            self.side_limit.set_hexpand(true);
             self.side.add_css_class("estreito");
         } else {
-            self.holder.remove(&self.side);
-            self.row.append(&self.side);
-            self.side.set_hexpand(false);
-            self.side.set_size_request(ui::panel_width(width + 64), -1);
+            self.holder.remove(&self.side_limit);
+            self.row.append(&self.side_limit);
+            self.side_limit.set_hexpand(false);
             self.side.remove_css_class("estreito");
             self.main.set_visible_child_name("editor");
         }
@@ -1291,6 +1506,18 @@ impl AgentEditor {
     fn show_tab(&self, id: &str) {
         self.tabs.show(id);
         self.pages.set_visible_child_name(id);
+        self.update_side();
+    }
+
+    /// The side: "Como fica" beside Avançado while the agent runs in a sandbox; else the test (or the team).
+    fn update_side(&self) {
+        let on_adv = self.pages.visible_child_name().as_deref() == Some("avancado");
+        let kind = self.draft.borrow().kind.clone();
+        if on_adv && kind == "assistant" && self.sandbox.is_on() {
+            self.side_stack.set_visible_child_name("sandbox");
+        } else if self.side_stack.visible_child_name().as_deref() == Some("sandbox") {
+            self.side_stack.set_visible_child_name(if matches!(kind.as_str(), "sequential" | "parallel" | "loop") { "equipe" } else { "teste" });
+        }
     }
 
     fn changed(&self) {
@@ -1313,6 +1540,7 @@ impl AgentEditor {
         self.remote_url.set_text(&d.card_url);
         self.remote_timeout.set_value(d.timeout_s as f64);
         self.times.set_value(d.max_iterations as f64);
+        self.member_entry.set_text(&d.member_instruction);
         self.mem_conv.set_active(d.conversation);
         self.mem_conv_sub.set_text(&trf("the history goes into the context (the last {n} exchanges)", &[("n", d.keep_exchanges.to_string())]));
         self.mem_long.set_active(d.long_term);
@@ -1326,6 +1554,12 @@ impl AgentEditor {
         self.fill_flows();
         self.fill_secrets();
         self.paint_variables();
+        self.input_table.set(&d.input_fields);
+        self.output_table.set(&d.output_fields);
+        self.test_form.set_fields(&d.input_fields);
+        self.render_test_mode();
+        self.render_tasks();
+        self.sandbox.set(&d.sandbox);
         self.render_kind();
         self.render_tools();
         self.render_catalog();
@@ -1333,7 +1567,7 @@ impl AgentEditor {
         self.render_subs();
         self.render_docs();
         self.render_state();
-        for l in [&self.instr_err, &self.model_err, &self.remote_err, &self.flow_err, &self.subs_err, &self.output_err] {
+        for l in [&self.instr_err, &self.model_err, &self.remote_err, &self.flow_err, &self.subs_err, &self.output_err, &self.tasks_err, &self.fields_err] {
             ui::show_error(l, "");
         }
     }
@@ -1451,6 +1685,9 @@ impl AgentEditor {
     }
 
     fn render_kind(self: &Rc<Self>) {
+        // (only an assistant runs in a sandbox: kalango-fluxos reads `sandbox` from an assistant's config)
+        self.sandbox_slot.set_visible(self.draft.borrow().kind == "assistant");
+        self.update_side();
         let d = self.draft.borrow().clone();
         let k = d.kind.as_str();
         self.filling.set(true);
@@ -1461,12 +1698,14 @@ impl AgentEditor {
         self.kind_note.set_text(kind_note(k));
         self.mode_note.set_text(&mode_note_text(k, d.max_iterations));
         self.times_row.set_visible(k == "loop");
-        ui::clear_box(&self.tile);
-        self.tile.append(&ui::icon_tile(ui::kind_glyph(k), ui::kind_tone(k), 44));
+        self.member_box.set_visible(team);
+        self.output_box.set_visible(output_allowed(k));
+        self.icon_picker.set(&d.tile_agent());
         self.sub_kind.set_text(ui::kind_label(k));
         let assistant = k == "assistant";
         self.assistant_box.set_visible(assistant);
         self.team_box.set_visible(team);
+        self.tasks_editor.root.set_visible(k == "tasks");
         self.remote_box.set_visible(k == "remote");
         self.flow_box.set_visible(k == "flow");
         for (tab, on) in [("ferramentas", assistant), ("conectores", assistant), ("subagentes", assistant || team), ("memoria", true)] {
@@ -1478,6 +1717,37 @@ impl AgentEditor {
         self.team_summary.set_text(&if names.is_empty() { tr("No sub-agent yet.").to_string() } else { names.join(if k == "parallel" { " · " } else { " → " }) });
         self.side_stack.set_visible_child_name(if team && !self.chat_back.is_visible() { "equipe" } else { "teste" });
         self.render_preview();
+    }
+
+    /// The task list from the draft (with the assistants that can take tasks).
+    fn render_tasks(&self) {
+        let d = self.draft.borrow().clone();
+        self.filling.set(true);
+        self.tasks_editor.set(&d.tasks, &self.agents.borrow());
+        self.filling.set(false);
+    }
+
+    /// The structured input and output from their tables; the test form follows the input.
+    fn read_fields(&self) {
+        let none_if_empty = |v: Value| if v.as_array().is_some_and(|a| a.is_empty()) { Value::Null } else { v };
+        let (i, o) = (none_if_empty(self.input_table.value()), none_if_empty(self.output_table.value()));
+        {
+            let mut d = self.draft.borrow_mut();
+            d.input_fields = i.clone();
+            d.output_fields = o;
+        }
+        ui::show_error(&self.fields_err, "");
+        self.test_form.set_fields(&i);
+        self.render_test_mode();
+        self.changed();
+    }
+
+    /// "Testar agora" with a form (an agent with a structured input) or with the message field.
+    fn render_test_mode(&self) {
+        let form = !self.test_form.is_empty();
+        self.test_form.root.set_visible(form);
+        self.chat_input.set_visible(!form);
+        self.test_note.set_text(if form { tr("The form comes from the structured input.") } else { tr("Runs for real, with the chosen model, in simulation: nothing changes in the system.") });
     }
 
     fn render_state(&self) {
@@ -1695,7 +1965,7 @@ impl AgentEditor {
             handle.set_valign(Align::Start);
             handle.set_cursor_from_name(Some("grab"));
             r.append(&handle);
-            r.append(&ui::icon_tile(ui::kind_glyph(k), ui::kind_tone(k), 36));
+            r.append(&crate::agent_picker::icon_tile(&a, 36));
             let c = caixa(Orientation::Vertical, 2, "");
             c.set_hexpand(true);
             c.append(&ui::left(a["name"].as_str().unwrap_or(id), "fx-cartao-nome"));
@@ -1797,7 +2067,7 @@ impl AgentEditor {
             let b = gtk::Button::new();
             b.add_css_class("central-menu-item");
             let bc = caixa(Orientation::Horizontal, 8, "");
-            bc.append(&ui::glyph(ui::kind_glyph(ui::kind_of(a)), ui::tone_color(ui::kind_tone(ui::kind_of(a))), 14));
+            bc.append(&crate::agent_picker::icon_tile(a, 22));
             bc.append(&rotulo(a["name"].as_str().unwrap_or(id), ""));
             b.set_child(Some(&bc));
             let (w, id) = (Rc::downgrade(self), id.to_string());
@@ -1923,20 +2193,17 @@ impl AgentEditor {
         }
     }
 
-    fn pick_documents(self: &Rc<Self>, b: &gtk::Button) {
-        let d = gtk::FileDialog::new();
-        d.set_title(tr("Reference documents"));
+    fn pick_documents(self: &Rc<Self>, _b: &gtk::Button) {
+        // (the system's chooser, straight: no round trip through the portal)
         let w = Rc::downgrade(self);
-        d.open_multiple(b.root().and_downcast_ref::<gtk::Window>(), gtk::gio::Cancellable::NONE, move |r| {
-            let (Some(e), Ok(files)) = (w.upgrade(), r) else { return };
+        crate::arquivos::seletor::abrir_varios(tr("Agents"), tr("Reference documents"), Vec::new(), None, move |files| {
+            let Some(e) = w.upgrade() else { return };
             {
                 let mut d = e.draft.borrow_mut();
-                for i in 0..files.n_items() {
-                    if let Some(p) = files.item(i).and_downcast::<gtk::gio::File>().and_then(|f| f.path()) {
-                        let p = p.to_string_lossy().into_owned();
-                        if !d.documents.contains(&p) {
-                            d.documents.push(p);
-                        }
+                for p in files {
+                    let p = p.to_string_lossy().into_owned();
+                    if !d.documents.contains(&p) {
+                        d.documents.push(p);
                     }
                 }
             }
@@ -1963,7 +2230,7 @@ impl AgentEditor {
     fn save(self: &Rc<Self>, then: Option<Box<dyn FnOnce(&Rc<AgentEditor>, bool)>>) {
         let d = self.draft.borrow().clone();
         let issues = draft_issues(&d);
-        for l in [&self.instr_err, &self.model_err, &self.remote_err, &self.flow_err, &self.subs_err, &self.output_err] {
+        for l in [&self.instr_err, &self.model_err, &self.remote_err, &self.flow_err, &self.subs_err, &self.output_err, &self.tasks_err, &self.fields_err] {
             ui::show_error(l, "");
         }
         ui::show_error(&self.error, "");
@@ -1976,6 +2243,8 @@ impl AgentEditor {
                     "flow" => (&self.flow_err, "geral"),
                     "subs" | "times" => (&self.subs_err, "subagentes"),
                     "output_key" => (&self.output_err, "avancado"),
+                    "tasks" => (&self.tasks_err, "geral"),
+                    "fields" => (&self.fields_err, "avancado"),
                     _ => (&self.error, ""),
                 };
                 ui::show_error(label, msg);
@@ -2073,35 +2342,132 @@ impl AgentEditor {
     /// "Testar agora": saves what changed, then a real run through `chat.send`.
     fn send_test(self: &Rc<Self>) {
         let text = self.chat_entry.text().trim().to_string();
-        if text.is_empty() || !self.chat_send.is_sensitive() {
+        // an agent with a structured input: the form's values (each problem under its field)
+        let input = if self.test_form.is_empty() {
+            None
+        } else {
+            match self.test_form.value() {
+                Some(v) => Some(v),
+                None => return,
+            }
+        };
+        if (text.is_empty() && input.is_none()) || !self.chat_send.is_sensitive() {
             return;
         }
-        // the same blocks as the main chat (conversa.rs): the person's bubble, then "Pensando…" while it runs
-        self.chat_list.append(&crate::chat_blocks::person_message(&text));
+        // the same blocks as the main chat (chat_blocks.rs): the person's bubble, the agent's header and its steps
+        // ("Pensando…" while it runs)
+        let shown = match &input {
+            Some(i) => {
+                let summary = crate::agent_picker::input_summary(&crate::agent_picker::fields(&self.draft.borrow().input_fields), i);
+                if text.is_empty() { summary } else { format!("{summary}\n{text}") }
+            }
+            None => text.clone(),
+        };
+        self.chat_list.append(&crate::chat_blocks::person_message(&shown));
         self.chat_entry.set_text("");
-        let wait = caixa(Orientation::Horizontal, 8, "passos-resumo");
-        wait.set_halign(Align::Start);
-        let wi = crate::conversa::ui_icon("raio", ui::MUTED, 16);
-        wi.add_css_class("pulsando");
-        wait.append(&wi);
-        wait.append(&rotulo(tr("Thinking…"), "passos-titulo"));
+        self.test_form.run.set_sensitive(false);
+        let d = self.draft.borrow().clone();
+        let wait = caixa(Orientation::Vertical, 12, "");
+        let when = glib::DateTime::now_local().ok().and_then(|t| t.format("%H:%M").ok()).map(|x| x.to_string()).unwrap_or_default();
+        let name = if d.name.trim().is_empty() { tr("Agent").to_string() } else { d.name.trim().to_string() };
+        wait.append(&crate::chat_blocks::agent_header(&name, &draft_models(&d), &when));
+        let steps = crate::chat_blocks::StepsList::new(true);
+        steps.set_waiting_text(tr("test"));
+        // "tentar de novo" on a failed step: the same message again
+        let w = Rc::downgrade(self);
+        let again = text.clone();
+        steps.set_on_retry(move || {
+            if let Some(e) = w.upgrade() {
+                e.chat_entry.set_text(&again);
+                e.send_test();
+            }
+        });
+        steps.show_thinking(tr("Thinking…"));
+        // (the members' and tasks' names: the agents' list, read now if it is old; then the first task's line)
+        let (s1, tasks) = (Rc::downgrade(&steps), (d.kind == "tasks").then(|| d.tasks.clone()));
+        crate::agent_picker::load_agents(move |_| {
+            let first = tasks.and_then(|t| crate::chat_blocks::next_task_text(&t, 0, &crate::chat_blocks::agent_names()));
+            if let (Some(s), Some(first)) = (s1.upgrade(), first) {
+                if s.is_empty() {
+                    s.show_thinking(&first);
+                }
+            }
+        });
+        wait.append(&steps.widget());
         self.chat_list.append(&wait);
         self.chat_send.set_sensitive(false);
         self.scroll_chat();
         let wait_run = wait.clone();
         let run = move |e: &Rc<AgentEditor>| {
-            let wait = wait_run;
+            let wait2 = wait_run;
             let started = std::time::Instant::now();
             let d = e.draft.borrow().clone();
             let session = e.session.borrow().clone();
             let w = Rc::downgrade(e);
-            let wait2 = wait.clone();
             // (simulate: a tool that asks first does not run and nobody is asked; the answer lists it in would_ask)
-            fluxos::call("chat.send", json!({"agent_id": d.id, "message": text, "session": session, "simulate": true}), move |r| {
+            let client_ref = format!("teste-{}-{}", glib::monotonic_time(), std::process::id());
+            let mut params = json!({"agent_id": d.id, "message": text, "session": session, "simulate": true, "client_ref": client_ref});
+            if let Some(i) = &input {
+                params["input"] = i.clone();
+            }
+            // live: each member or task that answers, and a coordinator's route (the test's events carry its
+            // client_ref; a route only the agent's id)
+            let arrivals: Rc<RefCell<Vec<(String, std::time::Duration)>>> = Rc::default();
+            // the tools as they start (the answer's "tools" may leave some out: a sandbox's maquina_executar)
+            let live_tools: Rc<RefCell<Vec<(String, String)>>> = Rc::default();
+            let over = Rc::new(Cell::new(false));
+            let (a2, o2, s2, d2, t2) = (arrivals.clone(), over.clone(), steps.clone(), d.clone(), live_tools.clone());
+            fluxos::subscribe(&["run.answer", "run.tool", "route.decided"], move |ev| {
+                if o2.get() {
+                    return false;
+                }
+                let data = &ev["data"];
+                match ev["topic"].as_str().unwrap_or("") {
+                    "run.tool" if data["client_ref"].as_str() == Some(client_ref.as_str()) => {
+                        let tool = data["tool"].as_str().unwrap_or("").replace("__", ".");
+                        let args: Value = data["args"].as_str().and_then(|a| serde_json::from_str(a).ok()).unwrap_or_else(|| data["args"].clone());
+                        let arg = crate::chat_blocks::main_argument(&args);
+                        s2.settle_running();
+                        s2.push(crate::chat_blocks::StepCall::new(&tool, &arg, crate::chat_blocks::StepState::Running));
+                        t2.borrow_mut().push((tool, arg));
+                    }
+                    "run.answer" if data["client_ref"].as_str() == Some(client_ref.as_str()) => {
+                        let author = data["author"].as_str().unwrap_or("").to_string();
+                        let text = data["text"].as_str().unwrap_or("").to_string();
+                        let took = started.elapsed();
+                        let prev = a2.borrow().last().map(|x| x.1).unwrap_or_default();
+                        a2.borrow_mut().push((author.clone(), took));
+                        let took = if d2.kind == "parallel" { took } else { took.saturating_sub(prev) };
+                        let names = crate::chat_blocks::agent_names();
+                        for c in crate::chat_blocks::member_calls(&[(author.clone(), text, Some(took))], &d2.id, &d2.kind, &names) {
+                            s2.push(c);
+                        }
+                        if let Some((_, n)) = crate::chat_blocks::task_of(&author) {
+                            if let Some(t) = crate::chat_blocks::next_task_text(&d2.tasks, n as usize, &names) {
+                                s2.show_thinking(&t);
+                            }
+                        }
+                    }
+                    "route.decided"
+                        if data["agent_id"].as_str() == Some(d2.id.as_str())
+                            && data["client_ref"].as_str().is_none_or(|r| r == client_ref) =>
+                    {
+                        let route = json!({"agent": data["choice"], "confidence": data["confidence"]});
+                        let threshold = crate::chat_blocks::route_threshold(&d2.original_config);
+                        if let Some(l) = crate::chat_blocks::route_line(&route, &crate::chat_blocks::agent_names(), threshold) {
+                            s2.set_route(&l);
+                        }
+                    }
+                    _ => {}
+                }
+                true
+            });
+            fluxos::call("chat.send", params, move |r| {
+                over.set(true);
                 let Some(e) = w.upgrade() else { return };
-                e.chat_list.remove(&wait2);
                 e.chat_send.set_sensitive(true);
-                e.show_answer(r, started.elapsed().as_millis(), &d);
+                e.test_form.run.set_sensitive(true);
+                e.show_answer(r, started.elapsed(), &d, &wait2, &steps, &arrivals.borrow(), &live_tools.borrow());
             });
         };
         if self.dirty.get() {
@@ -2113,6 +2479,7 @@ impl AgentEditor {
                 } else {
                     e.chat_list.remove(&wait3);
                     e.chat_send.set_sensitive(true);
+                    e.test_form.run.set_sensitive(true);
                     e.chat_list.append(&ui::wrapped(tr("Fix what is marked and save before testing."), "fx-erro"));
                 }
             })));
@@ -2121,47 +2488,83 @@ impl AgentEditor {
         }
     }
 
-    fn show_answer(&self, r: Result<Value, String>, ms: u128, d: &Draft) {
+    /// The answer under its header: the steps (each tool that ran, and what would ask for approval), the text in
+    /// markdown and the line with the models and how long it took.
+    fn show_answer(&self, r: Result<Value, String>, took: std::time::Duration, d: &Draft, turn: &gtk::Box, steps: &Rc<crate::chat_blocks::StepsList>, arrivals: &[(String, std::time::Duration)], live_tools: &[(String, String)]) {
+        use crate::chat_blocks::{StepCall, StepState};
         match r {
             Ok(v) => {
-                // as an answer of the main chat: the agent's header (models, when, how long), its steps, the text
-                let mut models: Vec<String> = v["models"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(str::to_string)).collect();
-                if d.kind == "assistant" {
-                    models.insert(0, if d.model_mode == "auto" { tr("LFM3 local").to_string() } else { ui::model_label(&d.model) });
+                // the whole answer takes the live rows' place: the route, who answered (each team member or task,
+                // with how long it took), then the tools
+                steps.set_instant(true);
+                steps.clear();
+                let names = crate::chat_blocks::agent_names();
+                if let Some(l) = crate::chat_blocks::route_line(&v["route"], &names, crate::chat_blocks::route_threshold(&d.original_config)) {
+                    steps.set_route(&l);
                 }
-                let when = glib::DateTime::now_local().ok().and_then(|t| t.format("%H:%M").ok()).map(|x| x.to_string()).unwrap_or_default();
-                let name = if d.name.trim().is_empty() { tr("Agent").to_string() } else { d.name.trim().to_string() };
-                self.chat_list.append(&crate::chat_blocks::agent_header(&name, &models, &format!("{when} · {}", seconds_label(ms))));
-                let steps = caixa(Orientation::Vertical, 0, "passos-lista");
+                let answers: Vec<(String, String)> = v["answers"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|a| (a["author"].as_str().unwrap_or("").to_string(), a["text"].as_str().unwrap_or("").to_string()))
+                    .collect();
+                let times = crate::chat_blocks::answer_times(&d.kind, arrivals, &answers, took);
+                let timed: Vec<(String, String, Option<std::time::Duration>)> = answers.into_iter().zip(times).map(|((a, t), x)| (a, t, x)).collect();
+                for c in crate::chat_blocks::member_calls(&timed, &d.id, &d.kind, &names) {
+                    steps.push(c);
+                }
+                // (no list from the service: the tools seen starting, less the ones that would have asked)
+                let asked: Vec<String> = v["would_ask"].as_array().into_iter().flatten().filter_map(|w| w["tool"].as_str().map(|t| t.replace("__", "."))).collect();
+                if v["tools"].as_array().is_none_or(|t| t.is_empty()) {
+                    for (tool, arg) in live_tools.iter().filter(|(t, _)| !asked.contains(t)) {
+                        steps.push(StepCall::new(tool, arg, StepState::Done));
+                    }
+                }
                 for c in v["tools"].as_array().into_iter().flatten() {
-                    let (g, color, title, class, detail) = call_step(c);
-                    let (row, _, t, _, _) = crate::chat_blocks::step_row(g, color, &title, class, &detail, "");
-                    // (what ran stays whole; the detail is what gives way in a narrow panel)
-                    t.set_ellipsize(gtk::pango::EllipsizeMode::None);
-                    steps.append(&row);
+                    let (tool, ok, summary) = (c[0].as_str().unwrap_or(""), c[1].as_bool().unwrap_or(false), c[2].as_str().unwrap_or(""));
+                    let mut call = StepCall::new(tool, &crate::chat_blocks::short_path(summary), if ok { StepState::Done } else { StepState::Failed });
+                    if !ok {
+                        call.result = tr("did not work").to_string();
+                    }
+                    steps.push(call);
                 }
                 for w in v["would_ask"].as_array().into_iter().flatten() {
-                    let (title, detail) = would_ask_step(w);
-                    let (row, _, t, _, _) = crate::chat_blocks::step_row("alerta", ui::tone_color("ouro"), &title, "passo-titulo-espera", &detail, "");
-                    t.set_ellipsize(gtk::pango::EllipsizeMode::None);
-                    steps.append(&row);
+                    let (tool, detail) = would_ask_step(w);
+                    let mut call = StepCall::new(&tool, &detail, StepState::Waiting);
+                    call.args_json = w["arguments"].to_string();
+                    steps.push(call);
                 }
-                if steps.first_child().is_some() {
-                    self.chat_list.append(&steps);
-                }
+                steps.set_instant(false);
+                steps.finish(took, false);
+                steps.widget().set_visible(!steps.is_empty() || v["route"].is_object());
+                // a structured output: its fields as a table (design 42: "Última execução"), not the raw JSON
+                let output = &v["output"];
+                let out_fields = crate::agent_picker::fields(&d.output_fields);
                 let text = v["text"].as_str().unwrap_or("").trim();
-                if !text.is_empty() {
-                    self.chat_list.append(&crate::markdown::render(text));
+                let text_is_output = output.is_object()
+                    && serde_json::from_str::<Value>(text.trim_start_matches("```json").trim_end_matches("```").trim()).ok().as_ref() == Some(output);
+                if let Some(t) = output.is_object().then(|| crate::agent_picker::output_table(&out_fields, output)).flatten() {
+                    turn.append(&t);
+                }
+                if !text.is_empty() && !text_is_output {
+                    let a = kalango_movimento::Animavel::new(&crate::markdown::render(text));
+                    turn.append(&a);
+                    a.entrar((0.0, 8.0), 1.0);
                 }
                 if let Some(why) = v["stopped"].as_str() {
-                    self.chat_list.append(&ui::wrapped(&stop_text(why), "conversa-nota"));
+                    turn.append(&ui::wrapped(&stop_text(why), "conversa-nota"));
                 }
                 if let Some(p) = v["voice"].as_str() {
-                    self.chat_list.append(&ui::wrapped(&trf("Voice answer in {path}", &[("path", p.to_string())]), "conversa-nota"));
+                    turn.append(&ui::wrapped(&trf("Voice answer in {path}", &[("path", p.to_string())]), "conversa-nota"));
                 }
+                let mut parts = draft_models(d);
+                parts.extend(v["models"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(str::to_string)));
+                parts.push(crate::chat_blocks::seconds(took));
+                turn.append(&crate::chat_blocks::answer_footer(&parts));
             }
             Err(m) => {
-                self.chat_list.append(&ui::wrapped(&run_error_text(&m), "fx-erro"));
+                steps.widget().set_visible(false);
+                turn.append(&ui::wrapped(&run_error_text(&m), "fx-erro"));
             }
         }
         self.scroll_chat();
@@ -2205,6 +2608,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_team_keeps_no_structured_output() {
+        let mut d = Draft::from_agent(&json!({"id": "t", "name": "Equipe", "kind": "sequential", "config": {"sub_agents": ["a"]}, "output_fields": [{"name": "total", "kind": "integer", "required": true}]}));
+        assert!(d.to_agent().get("output_fields").is_none(), "a team sends no output fields");
+        d.kind = "tasks".into();
+        assert!(d.to_agent()["output_fields"].is_array(), "a task list keeps them");
+    }
+
+    #[test]
+    fn a_remote_agent_refusing_the_key_says_so() {
+        let t = run_error_text("o agente respondeu com erro: agent.internal: Request failed: HTTP 401 Unauthorized");
+        assert_eq!(t, tr("The remote agent refused the key: choose its key in Key (from the vault)."));
+        assert_ne!(run_error_text("error sending request for url"), tr("The test did not run. Check the agent's settings and test again."));
+    }
+
+    #[test]
     fn assistant_round_trip_keeps_unknown_fields() {
         let a = json!({"id": "a1", "name": "Organizador", "description": "Arruma", "kind": "assistant", "config": {
             "instruction": "Separe em {pasta}.", "model_mode": "auto", "tools": [{"name": "arquivos.listar", "permission": "free"}],
@@ -2231,6 +2649,13 @@ mod tests {
         d.max_iterations = 3;
         let a = d.to_agent();
         assert_eq!(a["config"], json!({"sub_agents": ["a", "b"], "output_key": null, "max_iterations": 3}));
+        // a team's word to every member goes when set, and leaves when cleared
+        d.member_instruction = " responda numa linha ".into();
+        assert_eq!(d.to_agent()["config"]["member_instruction"], "responda numa linha");
+        let mut back = Draft::from_agent(&d.to_agent());
+        assert_eq!(back.member_instruction, "responda numa linha");
+        back.member_instruction.clear();
+        assert!(back.to_agent()["config"].get("member_instruction").is_none());
         d.kind = "assistant".into();
         d.instruction = "Coordene.".into();
         let a = d.to_agent();
@@ -2267,17 +2692,31 @@ mod tests {
         assert!(d.uses_cloud());
         assert_eq!(issue_text("write the instructions; add at least one sub-agent"), format!("{} {}", tr("Write what the agent does and how."), tr("Add at least one sub-agent.")));
         assert_eq!(issue_text("something new"), "something new");
-        assert_eq!(seconds_label(1840), "1,8 s");
+    }
+
+    #[test]
+    fn the_test_panel_becomes_a_page_when_it_would_not_fit() {
+        assert!(is_narrow(900, 600));
+        assert!(!is_narrow(1200, 600));
+        // a form that needs 900 px leaves no room for the panel at 1100 (it would be cut off at the edge)
+        assert!(is_narrow(1100, 900));
+        assert!(!is_narrow(1300, 900));
+    }
+
+    #[test]
+    fn the_test_panel_grows_a_little_on_wide_windows() {
+        // frame 02's window: the panel as the design draws it
+        assert_eq!(side_width(1500), ui::panel_width(1500));
+        assert_eq!(side_width(1100), ui::panel_width(1100));
+        // a very wide one: the panel grows to its most (the form stays FORM_MAX wide beside it)
+        assert_eq!(side_width(2400), 600);
+        assert_eq!(side_width(3400), 600);
     }
 
     #[test]
     fn test_run_steps_and_errors() {
-        let (g, _, title, class, detail) = call_step(&json!(["arquivos.listar", true, "23 itens"]));
-        assert_eq!((g, title.as_str(), class, detail.as_str()), ("check", "arquivos.listar", "passo-titulo-feito", "23 itens"));
-        assert_eq!(call_step(&json!(["arquivos.apagar", false, ""])).3, "passo-titulo-falhou");
         let (t, d) = would_ask_step(&json!({"tool": "web.buscar", "arguments": {"nome": "preço do café"}}));
-        assert_eq!(t, trf("{tool} would ask for approval (simulated)", &[("tool", "web.buscar".into())]));
-        assert_eq!(d, "preço do café");
+        assert_eq!((t.as_str(), d.as_str()), ("web.buscar", "preço do café"));
         assert_eq!(would_ask_step(&json!({"tool": "web.buscar", "arguments": {"consulta": "café 500 g"}})).1, "café 500 g");
         // nothing raw from the service, the engine or ADK reaches the panel…
         assert!(run_error_text("agent.internal: State variable 'pasta_destino' not found").contains("{pasta_destino}"));

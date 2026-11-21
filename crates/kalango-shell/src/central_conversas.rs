@@ -9,6 +9,7 @@
 
 use crate::agent_picker::{self, Picked, Picker};
 use crate::conversa::{self, ui_icon, Conversa};
+use crate::resize_handle::{self, panel_width, HIT};
 use crate::superficies::{caixa, estrela, rotulo};
 use crate::Shell;
 use gtk::prelude::*;
@@ -25,6 +26,22 @@ const GRUPOS: &[(&str, &str, &str, &[&str])] = &[
     ("terminal", n_("Terminal"), "terminal", &["dominio:tarefas.", "dominio:sistema.executar"]),
     ("tela", n_("See the screen"), "monitor", &["dominio:tela."]),
 ];
+
+/// The conversation's widest reading measure, centred in what the side panels leave.
+const LEITURA: i32 = 860;
+/// What the conversation keeps at least beside the side panels (they give way first).
+const CONVERSA_MINIMA: i32 = 480;
+/// The context's width by default (26 % of the window, within these) and by hand.
+const CONTEXTO_PADRAO: (i32, i32) = (300, 480);
+const CONTEXTO_LIMITES: (i32, i32) = (280, 560);
+/// The side bar's width by default (22 % of the window, within these) and by hand.
+const LISTA_PADRAO: (i32, i32) = (240, 360);
+const LISTA_LIMITES: (i32, i32) = (220, 420);
+
+/// A side panel's width the person kept ("contexto" or "lista"), from the shell's settings.
+fn guardada(qual: &str) -> Option<i32> {
+    crate::configuracoes::ajustes()["central_paineis"][qual].as_i64().map(|w| w as i32)
+}
 
 fn agora() -> i64 {
     glib::DateTime::now_local().map(|d| d.to_unix()).unwrap_or(0)
@@ -179,6 +196,12 @@ pub struct Conversas {
     /// the agent's browser (the Browser tab) and the context's usual width
     navegador: Rc<crate::agent_browser::AgentBrowser>,
     painel_base: i32,
+    /// the widths the person gave the context and the side bar by dragging their edges (None: the default share of
+    /// the window), and those edges
+    largura_contexto: Cell<Option<i32>>,
+    largura_lista: Cell<Option<i32>>,
+    alca_contexto: RefCell<Option<gtk::Widget>>,
+    pub alca_lista: RefCell<Option<gtk::Widget>>,
     /// the Changes tab and the repository the conversation's files are in (with the files)
     alteracoes_box: gtk::Box,
     /// the commands the agent ran in this conversation, as terminal blocks (design "Chat · código" › Terminal)
@@ -476,7 +499,7 @@ impl Conversas {
         nv.append(&rodape_d);
         let nvr = gtk::ScrolledWindow::new();
         nvr.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-        nvr.set_child(Some(&crate::limite::Limite::new(&nv, if compacta { 620 } else { 760 })));
+        nvr.set_child(Some(&crate::limite::Limite::new(&nv, if compacta { 620 } else { LEITURA })));
         vista.add_named(&nvr, Some("nova"));
         // a kept conversation
         let conv = Conversa::new();
@@ -490,7 +513,7 @@ impl Conversas {
         });
         let cw = caixa(Orientation::Vertical, 0, "");
         cw.append(&conv.raiz);
-        vista.add_named(&crate::limite::Limite::new(&cw, if compacta { 620 } else { 780 }), Some("conversa"));
+        vista.add_named(&crate::limite::Limite::new(&cw, if compacta { 620 } else { LEITURA }), Some("conversa"));
         meio.append(&vista);
         raiz.append(&meio);
 
@@ -498,6 +521,8 @@ impl Conversas {
         let painel = caixa(Orientation::Vertical, 0, "conversas-painel");
         let painel_base = if compacta { 300 } else { 340 };
         painel.set_size_request(painel_base, -1);
+        // (its own width, not a share of the free room: a child that expands must not widen it)
+        painel.set_hexpand(false);
         let pc = caixa(Orientation::Horizontal, 14, "conversas-cab");
         let mut abas: Vec<gtk::ToggleButton> = Vec::new();
         for t in [tr("Context"), tr("Files"), tr("Canvas"), tr("Changes"), tr("Terminal"), tr("Browser")] {
@@ -664,9 +689,14 @@ impl Conversas {
             faixa: Cell::new(Faixa::de(largura_janela)), largura: Cell::new(largura_janela), na_pagina: Cell::new(false), painel_aberto: Cell::new(Faixa::de(largura_janela) == Faixa::Larga), arrumando: Cell::new(false),
             folhas: RefCell::default(), veu, casa_lateral: RefCell::default(), casa_painel: RefCell::default(), faixa_abas, faixa_botoes: botoes_faixa.clone(), controles_painel, abrir_lista_b, faisca, subtitulo, nomes_chips, ja_mostrou: Cell::new(false), busca, lista, rodape_tokens,
             titulo, chip_agente, fixar, apagar: apagar.clone(), painel_b: painel_b.clone(), vista, conv, controles_meio, saudacao, nova_texto, nova_grupos, sugestoes, painel, abas, painel_stack, contexto, ferramentas,
-            memoria, arquivos, tokens_v, tokens_barra, modelo_v, marca: Cell::new((0, 0)), canvas_box, html: crate::html_canvas::HtmlCanvas::new(), alteracoes_box, terminal_box, navegador, painel_base, uso: uso.clone(), repo: RefCell::default(), commit_feito: RefCell::default(), previa: RefCell::default(), preenchendo: Cell::new(false),
+            memoria, arquivos, tokens_v, tokens_barra, modelo_v, marca: Cell::new((0, 0)), canvas_box, html: crate::html_canvas::HtmlCanvas::new(), alteracoes_box, terminal_box, navegador, painel_base, largura_contexto: Cell::new(guardada("contexto")), largura_lista: Cell::new(guardada("lista")), alca_contexto: RefCell::default(), alca_lista: RefCell::default(), uso: uso.clone(), repo: RefCell::default(), commit_feito: RefCell::default(), previa: RefCell::default(), preenchendo: Cell::new(false),
             start_chips, start_agent: RefCell::default(), start_picker: RefCell::default(), nova_form, nova_ph: ph.clone(), chip_agente_box, chip_tile, ao_executar: RefCell::default(), nova_erro,
         });
+        // the edges of the context and the side bar (the agents center puts the side bar's beside it)
+        let (ac, al) = c.alcas();
+        c.raiz.insert_child_after(&ac, c.painel.prev_sibling().as_ref());
+        *c.alca_contexto.borrow_mut() = Some(ac);
+        *c.alca_lista.borrow_mut() = Some(al);
         // the conversation's agent: the header's chip follows it; the picker's other choices are the page's
         let w = Rc::downgrade(&c);
         c.conv.on_agent(move |a| {
@@ -963,6 +993,10 @@ impl Conversas {
         }
         let f = Faixa::de(largura);
         if f == self.faixa.get() {
+            if antes != largura {
+                self.ajustar_lista();
+                self.ajustar_painel();
+            }
             return;
         }
         self.faixa.set(f);
@@ -1705,21 +1739,58 @@ impl Conversas {
     /// The context's width: its usual one; with the Browser in a wide window, what the conversation leaves (a page
     /// needs room to be read — design "Chat · navegador do agente").
     fn ajustar_painel(&self) {
-        let nav = self.abas[5].is_active() && self.abas[5].get_visible();
-        // (the canvas with a page: as wide as the conversation leaves, the page needs the room)
-        let pagina = self.abas[2].is_active() && self.html.file().is_some();
-        let w = if pagina && self.faixa.get() == Faixa::Larga {
-            let lista = if self.recolhida.get() { 64 } else { 300 };
-            (self.largura.get() - lista - 460).clamp(self.painel_base, 1000)
-        } else if nav && self.faixa.get() == Faixa::Larga {
-            let lista = if self.recolhida.get() { 64 } else { 300 };
-            (self.largura.get() - lista - 520).clamp(self.painel_base, 680)
-        } else {
-            self.painel_base
-        };
+        // (the person's width, or 26 % of the window; never more than the conversation leaves)
+        let janela = self.largura.get();
+        let lista = if self.lateral.is_visible() && self.faixa.get() != Faixa::Estreita { self.lateral.width_request() + HIT } else { 64 };
+        let w = panel_width(janela, self.largura_contexto.get(), 0.26, CONTEXTO_PADRAO, CONTEXTO_LIMITES, janela - lista - HIT - CONVERSA_MINIMA);
         if self.painel.width_request() != w {
             self.painel.set_size_request(w, -1);
         }
+    }
+
+    /// The side bar's width: the person's, or 22 % of the window.
+    fn ajustar_lista(&self) {
+        let janela = self.largura.get();
+        let w = panel_width(janela, self.largura_lista.get(), 0.22, LISTA_PADRAO, LISTA_LIMITES, janela - self.painel_base - 2 * HIT - CONVERSA_MINIMA);
+        if self.lateral.width_request() != w {
+            self.lateral.set_size_request(w, -1);
+        }
+    }
+
+    /// The edges of the context and of the side bar: dragging them sets the width the person keeps (the shell's
+    /// settings), a double click goes back to the default.
+    fn alcas(self: &Rc<Self>) -> (gtk::Widget, gtk::Widget) {
+        let feitas = |contexto: bool| -> gtk::Widget {
+            let (w1, w2, w3) = (Rc::downgrade(self), Rc::downgrade(self), Rc::downgrade(self));
+            let limites = if contexto { CONTEXTO_LIMITES } else { LISTA_LIMITES };
+            resize_handle::new(if contexto { -1 } else { 1 }, resize_handle::Panel {
+                // (the width set, as the drag sets it: `width()` would leave out the padding)
+                width: Box::new(move || w1.upgrade().map(|c| if contexto { c.painel.width_request() } else { c.lateral.width_request() }).unwrap_or(0)),
+                resize: Box::new(move |w, guardar| {
+                    let Some(c) = w2.upgrade() else { return };
+                    let w = w.clamp(limites.0, limites.1);
+                    if contexto { c.largura_contexto.set(Some(w)) } else { c.largura_lista.set(Some(w)) }
+                    c.ajustar_lista();
+                    c.ajustar_painel();
+                    if guardar {
+                        c.guardar_larguras();
+                    }
+                }),
+                reset: Box::new(move || {
+                    let Some(c) = w3.upgrade() else { return };
+                    if contexto { c.largura_contexto.set(None) } else { c.largura_lista.set(None) }
+                    c.ajustar_lista();
+                    c.ajustar_painel();
+                    c.guardar_larguras();
+                }),
+            })
+            .upcast()
+        };
+        (feitas(true), feitas(false))
+    }
+
+    fn guardar_larguras(&self) {
+        crate::configuracoes::salvar_ajuste("central_paineis", json!({"contexto": self.largura_contexto.get(), "lista": self.largura_lista.get()}));
     }
 
     /// Puts the side bar, the context, its tabs and the header's buttons where the band and the person want them.
@@ -1746,7 +1817,14 @@ impl Conversas {
         self.chip_agente_box.set_visible(!estreita && em_conversa);
         self.painel_b.set_visible(estreita && em_conversa);
         self.painel_b.set_active(painel);
+        self.ajustar_lista();
         self.ajustar_painel();
+        if let Some(a) = self.alca_contexto.borrow().as_ref() {
+            a.set_visible(pag && painel && !estreita);
+        }
+        if let Some(a) = self.alca_lista.borrow().as_ref() {
+            a.set_visible(pag && lista && !estreita);
+        }
         let m = conversa::meta(&self.conv.id());
         self.fixar.set_visible(!estreita && em_conversa && m["titulo"].is_string());
         self.apagar.set_visible(!estreita && em_conversa && m["titulo"].is_string());

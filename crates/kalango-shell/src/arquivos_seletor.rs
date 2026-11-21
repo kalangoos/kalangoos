@@ -559,6 +559,10 @@ pub(crate) fn escolher(pedido: Pedido, feito: impl FnOnce(Resposta) + 'static) -
     let salvar = matches!(pedido.modo, Modo::Salvar { .. });
     let janela = gtk::Window::builder().application(&app).title(&pedido.titulo).build();
     janela.add_css_class("seletor-janela");
+    // its own window group: a modal gtk::FileDialog of the shell's own windows comes back here through the portal,
+    // and GTK's portal client holds a grab on the default group while it waits (filechoosernativeportal.c) — in
+    // that group the chooser got no click, no key and no close (agent editor › "Usar um SVG…", "Documentos")
+    gtk::WindowGroup::new().add_window(&janela);
     // its own top (title, search, close), as the design's
     janela.set_decorated(false);
     let raiz = caixa(Orientation::Vertical, 0, "seletor");
@@ -1093,6 +1097,17 @@ impl Filtro {
 /// `rotulo`: the button's word ("Resumir"), if not "Abrir".
 pub(crate) fn abrir_arquivo(app: &str, titulo: &str, rotulo: Option<&str>, filtros: Vec<Filtro>, pasta: Option<PathBuf>, feito: impl FnOnce(PathBuf) + 'static) {
     pedir(Modo::Abrir { varios: false, pasta: false }, app, titulo, rotulo, filtros, pasta, feito);
+}
+
+/// The same chooser, for one file or more (each chosen one, in order).
+pub(crate) fn abrir_varios(app: &str, titulo: &str, filtros: Vec<Filtro>, pasta: Option<PathBuf>, feito: impl FnOnce(Vec<PathBuf>) + 'static) {
+    let filtro = (!filtros.is_empty()).then_some(0);
+    let pedido = Pedido { modo: Modo::Abrir { varios: true, pasta: false }, titulo: titulo.to_string(), app: app.to_string(), rotulo: None, filtros, filtro, pasta };
+    escolher(pedido, move |r| {
+        if let Some((ps, _)) = r.filter(|(ps, _)| !ps.is_empty()) {
+            feito(ps);
+        }
+    });
 }
 
 /// The same chooser, for a folder.

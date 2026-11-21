@@ -328,6 +328,12 @@ pub fn glyph_of(name: &str) -> String {
         "ring" => "anel",
         "network" => "rede-cabo",
         "bolt" => "raio",
+        "brain" => "cerebro",
+        "star" => "estrela-n",
+        "eye" => "olho",
+        "gear" => "engrenagem",
+        "home" => "casa",
+        "keyboard" => "teclado",
         "" => "spark",
         n => n,
     };
@@ -456,6 +462,7 @@ pub fn tile_for(agent: Option<&Value>, side: i32) -> gtk::Box {
 // ------------------------------------------------------------------------------------------------ the picker
 
 /// What the picker hands back.
+#[derive(Clone)]
 pub enum Picked {
     /// the system's agent (None) or one of the person's
     Agent(Option<Value>),
@@ -501,36 +508,60 @@ pub fn cached_agents() -> Vec<Value> {
     AGENTS.with(|a| a.borrow().1.clone())
 }
 
+/// How a picker looks: the chat's (search, sections, create and manage), the side bar's (narrower, a hint and
+/// "Gerenciar"), or the composer's "@nome" suggestions (only the agents that match).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Style {
+    Full,
+    Narrow,
+    Suggest,
+}
+
 /// The picker (design "Chat · escolher agente"): a search, the system's agent, the person's agents recent first
 /// (an "entrada" mark on those that ask for fields, "Executar" on flows), "Criar agente" and "Gerenciar agentes".
+/// Up and Down move the highlight, Enter picks it.
 pub struct Picker {
     pub popover: gtk::Popover,
+    style: Style,
     search: gtk::Entry,
     list: gtk::Box,
     agents: RefCell<Vec<Value>>,
     current: RefCell<Option<String>>,
     on_picked: OnPicked,
-    /// the first row shown (Enter picks it)
-    first: RefCell<Option<Picked>>,
+    /// the rows shown and the highlighted one
+    rows: RefCell<Vec<(gtk::Button, Picked)>>,
+    focus: Cell<usize>,
     /// the search field is filled from code ("@query"): no reload
     filling: Cell<bool>,
 }
 
 impl Picker {
     pub fn new(on_picked: impl Fn(Picked) + 'static) -> Rc<Picker> {
+        Picker::with_style(Style::Full, on_picked)
+    }
+
+    pub fn with_style(style: Style, on_picked: impl Fn(Picked) + 'static) -> Rc<Picker> {
         let popover = gtk::Popover::new();
         popover.add_css_class("agentes-escolha");
         popover.set_has_arrow(false);
         popover.set_autohide(true);
         let b = caixa(Orientation::Vertical, 0, "");
-        b.set_size_request(368, -1);
+        b.set_size_request(
+            match style {
+                Style::Full => 368,
+                Style::Narrow => 352,
+                Style::Suggest => 290,
+            },
+            -1,
+        );
         let (sb, search) = ui::search(tr("Search agents…"));
+        sb.set_visible(style != Style::Suggest);
         b.append(&sb);
         let list = caixa(Orientation::Vertical, 2, "");
         let scroll = gtk::ScrolledWindow::new();
         scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
         scroll.set_propagate_natural_height(true);
-        scroll.set_max_content_height(420);
+        scroll.set_max_content_height(if style == Style::Suggest { 240 } else { 420 });
         scroll.set_child(Some(&list));
         b.append(&scroll);
         let foot = caixa(Orientation::Horizontal, 8, "agentes-escolha-rodape");
@@ -540,17 +571,29 @@ impl Picker {
         cc.append(&ui_icon("mais", ui::ACCENT, 13));
         cc.append(&rotulo(tr("Create agent"), ""));
         create.set_child(Some(&cc));
-        foot.append(&create);
-        let sp = caixa(Orientation::Horizontal, 0, "");
-        sp.set_hexpand(true);
-        foot.append(&sp);
         let manage = gtk::Button::new();
-        manage.set_child(Some(&rotulo(tr("Manage agents"), "")));
         manage.add_css_class("agentes-escolha-gerenciar");
+        if style == Style::Narrow {
+            // (the side bar: how to call one, then "Gerenciar")
+            let hint = ui::cut(tr("@name in the composer calls an agent"), "agentes-escolha-dica");
+            foot.append(&hint);
+            manage.set_child(Some(&rotulo(tr("Manage"), "")));
+            manage.add_css_class("acento");
+        } else {
+            foot.append(&create);
+            let sp = caixa(Orientation::Horizontal, 0, "");
+            sp.set_hexpand(true);
+            foot.append(&sp);
+            manage.set_child(Some(&rotulo(tr("Manage agents"), "")));
+        }
         foot.append(&manage);
+        foot.set_visible(style != Style::Suggest);
         b.append(&foot);
         popover.set_child(Some(&b));
-        let p = Rc::new(Picker { popover, search, list, agents: RefCell::default(), current: RefCell::default(), on_picked: Rc::new(on_picked), first: RefCell::default(), filling: Cell::new(false) });
+        let p = Rc::new(Picker {
+            popover, style, search, list, agents: RefCell::default(), current: RefCell::default(), on_picked: Rc::new(on_picked), rows: RefCell::default(), focus: Cell::new(0),
+            filling: Cell::new(false),
+        });
         let w = Rc::downgrade(&p);
         p.search.connect_changed(move |_| {
             if let Some(p) = w.upgrade() {
@@ -559,17 +602,28 @@ impl Picker {
         });
         let w = Rc::downgrade(&p);
         p.search.connect_activate(move |_| {
-            let Some(p) = w.upgrade() else { return };
-            let x = p.first.borrow_mut().take();
-            if let Some(x) = x {
-                p.pick(x);
+            if let Some(p) = w.upgrade() {
+                p.pick_first();
             }
         });
-        for (btn, what) in [(create, 0), (manage, 1)] {
+        // (the search keeps the focus: the arrows move the highlight)
+        let keys = gtk::EventControllerKey::new();
+        let w = Rc::downgrade(&p);
+        keys.connect_key_pressed(move |_, k, _, _| {
+            let Some(p) = w.upgrade() else { return glib::Propagation::Proceed };
+            match k {
+                gdk::Key::Down => p.move_focus(1),
+                gdk::Key::Up => p.move_focus(-1),
+                _ => return glib::Propagation::Proceed,
+            }
+            glib::Propagation::Stop
+        });
+        p.search.add_controller(keys);
+        for (btn, what) in [(create, Picked::Create), (manage, Picked::Manage)] {
             let w = Rc::downgrade(&p);
             btn.connect_clicked(move |_| {
                 if let Some(p) = w.upgrade() {
-                    p.pick(if what == 0 { Picked::Create } else { Picked::Manage });
+                    p.pick(what.clone());
                 }
             });
         }
@@ -588,8 +642,27 @@ impl Picker {
                 self.popover.unparent();
             }
             self.popover.set_parent(anchor);
+            // (an anchor rebuilt while the popup is its child — the chat's chips, picking an agent — would be
+            // finalized with the popup still in it: GTK warned "still has children left" and the shell crashed on
+            // the next pointer event; the popup leaves the anchor first)
+            let p = self.popover.downgrade();
+            anchor.upcast_ref::<gtk::Widget>().connect_destroy(move |a| {
+                if let Some(p) = p.upgrade().filter(|p| p.parent().as_ref() == Some(a)) {
+                    p.popdown();
+                    p.unparent();
+                }
+            });
+        }
+        if self.style == Style::Narrow {
+            // (the side bar's picker starts at its chip's left edge: centred on it, it would leave the bar)
+            let a = anchor.upcast_ref::<gtk::Widget>();
+            self.popover.set_pointing_to(Some(&gdk::Rectangle::new(352 / 2 + 8, a.height(), 1, 1)));
         }
         *self.current.borrow_mut() = current.map(str::to_string);
+        // (the list read last, while the service answers: a popup drawn with nothing may keep that size)
+        if self.agents.borrow().is_empty() {
+            *self.agents.borrow_mut() = order_recent(cached_agents(), &crate::conversa::conversas());
+        }
         self.filling.set(true);
         self.search.set_text(query);
         self.filling.set(false);
@@ -635,12 +708,12 @@ impl Picker {
         let mine = self.agents.borrow();
         // (before its first opening the picker knows the list read last)
         let all = if mine.is_empty() { cached_agents() } else { mine.clone() };
-        ui::matches_query(q, &[SYSTEM_AGENT]) || all.iter().any(|a| ui::matches_query(q, &[a["name"].as_str().unwrap_or("")]))
+        (self.style != Style::Suggest && ui::matches_query(q, &[SYSTEM_AGENT])) || all.iter().any(|a| ui::matches_query(q, &[a["name"].as_str().unwrap_or("")]))
     }
 
-    /// Picks the first row (Enter on "@query" in the composer).
+    /// Picks the highlighted row (Enter on "@query" in the composer, or in the search).
     pub fn pick_first(&self) -> bool {
-        let x = self.first.borrow_mut().take();
+        let x = self.rows.borrow().get(self.focus.get()).map(|(_, x)| x.clone());
         match x {
             Some(x) => {
                 self.pick(x);
@@ -650,29 +723,39 @@ impl Picker {
         }
     }
 
+    /// Moves the highlight (the arrows).
+    pub fn move_focus(&self, delta: i32) {
+        let rows = self.rows.borrow();
+        if rows.is_empty() {
+            return;
+        }
+        let n = rows.len() as i32;
+        let i = (self.focus.get() as i32 + delta).rem_euclid(n) as usize;
+        self.focus.set(i);
+        for (k, (b, _)) in rows.iter().enumerate() {
+            if k == i { b.add_css_class("foco") } else { b.remove_css_class("foco") }
+        }
+    }
+
     fn render(self: &Rc<Self>) {
         ui::clear_box(&self.list);
+        self.rows.borrow_mut().clear();
         let q = self.search.text().to_string();
         let current = self.current.borrow().clone();
-        *self.first.borrow_mut() = None;
-        if ui::matches_query(&q, &[SYSTEM_AGENT, tr("the system agent")]) {
+        let suggest = self.style == Style::Suggest;
+        if !suggest && ui::matches_query(&q, &[SYSTEM_AGENT, tr("the system agent")]) {
             self.list.append(&section(tr("SYSTEM")));
             let r = self.row(None, current.is_none());
             self.list.append(&r);
-            *self.first.borrow_mut() = Some(Picked::Agent(None));
         }
         let agents: Vec<Value> = self.agents.borrow().iter().filter(|a| ui::matches_query(&q, &[a["name"].as_str().unwrap_or(""), a["description"].as_str().unwrap_or("")])).cloned().collect();
-        if !agents.is_empty() {
+        if !agents.is_empty() && !suggest {
             let recent = crate::conversa::conversas().iter().any(|(_, m)| m["agent"]["id"].is_string());
             self.list.append(&section(if recent { tr("MY AGENTS · USED RECENTLY") } else { tr("MY AGENTS") }));
         }
         for a in &agents {
-            let chosen = current.as_deref() == a["id"].as_str();
+            let chosen = !suggest && current.as_deref() == a["id"].as_str();
             self.list.append(&self.row(Some(a), chosen));
-            let mut f = self.first.borrow_mut();
-            if f.is_none() || (!q.is_empty() && matches!(*f, Some(Picked::Agent(None))) && !ui::matches_query(&q, &[SYSTEM_AGENT])) {
-                *f = Some(if is_flow(a) { Picked::Run(a.clone()) } else { Picked::Agent(Some(a.clone())) });
-            }
         }
         if self.list.first_child().is_none() {
             let l = ui::wrapped(if self.agents.borrow().is_empty() && q.is_empty() { tr("No agent of yours yet.") } else { tr("No agent matches.") }, "central-agente-sub");
@@ -680,6 +763,17 @@ impl Picker {
             l.set_margin_bottom(10);
             l.set_margin_start(8);
             self.list.append(&l);
+        }
+        // the highlight: the first that matches the search (the system's agent only when it does)
+        let first = {
+            let rows = self.rows.borrow();
+            if q.is_empty() { 0 } else { rows.iter().position(|(_, x)| !matches!(x, Picked::Agent(None))).unwrap_or(0) }
+        };
+        self.focus.set(first);
+        self.move_focus(0);
+        // (an open popup takes the list's new size)
+        if self.popover.is_visible() {
+            self.popover.present();
         }
     }
 
@@ -703,7 +797,7 @@ impl Picker {
         r.append(&t);
         if chosen {
             r.append(&ui_icon("check", ui::ACCENT, 14));
-        } else if let Some(a) = agent {
+        } else if let Some(a) = agent.filter(|_| self.style != Style::Suggest) {
             if is_flow(a) {
                 r.append(&ui::chip(tr("Run"), ""));
             } else if !fields(&a["input_fields"]).is_empty() {
@@ -716,29 +810,15 @@ impl Picker {
             Some(a) => Picked::Agent(Some(a.clone())),
             None => Picked::Agent(None),
         };
-        let cell = RefCell::new(Some(pick));
+        self.rows.borrow_mut().push((b.clone(), pick.clone()));
         let w = Rc::downgrade(self);
-        let pick = Rc::new(cell);
         b.connect_clicked(move |_| {
-            let Some(p) = w.upgrade() else { return };
-            let x = pick.borrow_mut().take();
-            if let Some(x) = x {
-                // (a row is drawn again on the next open: the choice is taken once)
-                let again = match &x {
-                    Picked::Agent(a) => Picked::Agent(a.clone()),
-                    Picked::Run(a) => Picked::Run(a.clone()),
-                    Picked::Create => Picked::Create,
-                    Picked::Manage => Picked::Manage,
-                };
-                *pick.borrow_mut() = Some(again);
-                p.pick(x);
+            if let Some(p) = w.upgrade() {
+                p.pick(pick.clone());
             }
         });
-        if let Some(a) = agent {
-            crate::central::posicao_debug(&format!("escolha agente {}", a["name"].as_str().unwrap_or("")), b.upcast_ref());
-        } else {
-            crate::central::posicao_debug("escolha agente KalangoOS", b.upcast_ref());
-        }
+        let name = agent.and_then(|a| a["name"].as_str()).unwrap_or(SYSTEM_AGENT);
+        crate::central::posicao_debug(&format!("escolha agente {name}"), b.upcast_ref());
         b
     }
 }

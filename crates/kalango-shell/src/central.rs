@@ -143,6 +143,16 @@ pub struct Central {
     instalar_agente: Rc<crate::install_agent::InstallAgentPage>,
     /// the rail, the toolbar and its line (the conversations page has its own side bar and headers)
     trilho_box: gtk::Box,
+    paginas_rolagem: gtk::ScrolledWindow,
+    /// a narrow window: the rail as the toolbar's menu, the search as a button (frame 12); `trilho_quer` is what the
+    /// conversations' side bar wants of the rail
+    menu_paginas: gtk::MenuButton,
+    busca: gtk::Box,
+    busca_botao: gtk::Button,
+    estreita: Cell<bool>,
+    /// the search's button was pressed: the field stays out until the keyboard leaves it empty
+    buscando: Cell<bool>,
+    trilho_quer: Cell<bool>,
     alca: gtk::WindowHandle,
     linha_sep: gtk::Box,
     tique: Cell<u32>,
@@ -240,6 +250,45 @@ impl Central {
         let principal = caixa(Orientation::Vertical, 0, "");
         principal.set_hexpand(true);
         let barra_f = caixa(Orientation::Horizontal, 10, "central-barra");
+        // a narrow window (frame 12): the rail becomes this menu at the toolbar's start, with every page
+        let menu_paginas = gtk::MenuButton::new();
+        menu_paginas.add_css_class("central-menu");
+        menu_paginas.set_child(Some(&ui_icon("menu", "#8E8F99", 16)));
+        menu_paginas.set_tooltip_text(Some(tr("Pages")));
+        menu_paginas.set_valign(Align::Center);
+        menu_paginas.set_visible(false);
+        let pop_paginas = gtk::Popover::new();
+        pop_paginas.set_has_arrow(false);
+        // (opens from the window's edge inwards: centred on the button it would leave the window)
+        pop_paginas.set_halign(Align::Start);
+        let lista_paginas = caixa(Orientation::Vertical, 2, "central-menu-paginas");
+        let mut itens_paginas = Vec::new();
+        for (id, nome, glifo, pronta) in PAGINAS {
+            let b = gtk::Button::new();
+            b.add_css_class("central-menu-item");
+            let bc = caixa(Orientation::Horizontal, 10, "");
+            // (the star is drawn smaller than the glyphs: a 16 px box keeps the names in one column)
+            let g = caixa(Orientation::Horizontal, 0, "");
+            g.set_size_request(16, 16);
+            let gl: gtk::Widget = if *glifo == "spark" { estrela(12, "#8E8F99").upcast() } else { ui_icon(glifo, "#8E8F99", 16).upcast() };
+            gl.set_halign(Align::Center);
+            gl.set_valign(Align::Center);
+            gl.set_hexpand(true);
+            g.append(&gl);
+            bc.append(&g);
+            let l = rotulo(tr(nome), "");
+            l.set_xalign(0.0);
+            bc.append(&l);
+            bc.set_halign(Align::Start);
+            b.set_child(Some(&bc));
+            b.set_sensitive(*pronta);
+            lista_paginas.append(&b);
+            itens_paginas.push((*id, b));
+        }
+        pop_paginas.set_child(Some(&lista_paginas));
+        menu_paginas.set_popover(Some(&pop_paginas));
+        barra_f.append(&menu_paginas);
+        posicao_debug_sempre("central menu paginas", menu_paginas.upcast_ref());
         let migalha = gtk::Button::new();
         migalha.add_css_class("central-migalha");
         let mc = caixa(Orientation::Horizontal, 8, "");
@@ -268,6 +317,14 @@ impl Central {
         busca.append(&atalho);
         busca.set_valign(Align::Center);
         barra_f.append(&busca);
+        // (narrow: the field folds into this button; pressed, the field comes back with the keyboard in it)
+        let busca_botao = gtk::Button::new();
+        busca_botao.add_css_class("central-busca-botao");
+        busca_botao.set_child(Some(&ui_icon("busca", "#8E8F99", 16)));
+        busca_botao.set_tooltip_text(Some(tr("Search")));
+        busca_botao.set_valign(Align::Center);
+        busca_botao.set_visible(false);
+        barra_f.append(&busca_botao);
         let menu = gtk::MenuButton::new();
         menu.add_css_class("central-menu");
         menu.set_child(Some(&ui_icon("menu", "#8E8F99", 16)));
@@ -398,8 +455,19 @@ impl Central {
         let instalar_agente = crate::install_agent::InstallAgentPage::new();
         paginas.add_named(&instalar_agente.raiz, Some("instalar-agente"));
         conversas.lateral.set_visible(false);
-        principal.append(&paginas);
+        // (the pages that fold for a narrow window let the window go narrower than their wide layout: their
+        // minimum width does not hold the window; the others keep holding it — set by pagina())
+        let paginas_rolagem = gtk::ScrolledWindow::new();
+        paginas_rolagem.set_policy(gtk::PolicyType::External, gtk::PolicyType::Never);
+        paginas_rolagem.set_propagate_natural_width(true);
+        paginas_rolagem.set_vexpand(true);
+        paginas_rolagem.set_child(Some(&paginas));
+        principal.append(&paginas_rolagem);
         raiz.append(&conversas.lateral);
+        if let Some(a) = conversas.alca_lista.borrow().as_ref() {
+            a.set_visible(false);
+            raiz.append(a);
+        }
         raiz.append(&principal);
         // (over the window: the conversations' sheets in a narrow window, and what measures its width)
         let sobre = gtk::Overlay::new();
@@ -413,7 +481,7 @@ impl Central {
         janela.set_child(Some(&sobre));
 
         let c = Rc::new(Central {
-            janela, paginas, trilho: botoes_trilho, titulo, pedido: pedido.clone(), permissoes, memoria, rotinas, fluxo, migalha: migalha.clone(), linha_tempo, uso, ajustes, conversas, agentes, agente_editor, novo_agente, instalar_agente, trilho_box: trilho.clone(), alca: alca.clone(), linha_sep, tique: Cell::new(0), atual: RefCell::new("agentes"), shell: RefCell::new(Rc::downgrade(shell)), subtitulo, cartoes, linha_titulo, linha,
+            janela, paginas, trilho: botoes_trilho, titulo, pedido: pedido.clone(), permissoes, memoria, rotinas, fluxo, migalha: migalha.clone(), linha_tempo, uso, ajustes, conversas, agentes, agente_editor, novo_agente, instalar_agente, trilho_box: trilho.clone(), paginas_rolagem, menu_paginas: menu_paginas.clone(), busca: busca.clone(), busca_botao: busca_botao.clone(), estreita: Cell::new(false), buscando: Cell::new(false), trilho_quer: Cell::new(true), alca: alca.clone(), linha_sep, tique: Cell::new(0), atual: RefCell::new("agentes"), shell: RefCell::new(Rc::downgrade(shell)), subtitulo, cartoes, linha_titulo, linha,
             escolhida: Cell::new(0), pendentes: RefCell::default(), assinatura: RefCell::default(),
         });
         // the window carries the Agents app id (the dock, Alt+Tab and the overview show it as that app)
@@ -437,6 +505,41 @@ impl Central {
                 }
             });
         }
+        for (id, b) in itens_paginas {
+            let (w, p) = (Rc::downgrade(&c), pop_paginas.downgrade());
+            b.connect_clicked(move |_| {
+                if let Some(p) = p.upgrade() {
+                    p.popdown();
+                }
+                if let Some(c) = w.upgrade() {
+                    c.pagina(id);
+                }
+            });
+        }
+        let w = Rc::downgrade(&c);
+        busca_botao.connect_clicked(move |_| {
+            if let Some(c) = w.upgrade() {
+                c.buscando.set(true);
+                c.ajustar_estreita();
+                // (once the field is on screen: a hidden one takes no focus)
+                let p = c.pedido.downgrade();
+                glib::idle_add_local_once(move || {
+                    if let Some(p) = p.upgrade() {
+                        p.grab_focus();
+                    }
+                });
+            }
+        });
+        // (the field folds again when the keyboard leaves it empty)
+        let w = Rc::downgrade(&c);
+        let foco = gtk::EventControllerFocus::new();
+        foco.connect_leave(move |_| {
+            if let Some(c) = w.upgrade().filter(|c| c.estreita.get() && c.pedido.text().is_empty()) {
+                c.buscando.set(false);
+                c.ajustar_estreita();
+            }
+        });
+        pedido.add_controller(foco);
         // the conversations' side bar: its pages go through here; collapsing it shows the rail
         let w = Rc::downgrade(&c);
         c.conversas.ao_ir(move |id| {
@@ -517,7 +620,8 @@ impl Central {
         let (tl, tp) = (trilho_lista.clone(), trilho_pessoa.clone());
         c.conversas.ao_recolher(move |trilho, botao| {
             if let Some(c) = w.upgrade() {
-                c.trilho_box.set_visible(trilho);
+                c.trilho_quer.set(trilho);
+                c.ajustar_estreita();
             }
             tl.set_visible(botao);
             tp.set_visible(botao);
@@ -535,6 +639,11 @@ impl Central {
             if let Some(c) = w.upgrade() {
                 // (the flow builder folds its palette and inspector in a narrow window)
                 c.fluxo.set_narrow(largura < 1180);
+                let estreita = crate::central_conversas::Faixa::de(largura) == crate::central_conversas::Faixa::Estreita;
+                if c.estreita.replace(estreita) != estreita {
+                    c.ajustar_estreita();
+                }
+                c.agentes.set_room(largura - if c.trilho_box.is_visible() { 64 } else { 0 });
                 glib::idle_add_local_once(move || c.conversas.largura_janela(largura));
             }
         });
@@ -661,6 +770,19 @@ impl Central {
         self.conversas.comecar(pedido);
     }
 
+    /// The rail or its menu, the search field or its button, as the window's width wants (frame 12).
+    fn ajustar_estreita(&self) {
+        let estreita = self.estreita.get();
+        self.trilho_box.set_visible(self.trilho_quer.get() && !estreita);
+        self.menu_paginas.set_visible(estreita);
+        let buscando = self.buscando.get() || !self.pedido.text().is_empty();
+        self.busca.set_visible(!estreita || buscando);
+        self.busca_botao.set_visible(estreita && !buscando);
+        if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+            eprintln!("debug central: estreita {estreita}");
+        }
+    }
+
     /// Shows a page of the rail (the toolbar's title and field follow it).
     /// "Instalar agente" for a manifest (`kalango-shell instalar-agente FILE`, or opening one in Files).
     pub fn instalar_agente(self: &Rc<Self>, arquivo: &std::path::Path) {
@@ -687,6 +809,9 @@ impl Central {
             b.set_child(Some(&if *glifo == "spark" { estrela(12, cor).upcast::<gtk::Widget>() } else { ui_icon(glifo, cor, 16).upcast() }));
         }
         self.paginas.set_visible_child_name(id);
+        // (a page that folds lets the window go narrow; another one holds it at its own minimum)
+        let dobra = matches!(id, "agentes" | "fluxo" | "conversas");
+        self.paginas_rolagem.set_policy(if dobra { gtk::PolicyType::External } else { gtk::PolicyType::Never }, gtk::PolicyType::Never);
         // the conversations: the rail opens into their side bar (again, from the rail's own button) and the page
         // brings its own header rows
         let conversas = id == "conversas";
