@@ -130,6 +130,14 @@ pub fn inline(s: &str) -> String {
     out
 }
 
+/// A paragraph, heading or list item held to the prose measure: `widths::PROSE_CHARS` characters of its own font (it
+/// follows the font size and scale), at the start of the column — the column grows with the window, and code, tables
+/// and diagrams take all of it (design "Central · conversa responsiva"). (A label's own `max-width-chars` only bounds
+/// its natural width: GTK still gives a wrapped label the whole row once it is laid out for a height.)
+fn prose(l: &gtk::Label) -> crate::limite::Limite {
+    crate::limite::Limite::measure_in_chars(l, crate::widths::PROSE_CHARS)
+}
+
 fn label(markup: &str, class: &str) -> gtk::Label {
     let l = gtk::Label::new(None);
     l.set_markup(markup);
@@ -319,7 +327,7 @@ fn render_text(out: &gtk::Box, md: &str, apply: bool) {
     let flush = |p: &mut Vec<&str>, out: &gtk::Box| {
         if !p.is_empty() {
             let text = p.iter().map(|l| inline(l.trim())).collect::<Vec<_>>().join("\n");
-            out.append(&label(&text, "md-p"));
+            out.append(&prose(&label(&text, "md-p")));
             p.clear();
         }
     };
@@ -381,7 +389,7 @@ fn render_text(out: &gtk::Box, md: &str, apply: bool) {
             let nivel = 1 + h.chars().take_while(|c| *c == '#').count();
             let l = label(&inline(h.trim_start_matches('#').trim()), "md-h");
             l.add_css_class(&format!("md-h{}", nivel.min(3)));
-            out.append(&l);
+            out.append(&prose(&l));
         } else if apply && task_item(l).is_some() && lines.get(i + 1).is_some_and(|n| task_item(n).is_some()) {
             // the agent's plan: its steps in one block, how many are done (design "Chat · código (plano, diff e terminal)")
             flush(&mut paragraph, out);
@@ -418,7 +426,7 @@ fn render_text(out: &gtk::Box, md: &str, apply: bool) {
                 body.add_css_class("md-tarefa-feita");
             }
             body.set_hexpand(true);
-            row.append(&body);
+            row.append(&prose(&body));
             out.append(&row);
         } else if t == "---" || t == "***" {
             flush(&mut paragraph, out);
@@ -434,7 +442,7 @@ fn render_text(out: &gtk::Box, md: &str, apply: bool) {
             row.append(&m);
             let body = label(&inline(rest), "md-p");
             body.set_hexpand(true);
-            row.append(&body);
+            row.append(&prose(&body));
             out.append(&row);
         } else if t.is_empty() {
             flush(&mut paragraph, out);

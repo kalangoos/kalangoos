@@ -10,6 +10,7 @@
 use crate::agent_picker::{self, Picked, Picker};
 use crate::conversa::{self, ui_icon, Conversa};
 use crate::resize_handle::{self, panel_width, HIT};
+use crate::widths::{self, PanelKind};
 use crate::superficies::{caixa, estrela, rotulo};
 use crate::Shell;
 use gtk::prelude::*;
@@ -27,13 +28,11 @@ const GRUPOS: &[(&str, &str, &str, &[&str])] = &[
     ("tela", n_("See the screen"), "monitor", &["dominio:tela."]),
 ];
 
-/// The conversation's widest reading measure, centred in what the side panels leave.
+/// The new conversation's widest measure (its composer, centred); a conversation's column follows
+/// `widths::reading_column` instead.
 const LEITURA: i32 = 860;
 /// What the conversation keeps at least beside the side panels (they give way first).
-const CONVERSA_MINIMA: i32 = 480;
-/// The context's width by default (26 % of the window, within these) and by hand.
-const CONTEXTO_PADRAO: (i32, i32) = (300, 480);
-const CONTEXTO_LIMITES: (i32, i32) = (280, 560);
+const CONVERSA_MINIMA: i32 = crate::widths::CONVERSATION_MIN;
 /// The side bar's width by default (22 % of the window, within these) and by hand.
 const LISTA_PADRAO: (i32, i32) = (240, 360);
 const LISTA_LIMITES: (i32, i32) = (220, 420);
@@ -200,6 +199,13 @@ pub struct Conversas {
     /// the window), and those edges
     largura_contexto: Cell<Option<i32>>,
     largura_lista: Cell<Option<i32>>,
+    /// the same for the Canvas and the Browser, each its own (a page needs more room than the context's rows)
+    canvas_width: Cell<Option<i32>>,
+    browser_width: Cell<Option<i32>>,
+    /// the canvas expanded over most of the window, and whether the side bar was closed before (it gives way)
+    expanded: Cell<bool>,
+    list_closed_before: Cell<bool>,
+    expand_button: gtk::Button,
     alca_contexto: RefCell<Option<gtk::Widget>>,
     pub alca_lista: RefCell<Option<gtk::Widget>>,
     /// the Changes tab and the repository the conversation's files are in (with the files)
@@ -513,7 +519,8 @@ impl Conversas {
         });
         let cw = caixa(Orientation::Vertical, 0, "");
         cw.append(&conv.raiz);
-        vista.add_named(&crate::limite::Limite::new(&cw, if compacta { 620 } else { LEITURA }), Some("conversa"));
+        // (the column grows with the room the side panels leave — design "Central · conversa responsiva")
+        vista.add_named(&crate::limite::Limite::with_rule(&cw, widths::reading_column), Some("conversa"));
         meio.append(&vista);
         raiz.append(&meio);
 
@@ -554,6 +561,14 @@ impl Conversas {
         dobrar.set_child(Some(&ui_icon("painel-direita", "#8E8F99", 16)));
         dobrar.set_tooltip_text(Some(tr("Fold the context")));
         dobrar.set_valign(Align::Center);
+        // (Canvas and Browser: the canvas may take most of the window — design "Central · canvas expandido")
+        let expandir = gtk::Button::new();
+        expandir.add_css_class("central-controle");
+        expandir.set_child(Some(&ui_icon("expandir", "#8E8F99", 16)));
+        expandir.set_tooltip_text(Some(tr("Expand the canvas")));
+        expandir.set_valign(Align::Center);
+        expandir.set_visible(false);
+        pc.append(&expandir);
         pc.append(&dobrar);
         let controles_painel = controles();
         pc.append(&controles_painel);
@@ -689,7 +704,7 @@ impl Conversas {
             faixa: Cell::new(Faixa::de(largura_janela)), largura: Cell::new(largura_janela), na_pagina: Cell::new(false), painel_aberto: Cell::new(Faixa::de(largura_janela) == Faixa::Larga), arrumando: Cell::new(false),
             folhas: RefCell::default(), veu, casa_lateral: RefCell::default(), casa_painel: RefCell::default(), faixa_abas, faixa_botoes: botoes_faixa.clone(), controles_painel, abrir_lista_b, faisca, subtitulo, nomes_chips, ja_mostrou: Cell::new(false), busca, lista, rodape_tokens,
             titulo, chip_agente, fixar, apagar: apagar.clone(), painel_b: painel_b.clone(), vista, conv, controles_meio, saudacao, nova_texto, nova_grupos, sugestoes, painel, abas, painel_stack, contexto, ferramentas,
-            memoria, arquivos, tokens_v, tokens_barra, modelo_v, marca: Cell::new((0, 0)), canvas_box, html: crate::html_canvas::HtmlCanvas::new(), alteracoes_box, terminal_box, navegador, painel_base, largura_contexto: Cell::new(guardada("contexto")), largura_lista: Cell::new(guardada("lista")), alca_contexto: RefCell::default(), alca_lista: RefCell::default(), uso: uso.clone(), repo: RefCell::default(), commit_feito: RefCell::default(), previa: RefCell::default(), preenchendo: Cell::new(false),
+            memoria, arquivos, tokens_v, tokens_barra, modelo_v, marca: Cell::new((0, 0)), canvas_box, html: crate::html_canvas::HtmlCanvas::new(), alteracoes_box, terminal_box, navegador, painel_base, largura_contexto: Cell::new(guardada("contexto")), largura_lista: Cell::new(guardada("lista")), canvas_width: Cell::new(guardada("canvas")), browser_width: Cell::new(guardada("navegador")), expanded: Cell::new(false), list_closed_before: Cell::new(false), expand_button: expandir.clone(), alca_contexto: RefCell::default(), alca_lista: RefCell::default(), uso: uso.clone(), repo: RefCell::default(), commit_feito: RefCell::default(), previa: RefCell::default(), preenchendo: Cell::new(false),
             start_chips, start_agent: RefCell::default(), start_picker: RefCell::default(), nova_form, nova_ph: ph.clone(), chip_agente_box, chip_tile, ao_executar: RefCell::default(), nova_erro,
         });
         // the edges of the context and the side bar (the agents center puts the side bar's beside it)
@@ -741,8 +756,11 @@ impl Conversas {
             let w = Rc::downgrade(&c);
             b.connect_toggled(move |b| {
                 if let Some(c) = w.upgrade().filter(|_| b.is_active()) {
+                    // (another tab puts an expanded canvas back first)
+                    c.expand(false);
                     c.painel_stack.set_visible_child_name(["contexto", "arquivos", "canvas", "alteracoes", "terminal", "navegador"][i]);
                     c.ajustar_painel();
+                    c.mark_expand_button();
                     // (the canvas with a page needs the height: no usage under it)
                     c.uso.set_visible(i < 2 || (i == 2 && c.html.file().is_none()));
                     if i == 2 {
@@ -822,6 +840,12 @@ impl Conversas {
         painel_b.connect_toggled(move |b| {
             if let Some(c) = w.upgrade().filter(|c| !c.arrumando.get()) {
                 c.abrir_painel(b.is_active());
+            }
+        });
+        let w = Rc::downgrade(&c);
+        expandir.connect_clicked(move |_| {
+            if let Some(c) = w.upgrade() {
+                c.expand(!c.expanded.get());
             }
         });
         let w = Rc::downgrade(&c);
@@ -1000,6 +1024,7 @@ impl Conversas {
             return;
         }
         self.faixa.set(f);
+        self.expanded.set(false);
         self.recolhida.set(f != Faixa::Larga);
         let em_conversa = self.vista.visible_child_name().as_deref() == Some("conversa");
         self.painel_aberto.set(em_conversa && f == Faixa::Larga);
@@ -1736,16 +1761,71 @@ impl Conversas {
         }
     }
 
-    /// The context's width: its usual one; with the Browser in a wide window, what the conversation leaves (a page
-    /// needs room to be read — design "Chat · navegador do agente").
+    /// What the right panel shows, for its width rule: Canvas and Browser are wide (a page needs room — designs
+    /// "Central · canvas largo" and "Chat · navegador do agente"), the other tabs are rows.
+    fn panel_kind(&self) -> PanelKind {
+        match self.painel_stack.visible_child_name().as_deref() {
+            Some("canvas" | "navegador") => PanelKind::Wide,
+            _ => PanelKind::Narrow,
+        }
+    }
+
+    /// The width the person gave the tab on screen (Canvas and Browser keep their own; the rest share the context's).
+    fn saved_panel_width(&self) -> &Cell<Option<i32>> {
+        match self.painel_stack.visible_child_name().as_deref() {
+            Some("canvas") => &self.canvas_width,
+            Some("navegador") => &self.browser_width,
+            _ => &self.largura_contexto,
+        }
+    }
+
+    /// The right panel's width (`widths`): the person's for this tab, or its share of the window (26 % for the
+    /// context's rows, 45 % for a page, up to 70 %); expanded, all but the conversation's narrow column. Never more
+    /// than the conversation leaves. Called at every resize of the window or of a panel.
     fn ajustar_painel(&self) {
-        // (the person's width, or 26 % of the window; never more than the conversation leaves)
         let janela = self.largura.get();
         let lista = if self.lateral.is_visible() && self.faixa.get() != Faixa::Estreita { self.lateral.width_request() + HIT } else { 64 };
-        let w = panel_width(janela, self.largura_contexto.get(), 0.26, CONTEXTO_PADRAO, CONTEXTO_LIMITES, janela - lista - HIT - CONVERSA_MINIMA);
+        let w = if self.expanded.get() {
+            widths::expanded_panel_width(janela, lista, HIT)
+        } else {
+            widths::right_panel_width(self.panel_kind(), janela, lista, self.saved_panel_width().get(), HIT)
+        };
+        if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() && self.painel.is_visible() && self.painel.width_request() != w {
+            eprintln!("debug central: larguras janela {janela} · esquerda {lista} · painel {w} ({:?}{}) · coluna {}", self.panel_kind(),
+                if self.expanded.get() { ", expandido" } else { "" }, widths::reading_column(janela - lista - HIT - w));
+        }
         if self.painel.width_request() != w {
             self.painel.set_size_request(w, -1);
         }
+    }
+
+    /// Expands the canvas over most of the window (`true`: the side bar gives way to the rail) or puts it back (the
+    /// side bar as it was). Only with Canvas or Browser on screen.
+    fn expand(&self, on: bool) {
+        if on == self.expanded.get() || (on && self.panel_kind() != PanelKind::Wide) {
+            return;
+        }
+        self.expanded.set(on);
+        if on {
+            self.list_closed_before.set(self.recolhida.get());
+            self.recolhida.set(true);
+        } else {
+            self.recolhida.set(self.list_closed_before.get());
+        }
+        self.mark_expand_button();
+        self.arrumar();
+    }
+
+    /// The expand button: only beside a page (Canvas, Browser) in a window with side panels; lit while expanded.
+    fn mark_expand_button(&self) {
+        let b = &self.expand_button;
+        b.set_visible(self.faixa.get() != Faixa::Estreita && self.panel_kind() == PanelKind::Wide);
+        let on = self.expanded.get();
+        if on { b.add_css_class("expandido") } else { b.remove_css_class("expandido") }
+        if let Some(img) = b.child().and_downcast::<gtk::Image>() {
+            conversa::set_icon(&img, if on { "recolher" } else { "expandir" }, if on { "#A5A1E2" } else { "#8E8F99" });
+        }
+        b.set_tooltip_text(Some(if on { tr("Put the canvas back") } else { tr("Expand the canvas") }));
     }
 
     /// The side bar's width: the person's, or 22 % of the window.
@@ -1762,14 +1842,22 @@ impl Conversas {
     fn alcas(self: &Rc<Self>) -> (gtk::Widget, gtk::Widget) {
         let feitas = |contexto: bool| -> gtk::Widget {
             let (w1, w2, w3) = (Rc::downgrade(self), Rc::downgrade(self), Rc::downgrade(self));
-            let limites = if contexto { CONTEXTO_LIMITES } else { LISTA_LIMITES };
             resize_handle::new(if contexto { -1 } else { 1 }, resize_handle::Panel {
                 // (the width set, as the drag sets it: `width()` would leave out the padding)
                 width: Box::new(move || w1.upgrade().map(|c| if contexto { c.painel.width_request() } else { c.lateral.width_request() }).unwrap_or(0)),
                 resize: Box::new(move |w, guardar| {
                     let Some(c) = w2.upgrade() else { return };
-                    let w = w.clamp(limites.0, limites.1);
-                    if contexto { c.largura_contexto.set(Some(w)) } else { c.largura_lista.set(Some(w)) }
+                    if contexto {
+                        // (the tab's own limits: a page may go up to 70 % of the window; dragging an expanded canvas
+                        // makes the dragged width its own)
+                        let lim = widths::panel_rule(c.panel_kind(), c.largura.get()).limits;
+                        if c.expanded.replace(false) {
+                            c.mark_expand_button();
+                        }
+                        c.saved_panel_width().set(Some(w.clamp(lim.0, lim.1)));
+                    } else {
+                        c.largura_lista.set(Some(w.clamp(LISTA_LIMITES.0, LISTA_LIMITES.1)));
+                    }
                     c.ajustar_lista();
                     c.ajustar_painel();
                     if guardar {
@@ -1778,7 +1866,7 @@ impl Conversas {
                 }),
                 reset: Box::new(move || {
                     let Some(c) = w3.upgrade() else { return };
-                    if contexto { c.largura_contexto.set(None) } else { c.largura_lista.set(None) }
+                    if contexto { c.saved_panel_width().set(None) } else { c.largura_lista.set(None) }
                     c.ajustar_lista();
                     c.ajustar_painel();
                     c.guardar_larguras();
@@ -1790,7 +1878,7 @@ impl Conversas {
     }
 
     fn guardar_larguras(&self) {
-        crate::configuracoes::salvar_ajuste("central_paineis", json!({"contexto": self.largura_contexto.get(), "lista": self.largura_lista.get()}));
+        crate::configuracoes::salvar_ajuste("central_paineis", json!({"contexto": self.largura_contexto.get(), "lista": self.largura_lista.get(), "canvas": self.canvas_width.get(), "navegador": self.browser_width.get()}));
     }
 
     /// Puts the side bar, the context, its tabs and the header's buttons where the band and the person want them.
@@ -1819,6 +1907,7 @@ impl Conversas {
         self.painel_b.set_active(painel);
         self.ajustar_lista();
         self.ajustar_painel();
+        self.mark_expand_button();
         if let Some(a) = self.alca_contexto.borrow().as_ref() {
             a.set_visible(pag && painel && !estreita);
         }
@@ -1835,6 +1924,10 @@ impl Conversas {
         }
         if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() && pag {
             eprintln!("debug central: conversas em {f:?} ({} px) · contexto {painel} · lista {lista}", self.largura.get());
+            for (i, a) in self.abas.iter().enumerate() {
+                crate::central::posicao_debug(&format!("conversas aba {i}"), a.upcast_ref());
+            }
+            crate::central::posicao_debug("conversas expandir", self.expand_button.upcast_ref());
             // (what keeps the window from getting narrower: each part's minimum width)
             let min = |w: &gtk::Widget| if w.is_visible() { w.measure(Orientation::Horizontal, -1).0 } else { 0 };
             eprintln!("debug central: mínimos · lateral {} · conversa {} · painel {} · faixa {} · tudo {}", min(self.lateral.upcast_ref()), min(self.vista.upcast_ref()),
@@ -1897,6 +1990,7 @@ impl Conversas {
         let ola = if h < 12 { tr("Good morning, {name}.") } else if h < 18 { tr("Good afternoon, {name}.") } else { tr("Good evening, {name}.") };
         self.saudacao.set_text(&ola.replace("{name}", &nome));
         self.sugestoes_render();
+        self.expand(false);
         self.vista.set_visible_child_name("nova");
         if self.faixa.get() == Faixa::Estreita {
             self.recolhida.set(true);
@@ -1966,6 +2060,8 @@ impl Conversas {
                 lateral.nova();
             }
         }
+        // (another conversation puts an expanded canvas back)
+        self.expand(false);
         self.conv.abrir(id);
         let d: Vec<String> = conversa::meta(id)["desligadas"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect();
         self.conv.set_desligadas(d);

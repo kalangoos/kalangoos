@@ -11,6 +11,8 @@ ROOT=$PWD
 R="$ROOT/poc/.deps/root"; LIBS="$R/usr/lib/x86_64-linux-gnu"
 # the dev session builds with the "sessao" profile (incremental, no LTO: seconds to rebuild); KALANGO_PERFIL=release for the real thing
 PERFIL="${KALANGO_PERFIL:-sessao}"
+# Kalango VirtualDesk: the repository next to this one, for the shell (Ajustes › Sandbox) and kalangod (vm.*)
+[ -z "${KALANGO_VIRTUALDESK:-}" ] && [ -x "$ROOT/../kalango-virtualdesk/target/release/kalango-virtualdesk" ] && export KALANGO_VIRTUALDESK="$ROOT/../kalango-virtualdesk/target/release/kalango-virtualdesk"
 [ -f "$R/fonts.conf" ] && export FONTCONFIG_FILE="$R/fonts.conf"   # Inter, a fonte do Design System
 export LD_LIBRARY_PATH="$LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" PATH="$R/usr/bin:$PATH"
 N="${KALANGO_NIRI:-$ROOT/poc/.deps/src/niri/target/release/niri}"

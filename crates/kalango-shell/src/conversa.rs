@@ -99,6 +99,8 @@ fn svg_source(name: &str) -> &'static str {
         "rede-cabo" => include_str!("../assets/ui/rede-cabo.svg"),
         "olho-d" => include_str!("../assets/ui/olho-d.svg"),
         "painel-direita" => include_str!("../assets/ui/painel-direita.svg"),
+        "expandir" => include_str!("../assets/ui/expandir.svg"),
+        "recolher" => include_str!("../assets/ui/recolher.svg"),
         "painel-esquerda" => include_str!("../assets/ui/painel-esquerda.svg"),
         "clipe" => include_str!("../assets/ui/clipe.svg"),
         "apps-pontos" => include_str!("../assets/ui/apps-pontos.svg"),
