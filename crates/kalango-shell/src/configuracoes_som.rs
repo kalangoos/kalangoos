@@ -183,31 +183,35 @@ fn ajuste(chave: &str, padrao: bool) -> bool {
     crate::configuracoes::ajustes()[chave].as_bool().unwrap_or(padrao)
 }
 
-/// The system's sounds (notifications) at the chosen volume, through libcanberra; none in the session test.
-pub fn tocar(som: &str) {
-    play_at(som, crate::configuracoes::ajustes()["sons_do_sistema"].as_f64().unwrap_or(0.4));
+/// The system's sounds' volume (Settings › Sound), 0 – 1.
+pub fn system_volume() -> f64 {
+    crate::configuracoes::ajustes()["sons_do_sistema"].as_f64().unwrap_or(0.4)
 }
 
-/// A sound of the theme at this volume (0 – 1): the notifications have one of their own.
-pub fn play_at(som: &str, v: f64) {
+/// The system's sounds at the chosen volume; none in the session test. How long it plays, when it plays.
+pub fn tocar(som: &str) -> Option<Duration> {
+    play_at(som, system_volume())
+}
+
+/// The longest the end of a session waits for its sound.
+pub const SESSION_END_WAIT: Duration = Duration::from_secs(3);
+
+/// A sound of the theme at this volume (0 – 1): the notifications have one of their own. How long it plays, when it
+/// really plays (a shutdown waits for it).
+pub fn play_at(som: &str, v: f64) -> Option<Duration> {
     // Accessibility › visual alerts: the screen flashes softly as well
     crate::descrever::piscar();
     if std::env::var("KALANGO_SONS").as_deref() == Ok("nao") {
         if depurando() {
             eprintln!("debug som: tocaria {som} ({}%)", (v * 100.0).round());
         }
-        return;
+        return None;
     }
     if v <= 0.01 {
-        return;
+        return None;
     }
-    // (canberra's volume is in decibels)
-    let db = (20.0 * v.log10()).max(-60.0);
-    let som = som.to_string();
-    std::thread::spawn(move || {
-        let _ = std::process::Command::new("canberra-gtk-play").args(["-i", &som, "-V", &format!("{db:.1}")])
-            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
-    });
+    // (in the shell, through GStreamer: no process per sound — system_sounds.rs)
+    crate::system_sounds::play(som, v)
 }
 
 /// Called after the shell changes the volume: the change's sound, if the person wants it.

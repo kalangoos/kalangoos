@@ -35,6 +35,10 @@ pub fn vigiar() {
 fn bateria() {
     crate::lateral::em_segundo_plano(crate::configuracoes_energia::read_battery, |b| {
         let Some(b) = b else { return };
+        // (the charger's sound: UPower's signal tells it; the session test has only these samples)
+        if std::env::var_os("KALANGO_UPOWER").is_some() {
+            crate::system_sounds::power_source_seen(b.charging || b.full);
+        }
         if b.charging {
             BATERIA_AVISADA.with(|a| a.set(false));
             return;
@@ -50,6 +54,7 @@ fn bateria() {
         if debug() {
             eprintln!("debug alerta: {titulo}");
         }
+        crate::configuracoes_som::tocar("battery-low");
         s.notificacoes().notify_critico(tr("Power"), &titulo, tr("Plug in the charger. Suspended, what is open stays as it is."),
             &[("economia", tr("Maximum saving")), ("suspender", tr("Suspend now"))], |acao| {
                 if debug() {
@@ -96,6 +101,7 @@ fn disco() {
         if debug() {
             eprintln!("debug alerta: {titulo} (liberável {pode_h})");
         }
+        crate::configuracoes_som::tocar("dialog-warning");
         let liberar = trf("Free {size}", &[("size", pode_h)]);
         let mut acoes: Vec<(&str, &str)> = Vec::new();
         if pode > 0 {

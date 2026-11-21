@@ -1383,6 +1383,9 @@ impl SystemPage {
                 return;
             }
             let n = empty_trash();
+            if n > 0 {
+                crate::configuracoes_som::tocar("trash-empty");
+            }
             if depurando() {
                 eprintln!("debug sistema: lixeira esvaziada ({n})");
             }

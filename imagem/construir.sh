@@ -90,6 +90,14 @@ sed -i 's#ExecStart=[^ ]*kalangod#ExecStart=/usr/libexec/kalango/kalangod#' "$C/
 ln -s ../kalangod.service "$C/etc/systemd/system/multi-user.target.wants/kalangod.service"
 # os ícones dos apps do KalangoOS (o shell os procura em /usr/share/kalango/icones)
 d usr/share/kalango/icones; cp assets/icons/kalango/svg/*.svg "$C/usr/share/kalango/icones/"
+# os sons do sistema: o tema freedesktop do KalangoOS (o shell toca os arquivos dele; apps de terceiros pelo libcanberra,
+# que escolhe o tema pelo gtk-sound-theme-name ou pelo org.gnome.desktop.sound theme-name: os dois dizem "kalango")
+d usr/share/sounds/kalango; cp -r assets/sounds/kalango/index.theme assets/sounds/kalango/stereo assets/sounds/kalango/LEIAME.md "$C/usr/share/sounds/kalango/"
+# (o GTK 3: em /etc/xdg, que o GTK lê depois de /etc/gtk-3.0 — esse é do pacote libgtk-3-0t64, que diz "Yaru")
+d etc/gtk-4.0; d etc/xdg/gtk-3.0
+printf '[Settings]\ngtk-sound-theme-name=kalango\n' | tee "$C/etc/gtk-4.0/settings.ini" > "$C/etc/xdg/gtk-3.0/settings.ini"
+d usr/share/glib-2.0/schemas
+printf "[org.gnome.desktop.sound]\ntheme-name='kalango'\n" > "$C/usr/share/glib-2.0/schemas/90_kalango-sons.gschema.override"
 # o navegador dos agentes (Moli, preso pelo kalangod) e o motor dos modelos locais (llama.cpp: o backend de CPU; o de
 # CUDA vem com os drivers da NVIDIA)
 [ -x "$DEPS/moli/moli" ] && install -m 755 "$(readlink -f "$DEPS/moli/moli")" "$C/usr/lib/kalango/moli"
@@ -334,6 +342,7 @@ env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME="$HOME" TMPDIR="$W" /usr/bin/mmde
   --customize-hook='chroot "$1" systemctl enable greetd.service NetworkManager.service bluetooth.service ntpd-rs.service || true' \
   --customize-hook='chroot "$1" systemctl set-default graphical.target' \
   --customize-hook='chroot "$1" systemctl mask getty@tty1.service autovt@tty1.service' \
+  --customize-hook='[ ! -x "$1/usr/bin/glib-compile-schemas" ] || chroot "$1" glib-compile-schemas /usr/share/glib-2.0/schemas' \
   --customize-hook='chroot "$1" update-initramfs -u -k all' \
   --customize-hook='ln -sf ../usr/lib/os-release "$1/etc/os-release"; rm -f "$1"/etc/update-motd.d/*; rm -f "$1"/etc/legal; : > "$1/etc/motd"' \
   --customize-hook="rm -f \"\$1/etc/apt/sources.list\" && printf 'Types: deb\\nURIs: http://archive.ubuntu.com/ubuntu\\nSuites: $SUITE $SUITE-updates $SUITE-backports\\nComponents: main restricted universe multiverse\\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\\n\\nTypes: deb\\nURIs: http://security.ubuntu.com/ubuntu\\nSuites: $SUITE-security\\nComponents: main restricted universe multiverse\\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\\n' > \"\$1/etc/apt/sources.list.d/ubuntu.sources\"" \

@@ -450,7 +450,11 @@ impl Energia {
     /// The action itself (logind; PackageKit first when an update is prepared).
     pub(crate) fn power(id: &str, install_update: bool) {
         if id == "sair" {
-            let _ = niri_acao(json!({"Quit": {"skip_confirmation": true}}));
+            // the logout's sound first: the session ends when it does (no longer than it lasts)
+            let wait = crate::configuracoes_som::tocar("desktop-logout").map(|d| d.min(crate::configuracoes_som::SESSION_END_WAIT)).unwrap_or_default();
+            glib::timeout_add_local_once(wait, || {
+                let _ = niri_acao(json!({"Quit": {"skip_confirmation": true}}));
+            });
             return;
         }
         if dev() {
