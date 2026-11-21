@@ -11,7 +11,7 @@ pub fn tools() -> Vec<Tool> {
         Tool { name: "arquivos.ler", description: n_("Reads a file of the user: text, or the text of a PDF with [p. N] page markers"), level: Level::Usuario, effect: Effect::Leitura, reversible: false,
             schema: || obj(json!({"caminho": {"type": "string"}, "max_bytes": {"type": "integer", "minimum": 1, "maximum": 4194304}}), &["caminho"]), run: read },
         Tool { name: "arquivos.escrever", description: n_("Creates or replaces a text file (the previous content is kept for undo)"), level: Level::Usuario, effect: Effect::Escreve, reversible: true,
-            schema: || obj(json!({"caminho": {"type": "string"}, "conteudo": {"type": "string"}}), &["caminho", "conteudo"]), run: write },
+            schema: || obj(json!({"caminho": {"type": "string"}, "conteudo": {"type": "string"}, "conteudo_base64": {"type": "string", "description": "binary content (audio, image) for a new file only"}}), &["caminho"]), run: write },
         Tool { name: "arquivos.mover", description: n_("Moves or renames a file or folder"), level: Level::Usuario, effect: Effect::Escreve, reversible: true,
             schema: || obj(json!({"de": {"type": "string"}, "para": {"type": "string"}}), &["de", "para"]), run: mv },
         Tool { name: "arquivos.lixeira", description: n_("Moves to the trash (nothing is really deleted)"), level: Level::Usuario, effect: Effect::Escreve, reversible: true,
@@ -54,7 +54,18 @@ fn backup_dir(c: &Ctx) -> PathBuf {
 
 fn write(c: &Ctx, a: &Value) -> Result<Out, String> {
     let p = path(c, s(a, "caminho")?)?;
-    let v = run_as_user(c.peer, &roots(c), json!({"tipo": "escrever", "caminho": p, "conteudo": s(a, "conteudo")?}))?;
+    // binary content (a voice recording, a picture) only creates new files: the undo of a replaced binary would need
+    // a binary backup, and "undo" of a new file is deleting it
+    let op = match a.get("conteudo_base64").and_then(Value::as_str) {
+        Some(b) => {
+            if p.exists() {
+                return Err(kalango_i18n::trf("{path} already exists: binary content only creates new files", &[("path", p.display().to_string())]));
+            }
+            json!({"tipo": "escrever", "caminho": p, "conteudo_base64": b})
+        }
+        None => json!({"tipo": "escrever", "caminho": p, "conteudo": s(a, "conteudo")?}),
+    };
+    let v = run_as_user(c.peer, &roots(c), op)?;
     let inverse = if v["existia"].as_bool().unwrap_or(false) {
         // guarda a versão anterior fora do alcance do agente
         let dir = backup_dir(c);

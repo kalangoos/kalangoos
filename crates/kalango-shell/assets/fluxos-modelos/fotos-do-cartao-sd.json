@@ -1,0 +1,17 @@
+{
+  "id": "fotos-do-cartao-sd", "category": "arquivos", "version": 1,
+  "name": "Fotos do cartão SD", "kind": "flow", "icon": "imagem", "tone": "teal", "chip": "Evento do sistema",
+  "summary": "Copia fotos novas e renomeia por data.",
+  "meta": ["3 blocos", "Arquivos", "sem aprovações"],
+  "intro": "Um fluxo que copia as fotos de um cartão de memória para Imagens. Ligue um gatilho de dispositivo USB depois de salvar.",
+  "steps": ["Quando um cartão é conectado", "Copia as fotos novas para ~/Imagens/Câmera", "Avisa quantas fotos copiou"],
+  "permissions": [
+    {"icon": "pasta", "text": "Ler o cartão e escrever em ~/Imagens", "level": "usuario"}
+  ],
+  "agents": [],
+  "flow": {"nodes": [
+    {"id": "copiar", "position": {"x": 0, "y": 0}, "type": "system_action", "data": {"tool": "arquivos.copiar", "arguments": {"origem": "{dispositivo}", "destino": "~/Imagens/Câmera"}, "save_as": "copiadas"}},
+    {"id": "avisar", "position": {"x": 0, "y": 120}, "type": "notify", "data": {"title": "Fotos copiadas", "body": "{copiadas}"}},
+    {"id": "fim", "position": {"x": 0, "y": 240}, "type": "end"}
+  ], "edges": [{"source": "copiar", "target": "avisar"}, {"source": "avisar", "target": "fim"}]}
+}

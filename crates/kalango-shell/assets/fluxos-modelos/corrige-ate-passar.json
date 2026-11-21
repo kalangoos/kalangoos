@@ -1,0 +1,17 @@
+{
+  "id": "corrige-ate-passar", "category": "sistema", "version": 1,
+  "name": "Corrige até passar", "kind": "loop", "icon": "terminal", "tone": "coral", "chip": "Terminal",
+  "summary": "Roda testes e corrige até passarem.",
+  "meta": ["2 subagentes", "Terminal", "pede aprovação para mudar arquivos"],
+  "intro": "Uma repetição: roda os testes, corrige e roda de novo, no máximo 5 vezes.",
+  "steps": ["Roda os testes do projeto", "Lê as falhas e propõe uma correção", "Repete até passar (máx. 5 voltas)"],
+  "permissions": [
+    {"icon": "terminal", "text": "Rodar comandos de teste", "level": "pergunta"},
+    {"icon": "doc", "text": "Mudar arquivos do projeto", "level": "pergunta"}
+  ],
+  "agents": [
+    {"id": "$a1", "name": "Testador", "description": "Roda os testes e resume as falhas.", "kind": "assistant", "config": {"instruction": "Rode os testes do projeto e resuma as falhas. Quando tudo passar, diga \"concluído\".", "tools": [{"name": "sistema.executar", "permission": "ask"}], "output_key": "falhas"}},
+    {"id": "$a2", "name": "Corretor", "description": "Corrige o que falhou.", "kind": "assistant", "config": {"instruction": "Com {falhas}, proponha e aplique a menor correção possível.", "tools": [{"name": "arquivos.escrever", "permission": "ask"}]}},
+    {"id": "$main", "name": "Corrige até passar", "description": "Roda os testes e corrige até passarem (máx. 5 voltas).", "kind": "loop", "config": {"sub_agents": ["$a1", "$a2"], "max_iterations": 5}}
+  ]
+}

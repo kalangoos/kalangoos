@@ -84,7 +84,7 @@ fn answer_rule(language: &str) -> String {
 /// Turns in a row where every call failed: the agent is going in circles (stop and ask the person).
 const MAX_FAILED_TURNS: usize = 3;
 /// Tools the engine never offers: they exist for kalangod's own undo.
-pub(crate) const INTERNAL: &[&str] = &["arquivos.restaurar", "arquivos.apagar_criado"];
+pub(crate) const INTERNAL: &[&str] = &["arquivos.restaurar", "arquivos.apagar_criado", "agentes.apagar_criado"];
 
 /// Domains of the tools and the words of a request that bring them in (pt and en). A small model chooses
 /// better among a dozen tools than among fifty.
@@ -119,6 +119,12 @@ const DOMAINS: &[(&str, &[&str])] = &[
         // operating the screen: clicking, typing, pressing keys in an app
         "clique", "clicar", "clica", "digite", "digitar", "escreva no", "escreva na", "aperte", "pressione", "atalho", "botão", "botao",
         "click", "type ", "press ", "button", "ctrl+", "editor de texto", "text editor", "calculadora", "calculator", "app aberto", "open app"]),
+    // the agents platform (kalango-fluxos): agents, flows, tools, connectors and models are made through kalangod
+    ("agentes", &["agente", "agent", "assistente", "equipe de agentes", "plataforma"]),
+    ("fluxos", &["fluxo", "flow", "automação", "automacao", "automatiz", "rotina", "workflow"]),
+    ("ferramentas", &["ferramenta", "tool", "api", "openapi", "swagger", "endpoint"]),
+    ("mcp", &["mcp", "conector", "connector"]),
+    ("modelos", &["modelo", "model", "llm"]),
 ];
 
 /// Words of a request about the agent's memory (remember, forget, preferences): they bring the memory tools in.
@@ -1248,6 +1254,18 @@ mod tests {
         assert!(names("No Editor de texto aberto, escreva ola e salve com ctrl+s").contains(&"tela.clicar".to_string()));
         assert!(names("clique no botão 7 da calculadora").contains(&"tela.clicar".to_string()));
         assert!(!names("mova o arquivo").contains(&"tela.clicar".to_string()));
+    }
+
+    #[test]
+    fn a_request_about_agents_or_flows_brings_the_platform_tools() {
+        let t = |n: &str, ro: bool| crate::kalangod::Tool { name: n.into(), description: String::new(), schema: serde_json::json!({}), level: "usuario".into(), read_only: ro, destructive: false };
+        let all = vec![t("agentes.criar", false), t("agentes.apagar_criado", false), t("fluxos.criar", false), t("mcp.registrar", false), t("arquivos.mover", false)];
+        let names = |r: &str| select_tools(&all, r, false).iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+        assert!(names("crie um agente que lembre de beber água").contains(&"agentes.criar".to_string()));
+        assert!(names("monte uma automação para as faturas").contains(&"fluxos.criar".to_string()));
+        assert!(names("adicione o conector MCP do clima").contains(&"mcp.registrar".to_string()));
+        assert!(!names("crie um agente").contains(&"agentes.apagar_criado".to_string()), "the undo tool is internal");
+        assert!(!names("mova o arquivo").contains(&"agentes.criar".to_string()));
     }
 
     #[test]

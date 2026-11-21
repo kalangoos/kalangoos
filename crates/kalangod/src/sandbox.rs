@@ -223,7 +223,14 @@ fn do_op(op: &Value) -> Result<Value, String> {
             if let Some(parent) = f.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            std::fs::write(&f, op["conteudo"].as_str().unwrap_or("")).map_err(|e| format!("{}: {e}", f.display()))?;
+            match op.get("conteudo_base64").and_then(|v| v.as_str()) {
+                Some(b) => {
+                    use base64::Engine as _;
+                    let bytes = base64::engine::general_purpose::STANDARD.decode(b).map_err(|e| format!("base64: {e}"))?;
+                    std::fs::write(&f, bytes).map_err(|e| format!("{}: {e}", f.display()))?;
+                }
+                None => std::fs::write(&f, op["conteudo"].as_str().unwrap_or("")).map_err(|e| format!("{}: {e}", f.display()))?,
+            }
             Ok(json!({ "existia": before.is_some(), "anterior": before.map(|b| String::from_utf8_lossy(&b).into_owned()) }))
         }
         "preparar_lixeira" => {

@@ -110,7 +110,12 @@ mod tests {
                 for marker in ["tr(\"", "trf(\"", "n_(\""] {
                     let mut rest = text.as_str();
                     while let Some(i) = rest.find(marker) {
+                        // (only the function itself: "push_str(\"" or "toml_str(\"" also end in tr(")
+                        let call = i == 0 || !rest.as_bytes()[i - 1].is_ascii_alphanumeric() && rest.as_bytes()[i - 1] != b'_';
                         rest = &rest[i + marker.len()..];
+                        if !call {
+                            continue;
+                        }
                         // the msgid ends at the first unescaped quote
                         let mut end = 0;
                         let bytes = rest.as_bytes();

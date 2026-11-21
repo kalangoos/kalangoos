@@ -7,6 +7,7 @@
 //! right, its context: what it read and wrote, the tools this conversation may use (on top of the permissions), the
 //! memories it saw, its tokens.
 
+use crate::agent_picker::{self, Picked, Picker};
 use crate::conversa::{self, ui_icon, Conversa};
 use crate::superficies::{caixa, estrela, rotulo};
 use crate::Shell;
@@ -190,6 +191,20 @@ pub struct Conversas {
     /// the file whose preview the Files tab shows (the first one until another is chosen)
     previa: RefCell<Option<String>>,
     preenchendo: Cell<bool>,
+    // ---- the person's own agents (design "Chat · escolher agente")
+    /// the new conversation's agent chips (the system's, the recent ones, "Todos os agentes") and its choice
+    start_chips: gtk::Box,
+    start_agent: RefCell<Option<Value>>,
+    start_picker: RefCell<Option<Rc<Picker>>>,
+    /// the new conversation's fields, when its agent asks for them
+    nova_form: Rc<agent_picker::InputForm>,
+    nova_ph: gtk::Label,
+    /// the header's agent chip: its icon and name
+    chip_agente_box: gtk::Box,
+    chip_tile: gtk::Box,
+    /// runs a flow (its id) and shows it live (the agents center)
+    ao_executar: RefCell<Option<Ir>>,
+    nova_erro: gtk::Label,
 }
 
 impl Conversas {
@@ -315,9 +330,16 @@ impl Conversas {
         subtitulo.set_ellipsize(gtk::pango::EllipsizeMode::End);
         tcol.append(&subtitulo);
         mc.append(&tcol);
-        let chip_agente = rotulo(tr("Agent"), "rotinas-chip");
-        chip_agente.set_valign(Align::Center);
-        mc.append(&chip_agente);
+        let chip_agente_box = caixa(Orientation::Horizontal, 5, "rotinas-chip");
+        chip_agente_box.add_css_class("conversas-chip-agente");
+        chip_agente_box.set_valign(Align::Center);
+        let chip_tile = caixa(Orientation::Horizontal, 0, "");
+        chip_agente_box.append(&chip_tile);
+        let chip_agente = rotulo(tr("Agent"), "");
+        chip_agente.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        chip_agente.set_max_width_chars(24);
+        chip_agente_box.append(&chip_agente);
+        mc.append(&chip_agente_box);
         let esp = caixa(Orientation::Horizontal, 0, "");
         esp.set_hexpand(true);
         mc.append(&esp);
@@ -357,33 +379,27 @@ impl Conversas {
         let pergunta = rotulo(tr("What shall we work on?"), "central-sub");
         pergunta.set_margin_top(6);
         nv.append(&pergunta);
-        let chips = caixa(Orientation::Horizontal, 8, "");
-        chips.set_halign(Align::Center);
-        chips.set_margin_top(20);
-        let ag = caixa(Orientation::Horizontal, 5, "conversas-agente-chip");
-        ag.add_css_class("ativo");
-        ag.append(&estrela(12, "#A5A1E2"));
-        ag.append(&rotulo(tr("Agent"), ""));
-        chips.append(&ag);
-        let criar = gtk::Button::new();
-        criar.add_css_class("conversas-agente-chip");
-        let cc = caixa(Orientation::Horizontal, 6, "");
-        cc.append(&ui_icon("mais", "#8E8F99", 12));
-        cc.append(&rotulo(tr("create agent"), ""));
-        criar.set_child(Some(&cc));
-        criar.set_tooltip_text(Some(tr("Describe an agent: the system puts it together")));
-        crate::central::posicao_debug_sempre("conversas criar agente", criar.upcast_ref());
-        chips.append(&criar);
-        nv.append(&chips);
+        // the agents: the system's, the ones used last, then all of them (the picker)
+        let start_chips = caixa(Orientation::Horizontal, 8, "");
+        start_chips.set_halign(Align::Center);
+        start_chips.set_margin_top(20);
+        // (full names: the chips that don't fit hide, "Todos os agentes" still reaches them)
+        crate::fit_row::FitRow::apply(&start_chips, 8);
+        nv.append(&start_chips);
         let comp = caixa(Orientation::Vertical, 10, "conversas-compositor");
         comp.set_margin_top(18);
+        let nova_form = agent_picker::InputForm::new();
+        nova_form.root.set_visible(false);
+        comp.append(&nova_form.root);
+        let nova_erro = crate::fluxos_ui::error_label();
+        comp.append(&nova_erro);
         let nova_texto = gtk::TextView::new();
         nova_texto.add_css_class("conversas-texto");
         nova_texto.set_wrap_mode(gtk::WrapMode::WordChar);
         nova_texto.set_accepts_tab(false);
         let sobre = gtk::Overlay::new();
         sobre.set_child(Some(&nova_texto));
-        let ph = rotulo(tr("Ask anything · / commands"), "conversas-placeholder");
+        let ph = rotulo(tr("Ask anything · / commands · @ calls an agent"), "conversas-placeholder");
         ph.set_halign(Align::Start);
         ph.set_valign(Align::Start);
         ph.set_can_target(false);
@@ -451,7 +467,7 @@ impl Conversas {
         let rodape_d = caixa(Orientation::Horizontal, 8, "");
         rodape_d.set_halign(Align::Center);
         rodape_d.set_margin_top(28);
-        for (tecla, t) in [("/", tr("commands")), ("Super+Espaço", tr("ask from anywhere"))] {
+        for (tecla, t) in [("/", tr("commands")), ("@", tr("mention")), ("Super+Espaço", tr("ask from anywhere"))] {
             rodape_d.append(&rotulo(tecla, "visao-atalho"));
             let r = rotulo(t, "central-agente-sub");
             r.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -649,7 +665,23 @@ impl Conversas {
             folhas: RefCell::default(), veu, casa_lateral: RefCell::default(), casa_painel: RefCell::default(), faixa_abas, faixa_botoes: botoes_faixa.clone(), controles_painel, abrir_lista_b, faisca, subtitulo, nomes_chips, ja_mostrou: Cell::new(false), busca, lista, rodape_tokens,
             titulo, chip_agente, fixar, apagar: apagar.clone(), painel_b: painel_b.clone(), vista, conv, controles_meio, saudacao, nova_texto, nova_grupos, sugestoes, painel, abas, painel_stack, contexto, ferramentas,
             memoria, arquivos, tokens_v, tokens_barra, modelo_v, marca: Cell::new((0, 0)), canvas_box, html: crate::html_canvas::HtmlCanvas::new(), alteracoes_box, terminal_box, navegador, painel_base, uso: uso.clone(), repo: RefCell::default(), commit_feito: RefCell::default(), previa: RefCell::default(), preenchendo: Cell::new(false),
+            start_chips, start_agent: RefCell::default(), start_picker: RefCell::default(), nova_form, nova_ph: ph.clone(), chip_agente_box, chip_tile, ao_executar: RefCell::default(), nova_erro,
         });
+        // the conversation's agent: the header's chip follows it; the picker's other choices are the page's
+        let w = Rc::downgrade(&c);
+        c.conv.on_agent(move |a| {
+            if let Some(c) = w.upgrade() {
+                c.show_header_agent(a);
+                c.lista_render();
+            }
+        });
+        c.show_header_agent(None);
+        let w = Rc::downgrade(&c);
+        *c.conv.on_picked_other.borrow_mut() = Some(Box::new(move |x| {
+            if let Some(c) = w.upgrade() {
+                c.picked(x);
+            }
+        }));
         c.abas[0].set_active(true);
         // a request about an element of the canvas's page goes to this conversation's agent
         let w = Rc::downgrade(&c.conv);
@@ -675,14 +707,6 @@ impl Conversas {
                 cv.stop(true);
             }
         }));
-        let w = Rc::downgrade(&c);
-        criar.connect_clicked(move |_| {
-            if let Some(c) = w.upgrade() {
-                if let Some(ir) = c.ir.borrow().as_ref() {
-                    ir("novo-agente");
-                }
-            }
-        });
         for (i, b) in c.abas.iter().enumerate() {
             let w = Rc::downgrade(&c);
             b.connect_toggled(move |b| {
@@ -1719,7 +1743,7 @@ impl Conversas {
         self.abrir_lista_b.set_visible(estreita);
         self.faisca.set_visible(estreita);
         self.subtitulo.set_visible(estreita && em_conversa);
-        self.chip_agente.set_visible(!estreita && em_conversa);
+        self.chip_agente_box.set_visible(!estreita && em_conversa);
         self.painel_b.set_visible(estreita && em_conversa);
         self.painel_b.set_active(painel);
         self.ajustar_painel();
@@ -1788,6 +1812,7 @@ impl Conversas {
         self.preenchendo.set(false);
         self.conv.set_desligadas(vec![]);
         self.nova_texto.buffer().set_text("");
+        self.set_start_agent(None);
         let h = glib::DateTime::now_local().map(|d| d.hour()).unwrap_or(12);
         let nome = glib::real_name().to_string_lossy().split([',', ' ']).next().unwrap_or("").trim().to_string();
         let nome = if nome.is_empty() || nome == "Unknown" { glib::user_name().to_string_lossy().into_owned() } else { nome };
@@ -1818,7 +1843,7 @@ impl Conversas {
     fn enviar_nova(self: &Rc<Self>) {
         let b = self.nova_texto.buffer();
         let t = b.text(&b.start_iter(), &b.end_iter(), false).trim().to_string();
-        if t.is_empty() {
+        if t.is_empty() && self.nova_form.is_empty() {
             return;
         }
         self.comecar(&t);
@@ -1828,6 +1853,19 @@ impl Conversas {
     pub fn comecar(self: &Rc<Self>, pedido: &str) {
         let d = self.desligadas_da_nova();
         self.conv.set_desligadas(d.clone());
+        // the agent chosen on the start (and what its fields got)
+        let start = self.start_agent.borrow().clone();
+        let typed = (!self.nova_form.is_empty()).then(|| self.nova_form.value());
+        if let Some(Err(e)) = &typed {
+            // (checked here: nothing starts with a field missing or of the wrong kind)
+            crate::fluxos_ui::show_error(&self.nova_erro, e);
+            return;
+        }
+        crate::fluxos_ui::show_error(&self.nova_erro, "");
+        self.conv.set_agent(start);
+        if let Some(Ok(v)) = &typed {
+            self.conv.input_form.fill(v);
+        }
         self.vista.set_visible_child_name("conversa");
         self.conv.ask(pedido);
         let id = self.conv.id();
@@ -1874,6 +1912,137 @@ impl Conversas {
         if m["fixada"].as_bool().unwrap_or(false) { self.fixar.add_css_class("ativo") } else { self.fixar.remove_css_class("ativo") }
     }
 
+    // ---------------------------------------------------------------------------------------------- the person's agents
+
+    /// What the picker leaves to the page: run a flow, create or manage agents; an agent chosen on the start.
+    fn picked(self: &Rc<Self>, x: Picked) {
+        match x {
+            Picked::Agent(a) => self.set_start_agent(a),
+            Picked::Run(a) => {
+                let flow = a["config"]["flow_id"].as_str().unwrap_or("").to_string();
+                if let Some(f) = self.ao_executar.borrow().as_ref() {
+                    f(&flow);
+                }
+            }
+            Picked::Create => {
+                if let Some(f) = self.ir.borrow().as_ref() {
+                    f("novo-agente");
+                }
+            }
+            Picked::Manage => {
+                if let Some(f) = self.ir.borrow().as_ref() {
+                    f("agentes");
+                }
+            }
+        }
+    }
+
+    /// Runs a flow when the picker's "Executar" is chosen (the agents center opens it live).
+    pub fn ao_executar(&self, f: impl Fn(&str) + 'static) {
+        *self.ao_executar.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// A new conversation with one of the person's agents chosen ("Conversar" in Meus agentes).
+    pub fn com_agente(self: &Rc<Self>, agent: Value) {
+        self.nova();
+        self.set_start_agent(Some(agent));
+    }
+
+    fn start_picker(self: &Rc<Self>) -> Rc<Picker> {
+        if let Some(p) = self.start_picker.borrow().as_ref() {
+            return p.clone();
+        }
+        let w = Rc::downgrade(self);
+        let p = Picker::new(move |x| {
+            if let Some(c) = w.upgrade() {
+                c.picked(x);
+                c.nova_texto.grab_focus();
+            }
+        });
+        *self.start_picker.borrow_mut() = Some(p.clone());
+        p
+    }
+
+    /// The new conversation's agent: its chip marked, its fields in the composer.
+    fn set_start_agent(self: &Rc<Self>, agent: Option<Value>) {
+        let agent = agent.filter(|a| !agent_picker::is_flow(a));
+        let fields = agent.as_ref().map(|a| agent_picker::fields(&a["input_fields"])).unwrap_or_default();
+        self.nova_form.set_fields(fields);
+        crate::fluxos_ui::show_error(&self.nova_erro, "");
+        self.nova_ph.set_text(if agent.is_some() { tr("Ask the agent · @ calls another") } else { tr("Ask anything · / commands · @ calls an agent") });
+        *self.start_agent.borrow_mut() = agent;
+        self.render_start_chips();
+    }
+
+    /// The start's chips: the system's agent, the three used last, "Todos os agentes" (the picker).
+    fn render_start_chips(self: &Rc<Self>) {
+        let w = Rc::downgrade(self);
+        agent_picker::load_agents(move |r| {
+            let Some(c) = w.upgrade() else { return };
+            let agents = r.unwrap_or_default();
+            crate::fluxos_ui::clear_box(&c.start_chips);
+            let chosen = c.start_agent.borrow().clone();
+            let chosen_id = chosen.as_ref().and_then(|a| a["id"].as_str().map(str::to_string));
+            // the three used last (flows are run from the picker); a chosen one not among them takes the third place
+            let mut shown: Vec<Option<Value>> = vec![None];
+            shown.extend(agents.iter().filter(|a| !agent_picker::is_flow(a)).take(3).cloned().map(Some));
+            if let Some(a) = chosen.as_ref().filter(|a| !shown.iter().flatten().any(|s| s["id"] == a["id"])) {
+                if shown.len() >= 4 {
+                    shown.pop();
+                }
+                shown.push(Some(a.clone()));
+            }
+            for a in shown {
+                let b = gtk::Button::new();
+                b.add_css_class("conversas-agente-chip");
+                let ativo = a.as_ref().and_then(|a| a["id"].as_str()) == chosen_id.as_deref();
+                if ativo {
+                    b.add_css_class("ativo");
+                }
+                let cc = caixa(Orientation::Horizontal, 7, "");
+                cc.append(&agent_picker::tile_for(a.as_ref(), 18));
+                let name = a.as_ref().and_then(|a| a["name"].as_str().map(str::to_string)).unwrap_or_else(|| agent_picker::SYSTEM_AGENT.to_string());
+                let l = rotulo(&name, "");
+                l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                cc.append(&l);
+                b.set_child(Some(&cc));
+                crate::central::posicao_debug(&format!("conversas chip {name}"), b.upcast_ref());
+                let w = Rc::downgrade(&c);
+                b.connect_clicked(move |_| {
+                    if let Some(c) = w.upgrade() {
+                        c.set_start_agent(a.clone());
+                        c.nova_texto.grab_focus();
+                    }
+                });
+                c.start_chips.append(&b);
+            }
+            let all = gtk::Button::new();
+            all.add_css_class("conversas-agente-chip");
+            let cc = caixa(Orientation::Horizontal, 6, "");
+            cc.append(&ui_icon("mais", "#8E8F99", 12));
+            cc.append(&rotulo(tr("All agents"), ""));
+            all.set_child(Some(&cc));
+            all.set_tooltip_text(Some(tr("Your agents, a new one, or manage them")));
+            crate::central::posicao_debug_sempre("conversas todos os agentes", all.upcast_ref());
+            let w = Rc::downgrade(&c);
+            all.connect_clicked(move |b| {
+                if let Some(c) = w.upgrade() {
+                    let cur = c.start_agent.borrow().as_ref().and_then(|a| a["id"].as_str().map(str::to_string));
+                    c.start_picker().open(b, cur.as_deref(), "", true);
+                }
+            });
+            c.start_chips.append(&all);
+        });
+    }
+
+    /// The header's chip: the conversation's agent with its icon.
+    fn show_header_agent(&self, agent: Option<&Value>) {
+        crate::fluxos_ui::clear_box(&self.chip_tile);
+        self.chip_tile.append(&agent_picker::tile_for(agent, 16));
+        self.chip_agente.set_text(&agent.and_then(|a| a["name"].as_str().map(str::to_string)).unwrap_or_else(|| agent_picker::SYSTEM_AGENT.to_string()));
+        self.subtitulo.set_text(&format!("{} · {}", self.chip_agente.text(), tr("local")));
+    }
+
     /// The kept conversations in the side bar: pinned, today, yesterday, earlier (the search filters them).
     fn lista_render(self: &Rc<Self>) {
         while let Some(x) = self.lista.first_child() {
@@ -1914,7 +2083,10 @@ impl Conversas {
                 t.set_max_width_chars(1);
                 t.set_hexpand(true);
                 c.append(&t);
-                let sub = rotulo(&format!("{} · {}", tr("Agent"), quando(m["atualizado"].as_i64().unwrap_or(0))), "central-agente-sub");
+                let quem = agent_picker::history_label(m).unwrap_or_else(|| tr("Agent").to_string());
+                let sub = rotulo(&format!("{quem} · {}", quando(m["atualizado"].as_i64().unwrap_or(0))), "central-agente-sub");
+                sub.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                sub.set_max_width_chars(1);
                 sub.set_xalign(0.0);
                 c.append(&sub);
                 b.set_child(Some(&c));

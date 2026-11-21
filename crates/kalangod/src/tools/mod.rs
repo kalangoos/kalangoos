@@ -8,6 +8,7 @@ pub mod sistema;
 pub mod navegador;
 pub mod live_browser;
 pub mod gpu;
+pub mod plataforma;
 pub mod maquinas;
 pub mod web;
 pub mod tela;
@@ -66,6 +67,7 @@ pub fn all() -> Vec<Tool> {
     v.extend(maquinas::tools());
     v.extend(gpu::tools());
     v.extend(tela::tools());
+    v.extend(plataforma::tools());
     v
 }
 

@@ -370,6 +370,18 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
         // recorded in the timeline)
         Level::Sistema if st.approvals.is_standing(peer.uid, &peer.exe, name, args) => {}
         Level::Sistema => approve("sistema", "mudança no sistema".into())?,
+        // the agents platform: creating or changing an agent, a flow, a tool or a connector always asks, showing
+        // exactly what will exist (already fitted to the creator's ceiling: no escalation)
+        _ if !st.approvals.is_standing(peer.uid, &peer.exe, name, args) && matches!(name, "agentes.criar" | "agentes.editar" | "fluxos.criar" | "fluxos.editar" | "ferramentas.criar_http" | "mcp.registrar") => {
+            match crate::tools::plataforma::needs_approval(peer, rule, name, args) {
+                Ok(Some(reason)) => approve("sistema", reason)?,
+                Ok(None) => {}
+                Err(e) => {
+                    log(st, peer, rule, name, tool.level, args, "erro", &e, None, None);
+                    return Err(e);
+                }
+            }
+        }
         // the virtual machines ask as the person chose in VirtualDesk (turning off and deleting, always); an
         // "always" answered here for exactly this request goes ahead
         _ if name.starts_with("vm.") && !st.approvals.is_standing(peer.uid, &peer.exe, name, args) => {

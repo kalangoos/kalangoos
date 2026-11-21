@@ -1,0 +1,15 @@
+{
+  "id": "triagem-da-caixa", "category": "email", "version": 1,
+  "name": "Triagem da caixa", "kind": "parallel", "icon": "enviar", "tone": "ouro", "chip": "Correio",
+  "summary": "Classifica e-mails: urgente, conta, leitura.",
+  "meta": ["3 subagentes", "Correio", "só leitura"],
+  "intro": "Três leitores olham a mesma mensagem ao mesmo tempo, cada um com uma pergunta.",
+  "steps": ["Recebe a mensagem", "Um leitor vê se é urgente", "Outro vê se é conta a pagar", "Outro separa o que é para ler depois"],
+  "permissions": [{"icon": "enviar", "text": "Ler mensagens do Correio", "level": "leitura"}],
+  "agents": [
+    {"id": "$a1", "name": "Leitor de urgência", "description": "Diz se a mensagem pede resposta hoje.", "kind": "assistant", "config": {"instruction": "Diga só \"urgente\" ou \"pode esperar\", com uma frase de motivo.", "output_key": "urgencia"}},
+    {"id": "$a2", "name": "Leitor de contas", "description": "Diz se a mensagem é uma conta a pagar.", "kind": "assistant", "config": {"instruction": "Diga só \"conta\" ou \"não é conta\", com o valor quando houver.", "output_key": "conta"}},
+    {"id": "$a3", "name": "Leitor de leitura", "description": "Separa newsletters e artigos para depois.", "kind": "assistant", "config": {"instruction": "Diga só \"ler depois\" ou \"não\".", "output_key": "leitura"}},
+    {"id": "$main", "name": "Triagem da caixa", "description": "Três leitores classificam e-mails ao mesmo tempo.", "kind": "parallel", "config": {"sub_agents": ["$a1", "$a2", "$a3"]}}
+  ]
+}

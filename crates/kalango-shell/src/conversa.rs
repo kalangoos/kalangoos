@@ -10,6 +10,8 @@
 //! Motion: a new message enters with the quick spring, the answer with the gentle one; the steps title pulses
 //! while the model thinks.
 
+use crate::agent_picker::{self, Picked, Picker};
+use crate::chat_blocks::{agent_header, first_upper, main_argument, person_message, short_path, step_row};
 use crate::markdown;
 use crate::superficies::{caixa, estrela, rotulo};
 use gtk::prelude::*;
@@ -163,6 +165,40 @@ fn svg_source(name: &str) -> &'static str {
         "busca" => include_str!("../assets/ui/busca.svg"),
         _ => include_str!("../assets/ui/erro.svg"),
     }
+}
+
+/// Whether the shell has a glyph of this name.
+pub(crate) fn has_icon(name: &str) -> bool {
+    name == "erro" || svg_source(name) != include_str!("../assets/ui/erro.svg")
+}
+
+/// An SVG in one colour (an agent's imported monochrome icon).
+/// (its fill and stroke values that are colours — not "none" nor a gradient — become `color`; with no colour at all,
+/// the root fills with it)
+pub(crate) fn recolor_svg(svg: &str, color: &str) -> String {
+    let mut out = String::with_capacity(svg.len());
+    let mut rest = svg;
+    let mut any = false;
+    while let Some(i) = ["fill=\"", "stroke=\""].iter().filter_map(|a| rest.find(a).map(|i| i + a.len())).min() {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        let end = rest.find('"').unwrap_or(rest.len());
+        let v = &rest[..end];
+        if v == "none" || v.starts_with("url(") {
+            out.push_str(v);
+        } else {
+            out.push_str(color);
+            any = true;
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    if !any {
+        if let Some(i) = out.find("<svg") {
+            out.insert_str(i + 4, &format!(" fill=\"{color}\""));
+        }
+    }
+    out
 }
 
 /// Every colour of the glyph (strokes and fills, not "none") becomes `color`.
@@ -402,31 +438,6 @@ fn attachment_chip(p: &std::path::Path, removable: bool) -> gtk::Box {
     chip
 }
 
-fn short_path(p: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(h) if h.len() > 1 => {
-            let h = h.trim_end_matches('/');
-            let s = p.replace(&format!("{h}/"), "~/");
-            if s.ends_with(h) { format!("{}~", &s[..s.len() - h.len()]) } else { s }
-        }
-        _ => p.to_string(),
-    }
-}
-
-/// The argument that says what the step works on (path, packages, program…), short.
-fn main_argument(args: &Value) -> String {
-    for k in ["caminho", "de", "programa", "nome", "servico", "chave", "dispositivo", "conexao", "id"] {
-        if let Some(v) = args.get(k) {
-            let s = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
-            return short_path(&s);
-        }
-    }
-    if let Some(a) = args.get("nomes").and_then(Value::as_array) {
-        return a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ");
-    }
-    String::new()
-}
-
 /// Icon of a step by what the tool does.
 fn step_glyph(tool: &str, level: &str) -> &'static str {
     let verb = tool.rsplit('.').next().unwrap_or("");
@@ -473,14 +484,6 @@ fn area_name(prefix: &str) -> &'static str {
         "linha_do_tempo" => tr("Timeline"),
         "web" => tr("Web"),
         _ => tr("System"),
-    }
-}
-
-fn first_upper(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-        None => String::new(),
     }
 }
 
@@ -648,6 +651,33 @@ pub struct Conversa {
     /// side bar (with the person in control, when it asks for a login)
     fontes: RefCell<Vec<(String, String)>>,
     pub on_page: RefCell<Option<Box<dyn Fn(&str, bool)>>>,
+    // ---- the person's own agents (kalango-fluxos), in the agents center
+    /// the agent this conversation talks to now (None: the system's own, through the engine)
+    agent: RefCell<Option<Value>>,
+    /// the agent of the turn on screen (its answer's header and footer)
+    turn_agent: RefCell<Option<Value>>,
+    /// the composer's row above the text: the agent's chip and its input fields
+    agent_row: gtk::Box,
+    agent_chip: gtk::Button,
+    pub input_form: Rc<agent_picker::InputForm>,
+    input_error: gtk::Label,
+    picker: RefCell<Option<Rc<Picker>>>,
+    /// the picker opened on "@" typed in the composer (the text keeps the focus)
+    mention_mode: Cell<bool>,
+    /// told when the agent changes (the header's chip), and what the picker leaves to the page (run a flow, create
+    /// or manage agents)
+    on_agent: RefCell<Option<Box<dyn Fn(Option<&Value>)>>>,
+    pub on_picked_other: RefCell<Option<Box<dyn Fn(Picked)>>>,
+    /// the request to kalango-fluxos in progress: its reference (events and the answer are matched by it) and run
+    client_ref: RefCell<String>,
+    run_id: RefCell<Option<String>>,
+    /// approvals of kalango-fluxos on screen: the card's id → the service's approval id
+    remote_approvals: RefCell<std::collections::HashMap<u64, (String, String)>>,
+    /// the tools of this request the person denied (their steps end as denied)
+    remote_denied: RefCell<Vec<String>>,
+    remote_seq: Cell<u64>,
+    /// events shown but not kept (the live steps of a request to kalango-fluxos, kept whole when it ends)
+    not_kept: Cell<bool>,
 }
 
 type Ouvinte = Box<dyn Fn(&Value)>;
@@ -740,6 +770,25 @@ impl Conversa {
 
         // composer: the files added, the text, then tools (attach · model · send/stop)
         let caixa_c = caixa(Orientation::Vertical, 8, "compositor");
+        // (agents center) the agent's chip — the picker — and the fields its input asks for
+        let agent_row = caixa(Orientation::Horizontal, 8, "");
+        agent_row.set_visible(false);
+        let agent_chip = gtk::Button::new();
+        agent_chip.add_css_class("agente-chip-compositor");
+        agent_chip.set_tooltip_text(Some(tr("Choose the agent (or type @)")));
+        agent_chip.set_valign(Align::Center);
+        agent_row.append(&agent_chip);
+        let input_form = agent_picker::InputForm::new();
+        input_form.root.set_visible(false);
+        let campos = gtk::ScrolledWindow::new();
+        campos.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
+        campos.set_hexpand(true);
+        campos.set_propagate_natural_height(true);
+        campos.set_child(Some(&input_form.root));
+        agent_row.append(&campos);
+        caixa_c.append(&agent_row);
+        let input_error = crate::fluxos_ui::error_label();
+        caixa_c.append(&input_error);
         let anexos_box = caixa(Orientation::Horizontal, 6, "");
         anexos_box.set_visible(false);
         caixa_c.append(&anexos_box);
@@ -819,6 +868,20 @@ impl Conversa {
             recording: RefCell::default(), modelo, hora,
             engine: RefCell::default(), turn: RefCell::default(), busy: Cell::new(false), web: Cell::new(true), turns: Cell::new(0),
             last_message: Cell::new(0), on_busy: RefCell::default(), current: RefCell::default(), tokens: Cell::new(0), paused: Cell::new(false), id: RefCell::new(novo_id()), replaying: Cell::new(false), desligadas: RefCell::default(), replay_tempo: Cell::new((0, 0)), pedidos: RefCell::default(), ao_pedir: RefCell::default(), visivel: RefCell::default(), posicoes: RefCell::default(), ouvintes: RefCell::default(), fontes: RefCell::default(), on_page: RefCell::default(), cabecalho,
+            agent: RefCell::default(), turn_agent: RefCell::default(), agent_row, agent_chip, input_form, input_error, picker: RefCell::default(), mention_mode: Cell::new(false),
+            on_agent: RefCell::default(), on_picked_other: RefCell::default(), client_ref: RefCell::default(), run_id: RefCell::default(), remote_approvals: RefCell::default(), remote_denied: RefCell::default(),
+            remote_seq: Cell::new(1 << 40), not_kept: Cell::new(false),
+        });
+        c.show_agent_chip();
+        let w = Rc::downgrade(&c);
+        c.agent_chip.connect_clicked(move |b| {
+            if let Some(c) = w.upgrade() {
+                c.mention_mode.set(false);
+                let p = c.picker();
+                p.popover.set_autohide(true);
+                let cur = c.agent.borrow().as_ref().and_then(|a| a["id"].as_str().map(str::to_string));
+                p.open(b, cur.as_deref(), "", true);
+            }
         });
         // the chip in the composer follows the header's
         {
@@ -850,6 +913,7 @@ impl Conversa {
         c.texto.buffer().connect_changed(move |b| {
             if let Some(c) = w.upgrade() {
                 c.placeholder.set_visible(b.char_count() == 0);
+                c.follow_mention(&b.text(&b.start_iter(), &b.end_iter(), false));
             }
         });
         // Enter sends, Shift+Enter breaks the line
@@ -859,6 +923,19 @@ impl Conversa {
         keys.connect_key_pressed(move |_, k, _, m| {
             if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
                 eprintln!("debug conversa tecla: {k:?} {m:?}");
+            }
+            if let Some(c) = w.upgrade().filter(|c| c.mention_mode.get() && c.picker.borrow().as_ref().is_some_and(|p| p.is_open())) {
+                // "@nome": Enter picks the first agent shown, Escape closes the list
+                if matches!(k, gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::Tab) {
+                    let p = c.picker.borrow().clone();
+                    if p.is_some_and(|p| p.pick_first()) {
+                        return glib::Propagation::Stop;
+                    }
+                }
+                if k == gdk::Key::Escape {
+                    c.close_picker();
+                    return glib::Propagation::Stop;
+                }
             }
             if matches!(k, gdk::Key::Return | gdk::Key::KP_Enter) && !m.contains(gdk::ModifierType::SHIFT_MASK) {
                 if let Some(c) = w.upgrade() {
@@ -1091,6 +1168,30 @@ impl Conversa {
             }
             _ => {}
         }
+        // (agents center) "@Nome" calls one of the person's agents; the message goes on without the mention
+        let mut text = text.to_string();
+        if self.raiz.has_css_class("conversa-app") && text.contains('@') {
+            let agents = agent_picker::cached_agents();
+            let mut names: Vec<(String, String)> = agents.iter().filter_map(|a| Some((a["id"].as_str()?.to_string(), a["name"].as_str()?.to_string()))).collect();
+            names.push((String::new(), agent_picker::SYSTEM_AGENT.to_string()));
+            if let Some((id, rest)) = agent_picker::resolve_mention(&text, &names) {
+                let a = agents.into_iter().find(|a| a["id"].as_str() == Some(id.as_str()));
+                if let Some(flow) = a.clone().filter(agent_picker::is_flow) {
+                    self.picked(Picked::Run(flow));
+                    return;
+                }
+                self.set_agent(a);
+                if rest.is_empty() && self.input_form.is_empty() {
+                    return;
+                }
+                text = rest;
+            }
+        }
+        let text = text.as_str();
+        if let Some(a) = self.agent.borrow().clone() {
+            return self.send_platform(text, a);
+        }
+        *self.turn_agent.borrow_mut() = None;
         self.intro.set_visible(false);
         self.turns.set(self.turns.get() + 1);
         self.last_message.set(glib::DateTime::now_local().map(|d| d.to_unix()).unwrap_or(0));
@@ -1143,20 +1244,18 @@ impl Conversa {
         self.fontes.borrow_mut().clear();
         // in the agents center each answer carries its header (agent, model, when): the bar has one for all
         if self.raiz.has_css_class("conversa-app") {
-            let h = caixa(Orientation::Horizontal, 8, "agente-cabecalho");
-            let tile = caixa(Orientation::Horizontal, 0, "agente-tile");
-            tile.set_hexpand(false);
-            tile.set_valign(Align::Center);
-            let sp = estrela(12, ACCENT);
-            sp.set_margin_start(5);
-            sp.set_margin_end(5);
-            tile.append(&sp);
-            h.append(&tile);
-            h.append(&rotulo(tr("Agent"), "agente-nome"));
-            h.append(&rotulo(&self.modelo.text(), "chip-modelo"));
             let t = if self.replaying.get() { self.replay_tempo.get().0 } else { glib::DateTime::now_local().map(|d| d.to_unix()).unwrap_or(0) };
             let quando = glib::DateTime::from_unix_local(t).ok().and_then(|d| d.format("%H:%M").ok()).map(|x| x.to_string()).unwrap_or_default();
-            h.append(&rotulo(&quando, "agente-hora"));
+            let platform = self.turn_agent.borrow().clone();
+            let name = platform.as_ref().and_then(|a| a["name"].as_str().map(str::to_string)).unwrap_or_else(|| tr("Agent").to_string());
+            let h = agent_header(&name, &[self.modelo.text().to_string()], &quando);
+            if let Some(a) = platform.as_ref() {
+                // one of the person's agents: its own icon in place of the system's ✦
+                if let Some(first) = h.first_child() {
+                    h.remove(&first);
+                }
+                h.prepend(&agent_picker::icon_tile(a, 24));
+            }
             self.lista.append(&h);
         }
         let steps_block = caixa(Orientation::Vertical, 2, "passos");
@@ -1287,7 +1386,7 @@ impl Conversa {
 
     /// An event in the conversation's log (with its time); not while rebuilding from the log.
     fn registrar(&self, v: &Value) {
-        if self.replaying.get() {
+        if self.replaying.get() || self.not_kept.get() {
             return;
         }
         let d = conversas_dir().join(&*self.id.borrow());
@@ -1316,10 +1415,20 @@ impl Conversa {
                 self.turns.set(self.turns.get() + 1);
                 self.last_message.set(v["t"].as_i64().unwrap_or(0));
                 let anexos: Vec<PathBuf> = v["anexos"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(PathBuf::from)).collect();
-                self.bolha_pessoa_com(v["texto"].as_str().unwrap_or(""), &anexos);
                 if self.turn.borrow().is_some() {
                     self.finish_turn();
                 }
+                // (a message to one of the person's agents: its input above, its agent on the answer)
+                let agent = v["agent"].as_object().map(|_| v["agent"].clone());
+                match (&agent, v["input"].as_object()) {
+                    (Some(a), Some(_)) => {
+                        let fields = agent_picker::fields(if v["fields"].is_array() { &v["fields"] } else { &a["input_fields"] });
+                        let fields = if fields.is_empty() { v["input"].as_object().map(|o| o.keys().map(|k| agent_picker::Field { name: k.clone(), kind: String::new(), required: false, description: String::new() }).collect()).unwrap_or_default() } else { fields };
+                        self.person_bubble_with_input(v["texto"].as_str().unwrap_or(""), &anexos, &fields, Some(&v["input"]));
+                    }
+                    _ => self.bolha_pessoa_com(v["texto"].as_str().unwrap_or(""), &anexos),
+                }
+                *self.turn_agent.borrow_mut() = agent;
                 self.replay_tempo.set((t, t));
                 let turno = self.new_turn();
                 *self.turn.borrow_mut() = Some(turno);
@@ -1333,6 +1442,24 @@ impl Conversa {
         }
         self.replaying.set(false);
         self.set_busy(false);
+        // the agent it talked to last goes on (the same session in kalango-fluxos); its fields come with the list
+        let m = meta(id);
+        let kept = m["agent"].as_object().map(|_| m["agent"].clone());
+        self.set_agent(kept.clone());
+        if let Some(k) = kept {
+            let w = Rc::downgrade(self);
+            let id = id.to_string();
+            agent_picker::load_agents(move |r| {
+                let Some(c) = w.upgrade().filter(|c| *c.id.borrow() == id) else { return };
+                if let Some(a) = r.ok().into_iter().flatten().find(|a| a["id"] == k["id"]) {
+                    c.set_agent(Some(a));
+                    // (the input the last message took, ready to change)
+                    if let Some(last) = eventos(&id).iter().rev().find(|e| e["tipo"] == "pessoa" && e["input"].is_object()) {
+                        c.input_form.fill(&last["input"]);
+                    }
+                }
+            });
+        }
         self.update_time();
         self.scroll_to_end();
     }
@@ -1358,6 +1485,8 @@ impl Conversa {
     pub fn modo_app(&self) {
         self.cabecalho.set_visible(false);
         self.raiz.add_css_class("conversa-app");
+        self.agent_row.set_visible(true);
+        self.show_agent_chip();
     }
 
     /// Adds text to what is being written (e.g. a file the person picked as context).
@@ -1413,6 +1542,11 @@ impl Conversa {
             return;
         }
         self.kill_engine();
+        // (a request to kalango-fluxos: its answer is dropped and its run cancelled)
+        self.client_ref.borrow_mut().clear();
+        if let Some(r) = self.run_id.borrow_mut().take() {
+            crate::fluxos::call("runs.cancel", json!({"id": r}), |_| {});
+        }
         if let Some(t) = self.turn.borrow_mut().as_mut() {
             t.desfecho.get_or_insert(("parado", if by_person { tr("stopped by you").to_string() } else { String::new() }));
         }
@@ -1424,6 +1558,12 @@ impl Conversa {
 
     fn new_conversation(self: &Rc<Self>) {
         self.kill_engine();
+        self.client_ref.borrow_mut().clear();
+        self.run_id.borrow_mut().take();
+        *self.turn_agent.borrow_mut() = None;
+        if self.agent.borrow().is_some() {
+            self.set_agent(None);
+        }
         *self.id.borrow_mut() = novo_id();
         *self.turn.borrow_mut() = None;
         self.set_busy(false);
@@ -1440,11 +1580,362 @@ impl Conversa {
         self.focus();
     }
 
+    // ---------------------------------------------------------------------------------------------- the person's agents
+
+    /// The picker under the composer's chip (made once).
+    fn picker(self: &Rc<Self>) -> Rc<Picker> {
+        if let Some(p) = self.picker.borrow().as_ref() {
+            return p.clone();
+        }
+        let w = Rc::downgrade(self);
+        let p = Picker::new(move |x| {
+            let Some(c) = w.upgrade() else { return };
+            if c.mention_mode.replace(false) {
+                let b = c.texto.buffer();
+                let t = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+                b.set_text(&agent_picker::strip_mention_query(&t));
+            }
+            c.picked(x);
+            c.texto.grab_focus();
+        });
+        *self.picker.borrow_mut() = Some(p.clone());
+        p
+    }
+
+    fn picked(self: &Rc<Self>, x: Picked) {
+        match x {
+            Picked::Agent(a) => self.set_agent(a),
+            other => {
+                if let Some(f) = self.on_picked_other.borrow().as_ref() {
+                    f(other);
+                }
+            }
+        }
+    }
+
+    fn close_picker(&self) {
+        self.mention_mode.set(false);
+        if let Some(p) = self.picker.borrow().as_ref() {
+            p.close();
+        }
+    }
+
+    /// "@query" typed at the end of the composer opens the picker on it (the text keeps the focus).
+    fn follow_mention(self: &Rc<Self>, text: &str) {
+        if !self.raiz.has_css_class("conversa-app") {
+            return;
+        }
+        match agent_picker::mention_query(text) {
+            Some(q) => {
+                let p = self.picker();
+                if p.is_open() && self.mention_mode.get() {
+                    p.set_query(&q);
+                    if !q.is_empty() && !p.has_matches(&q) {
+                        self.close_picker();
+                    }
+                } else if !p.is_open() && (q.is_empty() || p.has_matches(&q) || agent_picker::cached_agents().is_empty()) {
+                    self.mention_mode.set(true);
+                    p.popover.set_autohide(false);
+                    let cur = self.agent.borrow().as_ref().and_then(|a| a["id"].as_str().map(str::to_string));
+                    p.open(&self.agent_chip, cur.as_deref(), &q, false);
+                }
+            }
+            None if self.mention_mode.get() => self.close_picker(),
+            None => {}
+        }
+    }
+
+    /// The agent this conversation talks to from now on (None: the system's own).
+    pub fn set_agent(self: &Rc<Self>, agent: Option<Value>) {
+        let agent = agent.filter(|a| a["id"].is_string() && !agent_picker::is_flow(a));
+        let same = self.agent.borrow().as_ref().and_then(|a| a["id"].as_str().map(str::to_string)) == agent.as_ref().and_then(|a| a["id"].as_str().map(str::to_string));
+        let fields = agent.as_ref().map(|a| agent_picker::fields(&a["input_fields"])).unwrap_or_default();
+        *self.agent.borrow_mut() = agent;
+        if !same || fields.is_empty() != self.input_form.is_empty() {
+            self.input_form.set_fields(fields);
+        }
+        crate::fluxos_ui::show_error(&self.input_error, "");
+        self.show_agent_chip();
+        if let Some(f) = self.on_agent.borrow().as_ref() {
+            f(self.agent.borrow().as_ref());
+        }
+    }
+
+    pub fn agent(&self) -> Option<Value> {
+        self.agent.borrow().clone()
+    }
+
+    pub fn on_agent(&self, f: impl Fn(Option<&Value>) + 'static) {
+        *self.on_agent.borrow_mut() = Some(Box::new(f));
+    }
+
+    fn show_agent_chip(&self) {
+        let a = self.agent.borrow().clone();
+        let b = caixa(Orientation::Horizontal, 7, "");
+        b.append(&agent_picker::tile_for(a.as_ref(), 20));
+        let name = a.as_ref().and_then(|a| a["name"].as_str().map(str::to_string)).unwrap_or_else(|| agent_picker::SYSTEM_AGENT.to_string());
+        let l = rotulo(&name, "agente-chip-nome");
+        l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        l.set_max_width_chars(22);
+        b.append(&l);
+        b.append(&ui_icon("chevron-baixo", MUTED, 12));
+        self.agent_chip.set_child(Some(&b));
+        if self.raiz.has_css_class("conversa-app") {
+            self.placeholder.set_text(if a.is_some() { tr("Ask the agent · @ calls another") } else { tr("Ask anything · / commands · @ calls an agent") });
+        }
+        crate::central::posicao_debug("conversa chip agente", self.agent_chip.upcast_ref());
+    }
+
+    /// A request to one of the person's agents (kalango-fluxos `chat.send`): its input checked first, the steps live,
+    /// approvals inline, then the answer with the same blocks as the system's agent.
+    fn send_platform(self: &Rc<Self>, text: &str, agent: Value) {
+        let fields = agent_picker::fields(&agent["input_fields"]);
+        let input = if self.input_form.is_empty() {
+            None
+        } else {
+            match self.input_form.value() {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    crate::fluxos_ui::show_error(&self.input_error, &e);
+                    let b = self.texto.buffer();
+                    if b.char_count() == 0 {
+                        b.set_text(text);
+                    }
+                    return;
+                }
+            }
+        };
+        crate::fluxos_ui::show_error(&self.input_error, "");
+        self.intro.set_visible(false);
+        self.turns.set(self.turns.get() + 1);
+        let agora = glib::DateTime::now_local().map(|d| d.to_unix()).unwrap_or(0);
+        self.last_message.set(agora);
+        self.update_time();
+        let summary = input.as_ref().map(|i| agent_picker::input_summary(&fields, i)).unwrap_or_default();
+        let anexos: Vec<PathBuf> = self.anexos.borrow_mut().drain(..).collect();
+        self.voz_anexos.borrow_mut().clear();
+        while let Some(ch) = self.anexos_box.first_child() {
+            self.anexos_box.remove(&ch);
+        }
+        self.anexos_box.set_visible(false);
+        let aref = agent_picker::agent_ref(&agent);
+        self.registrar(&json!({"tipo": "pessoa", "texto": text, "anexos": anexos.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(), "agent": aref, "input": input, "input_summary": summary, "fields": agent["input_fields"]}));
+        let id = self.id.borrow().clone();
+        let mut m = meta(&id);
+        if m["titulo"].as_str().is_none_or(|t| t.is_empty()) {
+            let first = if text.trim().is_empty() { summary.clone() } else { text.to_string() };
+            m["titulo"] = json!(first.lines().next().unwrap_or("").chars().take(60).collect::<String>());
+            m["criado"] = json!(agora);
+        }
+        m["atualizado"] = json!(agora);
+        m["agent"] = aref;
+        m["session"] = json!(id);
+        salvar_meta(&id, &m);
+        self.person_bubble_with_input(text, &anexos, &fields, input.as_ref());
+        // (the fields keep their values for the next message, as the design shows)
+        let message = if anexos.is_empty() {
+            text.to_string()
+        } else {
+            format!("{text}\n\n{} {}", tr("Attached files:"), anexos.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "))
+        };
+        *self.current.borrow_mut() = if text.trim().is_empty() { summary } else { text.to_string() };
+        *self.turn_agent.borrow_mut() = Some(agent.clone());
+        let turn = self.new_turn();
+        *self.turn.borrow_mut() = Some(turn);
+        self.set_busy(true);
+        self.scroll_to_end();
+        let reference = novo_id();
+        *self.client_ref.borrow_mut() = reference.clone();
+        *self.run_id.borrow_mut() = None;
+        let started = Instant::now();
+        // its run's events: the steps as they happen, the approvals it asks for
+        let w = Rc::downgrade(self);
+        let r2 = reference.clone();
+        crate::fluxos::subscribe(&["chat.", "run."], move |ev| {
+            let Some(c) = w.upgrade() else { return false };
+            if *c.client_ref.borrow() != r2 {
+                return false;
+            }
+            c.platform_event(&ev);
+            true
+        });
+        let params = json!({"agent_id": agent["id"], "message": message, "input": input, "session": id, "client_ref": reference});
+        let w = Rc::downgrade(self);
+        // (a moment for the subscription to be in place: "chat.started" names the run the steps come from)
+        glib::timeout_add_local_once(Duration::from_millis(200), move || {
+            crate::fluxos::call("chat.send", params, move |r| {
+                if let Some(c) = w.upgrade() {
+                    c.platform_result(&reference, r, &agent, started.elapsed());
+                }
+            });
+        });
+    }
+
+    /// An event of kalango-fluxos while a request of this conversation runs.
+    fn platform_event(self: &Rc<Self>, ev: &Value) {
+        let topic = ev["topic"].as_str().unwrap_or("");
+        let d = &ev["data"];
+        if topic == "chat.started" {
+            if d["client_ref"].as_str() == Some(self.client_ref.borrow().as_str()) {
+                *self.run_id.borrow_mut() = d["run_id"].as_str().map(str::to_string);
+            }
+            return;
+        }
+        let ours = self.run_id.borrow().as_deref().is_some_and(|r| d["run_id"].as_str() == Some(r))
+            || (self.run_id.borrow().is_none() && d["session"].as_str() == Some(self.id.borrow().as_str()));
+        if !ours {
+            return;
+        }
+        match topic {
+            "run.tool" => {
+                let tool = d["tool"].as_str().unwrap_or("").replace("__", ".");
+                let args: Value = d["args"].as_str().and_then(|a| serde_json::from_str(a).ok()).unwrap_or_else(|| d["args"].clone());
+                self.not_kept.set(true);
+                self.handle(&json!({"tipo": "ferramenta", "nome": tool, "descricao": tool, "argumentos": args}));
+                self.not_kept.set(false);
+            }
+            "run.waiting" => {
+                let sid = self.remote_seq.get() + 1;
+                self.remote_seq.set(sid);
+                self.remote_approvals.borrow_mut().insert(sid, (d["approval_id"].as_str().unwrap_or("").to_string(), d["tool"].as_str().unwrap_or("").replace("__", ".")));
+                let details = d["details"].as_str().and_then(|t| serde_json::from_str::<Value>(t).ok()).or_else(|| d["details"].as_object().map(|_| d["details"].clone()));
+                // (the service's details are {tool, arguments}: the card shows the arguments, as the system's does)
+                let args = match details {
+                    Some(v) if v["arguments"].is_object() => v["arguments"].clone(),
+                    Some(v) if v.is_object() => v,
+                    _ => json!({"detalhes": d["details"]}),
+                };
+                let tool = d["tool"].as_str().unwrap_or("").replace("__", ".");
+                // ("Use X?" says nothing the tool's name does not)
+                let question = d["question"].as_str().filter(|q| !q.is_empty() && !q.starts_with("Use ")).unwrap_or(&tool);
+                self.handle(&json!({"tipo": "pedido", "id": sid, "nome": tool, "descricao": question, "argumentos": args, "agente": self.turn_agent.borrow().as_ref().and_then(|a| a["name"].as_str().map(str::to_string))}));
+            }
+            "run.approval_failed" => {
+                let tool = d["tool"].as_str().unwrap_or("").replace("__", ".");
+                self.handle(&json!({"tipo": "aviso", "texto": trf("{tool}: could not ask for your approval ({error}). The agent stopped.", &[("tool", tool), ("error", d["error"].as_str().unwrap_or("").to_string())])}));
+            }
+            "run.decided" => {
+                if let Some(t) = self.turn.borrow().as_ref() {
+                    t.steps_icon.add_css_class("pulsando");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The answer of kalango-fluxos: the tools it used, the structured output, the text and the footer.
+    fn platform_result(self: &Rc<Self>, reference: &str, r: Result<Value, String>, agent: &Value, took: Duration) {
+        if *self.client_ref.borrow() != reference {
+            return;
+        }
+        self.client_ref.borrow_mut().clear();
+        self.run_id.borrow_mut().take();
+        let v = match r {
+            Ok(v) => v,
+            Err(e) => {
+                self.handle(&json!({"tipo": "erro", "texto": e}));
+                return;
+            }
+        };
+        // the live steps go, the whole ones (with how each ended) are kept; with no list from the service, the live
+        // ones are kept as they ran (a denied one ends as denied)
+        let denied: Vec<String> = self.remote_denied.borrow_mut().drain(..).collect();
+        let live: Vec<(String, String)> = self.turn.borrow_mut().as_mut().map(|t| {
+            let v = t.steps.iter().map(|s| (s.tool.clone(), s.args.clone())).collect();
+            t.steps.clear();
+            while let Some(x) = t.list.first_child() {
+                t.list.remove(&x);
+            }
+            v
+        }).unwrap_or_default();
+        let mut tools: Vec<(String, bool, String, Value)> = v["tools"].as_array().into_iter().flatten().map(|tc| (tc[0].as_str().unwrap_or("").replace("__", "."), tc[1].as_bool().unwrap_or(false), tc[2].as_str().unwrap_or("").to_string(), json!({}))).collect();
+        if tools.is_empty() {
+            tools = live.into_iter().map(|(name, args)| {
+                let no = denied.contains(&name);
+                (name, !no, if no { tr("denied by you").to_string() } else { String::new() }, serde_json::from_str(&args).unwrap_or(json!({})))
+            }).collect();
+        }
+        for (name, ok, summary, args) in tools {
+            self.handle(&json!({"tipo": "ferramenta", "nome": name, "descricao": name, "argumentos": args}));
+            // (a failure without a reason keeps the tool's name as its title)
+            let texto = if summary.is_empty() && !ok { name.clone() } else { summary.clone() };
+            self.handle(&json!({"tipo": "resultado", "ok": ok, "texto": texto, "resumo": "", "detalhe": summary}));
+        }
+        let output = v["output"].clone();
+        let has_output = output.is_object();
+        if has_output {
+            self.handle(&json!({"tipo": "saida", "valor": output, "campos": agent["output_fields"]}));
+        }
+        let text = v["text"].as_str().unwrap_or("").trim().to_string();
+        let text_is_output = has_output && serde_json::from_str::<Value>(text.trim_start_matches("```json").trim_end_matches("```").trim()).ok().as_ref() == Some(&output);
+        if !text.is_empty() && !text_is_output {
+            self.handle(&json!({"tipo": "resposta", "texto": text}));
+        }
+        if let Some(why) = v["stopped"].as_str().filter(|s| !s.is_empty()) {
+            self.handle(&json!({"tipo": "aviso", "texto": trf("The agent stopped: {why}", &[("why", why.to_string())])}));
+        }
+        let models: Vec<String> = v["models"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(str::to_string)).collect();
+        self.handle(&json!({"tipo": "rodape", "modelo": self.modelo.text().as_str(), "segundos": took.as_secs_f64(), "modelos": models}));
+        self.handle(&json!({"tipo": "fim"}));
+    }
+
+    /// The person's message to one of their agents: the input as a chip above ("Entrada · pasta, dias") and its
+    /// values on the first line.
+    fn person_bubble_with_input(&self, text: &str, anexos: &[PathBuf], fields: &[agent_picker::Field], input: Option<&Value>) {
+        let Some(i) = input.filter(|i| i.as_object().is_some_and(|o| !o.is_empty())) else {
+            return self.bolha_pessoa_com(text, anexos);
+        };
+        let names: Vec<String> = fields.iter().filter(|f| i.get(&f.name).is_some()).map(|f| f.name.clone()).collect();
+        let chip = caixa(Orientation::Horizontal, 6, "entrada-chip");
+        chip.append(&ui_icon("codigo", MUTED, 12));
+        chip.append(&rotulo(&format!("{} · {}", tr("Input"), names.join(", ")), ""));
+        chip.set_halign(Align::End);
+        self.lista.append(&chip);
+        let summary = agent_picker::input_summary(fields, i);
+        let full = if text.trim().is_empty() { summary } else { format!("{summary}\n{text}") };
+        self.bolha_pessoa_com(&full, anexos);
+    }
+
+    /// The footer under an answer of one of the person's agents: model, where it ran and how long it took.
+    fn answer_footer(&self, v: &Value) {
+        let mut parts = vec![v["modelo"].as_str().unwrap_or("").to_string()];
+        for m in v["modelos"].as_array().into_iter().flatten().filter_map(|m| m.as_str()) {
+            parts.push(m.to_string());
+        }
+        parts.retain(|p| !p.is_empty());
+        if let Some(sec) = v["segundos"].as_f64() {
+            parts.push(elapsed(Duration::from_secs_f64(sec.max(0.0))));
+        }
+        let l = rotulo(&parts.join(" · "), "resposta-rodape");
+        l.set_xalign(1.0);
+        l.set_halign(Align::End);
+        l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        self.put(&l);
+    }
+
     // ---------------------------------------------------------------------------------------------- permissions
 
     /// Sends the person's answer to a tool that asks first.
     fn answer(&self, id: u64, answer: &str) {
         crate::system_sounds::play_agent(if answer == "negar" { "kalango-agent-denied" } else { "kalango-agent-approved" });
+        // (an approval of kalango-fluxos is decided there)
+        let remote = self.remote_approvals.borrow_mut().remove(&id);
+        if let Some((approval, tool)) = remote {
+            if answer == "negar" {
+                self.remote_denied.borrow_mut().push(tool);
+            }
+            let decision = match answer {
+                "negar" => "deny",
+                "sempre" => "allow_always",
+                _ => "allow_once",
+            };
+            crate::fluxos::call("runs.decide", json!({"approval_id": approval, "decision": decision}), |r| {
+                if let Err(e) = r {
+                    eprintln!("kalango-shell: runs.decide: {e}");
+                }
+            });
+            return;
+        }
         let mut eng = self.engine.borrow_mut();
         if let Some(e) = eng.as_mut() {
             let _ = writeln!(e.stdin, "{}", json!({"resposta": answer, "id": id})).and_then(|_| e.stdin.flush());
@@ -1471,7 +1962,11 @@ impl Conversa {
         h.append(&rotulo(if high_risk { tr("High risk") } else { tr("Changes files") }, if high_risk { "selo-risco" } else { "selo-aviso" }));
         c.append(&h);
         let desc = v["descricao"].as_str().unwrap_or(&tool);
-        let d = rotulo(&trf("The agent wants to: {action}", &[("action", first_lower(desc))]), "cartao-texto");
+        let d = rotulo(&match v["agente"].as_str() {
+            // (one of the person's agents: kalango-fluxos writes the whole sentence)
+            Some(_) => first_upper(desc),
+            None => trf("The agent wants to: {action}", &[("action", first_lower(desc))]),
+        }, "cartao-texto");
         d.set_wrap(true);
         d.set_xalign(0.0);
         c.append(&d);
@@ -1895,6 +2390,18 @@ impl Conversa {
                 }
                 self.cartao_suspeito(v["motivo"].as_str().unwrap_or(""), v["trecho"].as_str().unwrap_or(""), v["fonte"].as_str().unwrap_or(""));
             }
+            "saida" => {
+                let fields = agent_picker::fields(&v["campos"]);
+                if let Some(t) = agent_picker::output_table(&fields, &v["valor"]) {
+                    if let Some(turn) = self.turn.borrow_mut().as_mut() {
+                        turn.answered = true;
+                        turn.answer.push_str(&agent_picker::output_rows(&fields, &v["valor"]).iter().map(|r| format!("{}: {}", r.0, r.2)).collect::<Vec<_>>().join("; "));
+                    }
+                    self.put(&t);
+                }
+            }
+            "aviso" => self.note(text),
+            "rodape" => self.answer_footer(v),
             "bloqueio" => {
                 // (one sound a request, however many times the kernel's rules stop it)
                 if !self.replaying.get() && self.turn.borrow_mut().as_mut().is_some_and(|t| !std::mem::replace(&mut t.failed_sound, true)) {
@@ -1940,25 +2447,10 @@ impl Conversa {
         let needs_approval = matches!(level, "sistema" | "total");
         let glyph = step_glyph(tool, level);
 
-        let row = caixa(Orientation::Horizontal, 10, "passo");
-        let rail = caixa(Orientation::Vertical, 0, "passo-trilho");
-        row.append(&rail);
-        let icon = ui_icon(glyph, if needs_approval { GOLD } else { ACCENT }, 16);
-        icon.set_valign(Align::Center);
-        row.append(&icon);
         let desc = v["descricao"].as_str().filter(|s| !s.is_empty()).unwrap_or(tool);
-        let title = rotulo(desc, if needs_approval { "passo-titulo-espera" } else { "passo-titulo-ativo" });
-        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        title.set_xalign(0.0);
-        row.append(&title);
         let detail_text = if needs_approval { tr("asks for approval").to_string() } else { main_argument(&v["argumentos"]) };
-        let detail = rotulo(&detail_text, "passo-detalhe");
-        detail.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-        detail.set_hexpand(true);
-        detail.set_xalign(0.0);
-        row.append(&detail);
-        let time = rotulo(tr("now"), "passo-tempo");
-        row.append(&time);
+        let (row, icon, title, detail, time) =
+            step_row(glyph, if needs_approval { GOLD } else { ACCENT }, desc, if needs_approval { "passo-titulo-espera" } else { "passo-titulo-ativo" }, &detail_text, tr("now"));
         let a = Animavel::new(&row);
         t.list.append(&a);
         a.entrar((0.0, 6.0), 1.0);
@@ -2003,7 +2495,9 @@ impl Conversa {
             s.title.remove_css_class("passo-titulo-espera");
             s.title.add_css_class("passo-titulo-feito");
             let summary = v["resumo"].as_str().unwrap_or("");
-            if !summary.is_empty() {
+            if let Some(d) = v["detalhe"].as_str() {
+                s.detail.set_text(&short_path(d));
+            } else if !summary.is_empty() {
                 s.title.set_text(&first_upper(&short_path(summary)));
                 s.detail.set_text("");
             } else if s.detail.text() == tr("asks for approval") {
@@ -2175,15 +2669,7 @@ impl Conversa {
             self.lista.append(&fila);
         }
         self.intro.set_visible(false);
-        let msg = caixa(Orientation::Horizontal, 0, "mensagem-pessoa");
-        msg.set_margin_start(20);
-        let l = rotulo(text, "mensagem-pessoa-texto");
-        l.set_wrap(true);
-        l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-        l.set_xalign(0.0);
-        l.set_hexpand(true);
-        l.set_selectable(true);
-        msg.append(&l);
+        let msg = person_message(text);
         let a = Animavel::new(&msg);
         self.lista.append(&a);
         a.entrar((0.0, 10.0), 1.0);

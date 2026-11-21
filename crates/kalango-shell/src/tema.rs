@@ -536,6 +536,33 @@ fn seguir_apps(claro: bool) {
 }
 
 #[cfg(test)]
+mod fluxos_cores {
+    use super::*;
+
+    /// The agents platform's screens (the style sheet's "fluxos:" blocks) use only colours the light theme knows: a
+    /// token's dark value or one of the few mapped ones. Any other hex stays dark in the light theme (a chosen card
+    /// went dark and unreadable on white).
+    #[test]
+    fn fluxos_blocks_use_only_mapped_colours() {
+        let t = Tema::default();
+        let m = mapa(&t, true);
+        let start = ESTILO.find("/* ── fluxos:").unwrap_or(ESTILO.len());
+        let re = |s: &str| -> Vec<String> {
+            let b = s.as_bytes();
+            let mut v = Vec::new();
+            for i in 0..b.len() {
+                if b[i] == b'#' && i + 7 <= b.len() && b[i + 1..i + 7].iter().all(u8::is_ascii_hexdigit) && !b.get(i + 7).is_some_and(u8::is_ascii_hexdigit) {
+                    v.push(s[i..i + 7].to_uppercase());
+                }
+            }
+            v
+        };
+        let unknown: Vec<String> = re(&ESTILO[start..]).into_iter().filter(|c| !m.contains_key(c)).collect();
+        assert!(unknown.is_empty(), "colours the light theme does not map: {unknown:?}");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
