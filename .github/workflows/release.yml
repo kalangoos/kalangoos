@@ -66,7 +66,7 @@ jobs:
       - name: Compilar
         run: >-
           cargo build --release --locked
-          -p kalango-shell -p kalangod -p kalango-agente -p kalango-aprovacao -p kalango-entrada -p kalango-instalador
+          -p kalango-shell -p kalangod -p kalango-agente -p kalango-aprovacao -p kalango-entrada -p kalango-instalador -p kalango-tela
       - name: Empacotar
         env:
           VERSAO: ${{ steps.versao.outputs.versao }}
@@ -182,7 +182,7 @@ jobs:
       - name: Binários
         run: >-
           cargo build --release --locked
-          -p kalango-shell -p kalangod -p kalango-agente -p kalango-aprovacao -p kalango-entrada -p kalango-instalador
+          -p kalango-shell -p kalangod -p kalango-agente -p kalango-aprovacao -p kalango-entrada -p kalango-instalador -p kalango-tela
       # the native apps that live in their own repositories, at fixed commits (bump them here, in their own pull request)
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
