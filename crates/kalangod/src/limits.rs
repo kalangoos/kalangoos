@@ -95,6 +95,20 @@ struct Plano {
     programa: String,
     argumentos: Vec<String>,
     pasta: Option<PathBuf>,
+    /// the task's own temporary folder: TMPDIR, TMP and TEMP point there
+    #[serde(default)]
+    tmp: Option<PathBuf>,
+    /// variables set over whatever environment the program gets (the agents' caches)
+    #[serde(default)]
+    extra: Vec<(String, String)>,
+    /// a shared-memory folder (/dev/shm) of its own: a tmpfs in a mount namespace of its own (root only)
+    #[serde(default)]
+    shm: bool,
+}
+
+/// Whether tasks get a /dev/shm of their own (made in the trampoline, which needs root for the mount namespace).
+pub fn private_shm() -> bool {
+    nix::unistd::geteuid().is_root()
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -109,6 +123,22 @@ pub struct Landlock {
     /// Rede TCP (Landlock ABI 4+): `None` não restringe; `Some(portas)` só deixa conectar nessas portas.
     #[serde(default)]
     pub portas: Option<Vec<u16>>,
+    /// Write rules pinned to what kalangod saw (`allowlist.rs`): opened again without links and checked by identity.
+    #[serde(default)]
+    pub fixas: Vec<Fixa>,
+    /// Socket files it may connect to besides its own (a connector's manifest): with Landlock ABI 9 only these.
+    #[serde(default)]
+    pub sockets: Vec<PathBuf>,
+}
+
+/// A folder (or file) a command may write, reached from `base` without following links, that must still be the one
+/// with this identity when the rule is made.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Fixa {
+    pub base: PathBuf,
+    pub caminho: PathBuf,
+    pub dev: u64,
+    pub ino: u64,
 }
 
 /// Perfil seccomp aplicado logo antes do exec (vale para o programa e tudo o que ele iniciar).
@@ -135,6 +165,11 @@ pub struct Pedido<'a> {
     pub ambiente: Option<std::collections::BTreeMap<String, String>>,
     pub pasta: Option<PathBuf>,
     pub dry_run: bool,
+    /// A temporary folder of its own, instead of /tmp and /var/tmp (which the command then cannot reach at all: nothing
+    /// it leaves there is picked up by the person's programs, nothing of theirs is read). Removed when the task ends.
+    pub tmp_privado: bool,
+    /// Variables set for the program on top of its environment (the agents' caches: `allowlist::CACHE_VARS`).
+    pub extra: Vec<(String, String)>,
 }
 
 /// Comando pronto para rodar dentro de um cgroup limitado, com o caminho do cgroup (quando conhecido).
@@ -145,6 +180,22 @@ pub struct Preparado {
     descricao: String,
     /// the systemd unit (scope) of the task
     unit: String,
+    /// the task's own temporary folder (removed after it)
+    pub tmp: Option<PathBuf>,
+}
+
+/// Creates the task's temporary folder: an unguessable name under /tmp, created here (never one that already
+/// exists), only for the person.
+fn private_tmp(unit: &str, uid: u32, gid: u32) -> Result<PathBuf, String> {
+    use std::os::unix::fs::DirBuilderExt;
+    let mut rnd = [0u8; 8];
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut rnd)).map_err(|e| e.to_string())?;
+    let d = PathBuf::from(format!("/tmp/{unit}-{}", rnd.iter().map(|b| format!("{b:02x}")).collect::<String>()));
+    std::fs::DirBuilder::new().mode(0o700).create(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+    if nix::unistd::geteuid().is_root() {
+        std::os::unix::fs::chown(&d, Some(uid), Some(gid)).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    Ok(d)
 }
 
 
@@ -156,16 +207,29 @@ pub fn prepare_command(p: Pedido, prefixo: &str) -> Result<Preparado, String> {
     let root = nix::unistd::geteuid().is_root();
     let n = NEXT.fetch_add(1, Ordering::SeqCst);
     let unit = format!("{prefixo}-{}-{n}", std::process::id());
+    let tmp = if p.tmp_privado && !p.dry_run { Some(private_tmp(&unit, p.uid, p.gid)?) } else { None };
+    let mut landlock = p.landlock;
+    if let (Some(l), Some(t)) = (landlock.as_mut(), &tmp) {
+        l.escrita.push(t.clone());
+    }
+    // its own /dev/shm (Python's multiprocessing locks and pools need one): the rule is for the tmpfs the trampoline
+    // mounts there, never the person's
+    let shm = tmp.is_some() && private_shm() && p.uid != 0;
+    if let (Some(l), true) = (landlock.as_mut(), shm) {
+        l.escrita.push("/dev/shm".into());
+    }
     let mut plano = Plano {
-        landlock: p.landlock, seccomp: p.seccomp, ambiente: p.ambiente, programa: p.programa.into(), argumentos: p.argumentos.to_vec(), pasta: p.pasta, ..Default::default()
+        landlock, seccomp: p.seccomp, ambiente: p.ambiente, programa: p.programa.into(), argumentos: p.argumentos.to_vec(), pasta: p.pasta, tmp: tmp.clone(), extra: p.extra, shm, ..Default::default()
     };
     let (mut cmd, dir, modo): (Command, Option<PathBuf>, &'static str);
     if root && systemd_running() {
         prepare().map_err(|e| format!("cgroup dos agentes: {e}"))?;
         let mut c = Command::new("systemd-run");
         c.args(["--scope", "--quiet", "--collect", "--slice=kalango-agentes.slice"]).arg(format!("--unit={unit}"));
+        // (the trampoline starts as root and becomes the person itself, after what only root does: its own /dev/shm)
         if p.uid != 0 {
-            c.arg(format!("--uid={}", p.uid)).arg(format!("--gid={}", p.gid));
+            plano.uid = Some(p.uid);
+            plano.gid = Some(p.gid);
         }
         props(&mut c, lim);
         c.arg("--").arg(&me);
@@ -208,14 +272,24 @@ pub fn prepare_command(p: Pedido, prefixo: &str) -> Result<Preparado, String> {
     }
     let descricao = format!("{} {}", plano.programa, plano.argumentos.join(" "));
     cmd.arg("__tarefa").arg(serde_json::to_string(&plano).unwrap());
-    Ok(Preparado { cmd, dir, modo, descricao, unit })
+    Ok(Preparado { cmd, dir, modo, descricao, unit, tmp })
 }
 
 /// Executa uma tarefa limitada e devolve o resultado (código, saída, memória máxima, se estourou memória ou tempo).
 pub fn run_task(p: Pedido) -> Result<Value, String> {
     let lim = p.limites.clone();
     let dry_run = p.dry_run;
-    let Preparado { mut cmd, dir, modo, descricao, unit } = prepare_command(p, "kalango-tarefa")?;
+    let Preparado { mut cmd, dir, modo, descricao, unit, tmp } = prepare_command(p, "kalango-tarefa")?;
+    // (removed whatever happens next: links in it are removed, not followed)
+    struct Cleanup(Option<PathBuf>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            if let Some(d) = &self.0 {
+                let _ = std::fs::remove_dir_all(d);
+            }
+        }
+    }
+    let _cleanup = Cleanup(tmp);
     if dry_run {
         return Ok(json!({"simulado": true, "comando": descricao, "modo": modo, "limites": lim}));
     }
@@ -230,6 +304,7 @@ pub fn run_task(p: Pedido) -> Result<Value, String> {
     let err_t = reader(child.stderr.take().unwrap());
     let deadline = start + Duration::from_secs(lim.tempo_s);
     let (mut peak, mut oom, mut timed_out) = (0u64, 0u64, false);
+    let mut nap = Duration::from_millis(1);
     let status = loop {
         if let Some(d) = &dir {
             peak = peak.max(read_u64(&d.join("memory.peak")).or_else(|| read_u64(&d.join("memory.current"))).unwrap_or(0));
@@ -249,7 +324,9 @@ pub fn run_task(p: Pedido) -> Result<Value, String> {
                 }
             }
         }
-        std::thread::sleep(Duration::from_millis(50));
+        // (a short command is seen ending within a few ms; a long one is looked at every 50 ms)
+        std::thread::sleep(nap);
+        nap = (nap * 2).min(Duration::from_millis(50));
     };
     if let Some(d) = &dir {
         oom = oom.max(events(&d.join("memory.events"), "oom_kill"));
@@ -275,7 +352,8 @@ pub fn run_task(p: Pedido) -> Result<Value, String> {
 /// Kills every process left in a task's cgroup (`cgroup.kill`), and stops its systemd scope when the cgroup's folder
 /// is not known; a cgroupfs folder is removed.
 fn end_scope(dir: Option<&Path>, modo: &str, unit: &str) {
-    let killed = dir.is_some_and(|d| std::fs::write(d.join("cgroup.kill"), "1").is_ok());
+    // (a scope whose folder is already gone ended empty: systemd removes a scope only when nothing is left in it)
+    let killed = dir.is_some_and(|d| std::fs::write(d.join("cgroup.kill"), "1").is_ok() || (modo != "cgroupfs" && !d.exists()));
     if !killed && modo != "cgroupfs" {
         let mut c = Command::new("systemctl");
         if modo == "systemd --user" {
@@ -352,6 +430,19 @@ pub fn task_main(arg: &str) -> ! {
             fail(format!("entrar no cgroup: {e}"));
         }
     }
+    if plano.shm {
+        // a mount namespace of its own, with a fresh tmpfs on /dev/shm: nothing of the person's shared memory is
+        // reachable, and what the task leaves goes with it. Not made: the task does not run (the rule for /dev/shm
+        // would otherwise be the person's)
+        use nix::mount::{mount, MsFlags};
+        let r = nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNS)
+            .and_then(|_| mount(None::<&str>, "/", None::<&str>, MsFlags::MS_REC | MsFlags::MS_PRIVATE, None::<&str>))
+            .and_then(|_| mount(Some("tmpfs"), "/dev/shm", Some("tmpfs"), MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
+                Some(format!("mode=1777,size=256m,uid={},gid={}", plano.uid.unwrap_or(0), plano.gid.unwrap_or(0)).as_str())));
+        if let Err(e) = r {
+            fail(format!("/dev/shm: {e}"));
+        }
+    }
     if let (Some(uid), Some(gid)) = (plano.uid, plano.gid) {
         use nix::unistd::{setgid, setgroups, setuid, Gid, Uid};
         if let Err(e) = setgroups(&[]).and_then(|_| setgid(Gid::from_raw(gid))).and_then(|_| setuid(Uid::from_raw(uid))) {
@@ -372,15 +463,32 @@ pub fn task_main(arg: &str) -> ! {
             std::env::set_var(k, v);
         }
     }
+    if let Some(t) = &plano.tmp {
+        for k in ["TMPDIR", "TMP", "TEMP"] {
+            std::env::set_var(k, t);
+        }
+    }
+    // (an empty value removes the variable: an approved install must not inherit a redirection from anywhere)
+    for (k, v) in &plano.extra {
+        if v.is_empty() { std::env::remove_var(k) } else { std::env::set_var(k, v) }
+    }
+    // local sockets (D-Bus, systemd, other programs'): with Landlock ABI 9 the kernel keeps a command off every
+    // pathname socket outside its own folders (ResolveUnix) and off abstract ones made outside it (ABI 6 scope), so it
+    // may still make its own (Python's process pools talk to their forkserver that way); older kernels: no AF_UNIX at
+    // all (seccomp)
+    let unix_by_landlock = plano.seccomp.is_some_and(|s| s.sem_unix) && plano.landlock.is_some() && landlock_abi() >= 9;
     if let Some(l) = &plano.landlock {
-        if let Err(e) = landlock_task(l) {
+        if let Err(e) = landlock_task(l, unix_by_landlock) {
             fail(e);
         }
     } else {
         // mesmo sem Landlock, o programa não ganha privilégio por setuid
         unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
     }
-    if let Some(sc) = plano.seccomp {
+    if let Some(mut sc) = plano.seccomp {
+        if unix_by_landlock {
+            sc.sem_unix = false;
+        }
         if let Err(e) = seccomp_task(sc) {
             fail(format!("seccomp: {e}"));
         }
@@ -392,21 +500,55 @@ pub fn task_main(arg: &str) -> ! {
     fail(format!("{}: {e}", plano.programa))
 }
 
-fn landlock_task(l: &Landlock) -> Result<(), String> {
-    use landlock::{Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, ABI};
+/// The kernel's Landlock version (0: none).
+pub fn landlock_abi() -> i64 {
+    // landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)
+    unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, std::ptr::null::<u8>(), 0usize, 1u32) }.max(0)
+}
+
+fn landlock_task(l: &Landlock, unix: bool) -> Result<(), String> {
+    use landlock::{Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope, ABI};
     let abi = ABI::V3;
-    let mut rs = Ruleset::default().handle_access(AccessFs::from_all(abi)).map_err(|e| e.to_string())?;
+    // (connecting to a pathname socket: only in the folders it may write — its own TMPDIR, the work folders)
+    let all = if unix { AccessFs::from_all(abi) | AccessFs::ResolveUnix } else { AccessFs::from_all(abi) };
+    let mut rs = Ruleset::default().handle_access(all).map_err(|e| e.to_string())?;
+    if unix {
+        rs = rs.scope(Scope::AbstractUnixSocket).map_err(|e| e.to_string())?;
+    }
     if l.portas.is_some() {
         rs = rs.handle_access(AccessNet::from_all(ABI::V4)).map_err(|e| e.to_string())?;
     }
     let mut rs = rs.create().map_err(|e| e.to_string())?;
-    for (paths, access) in [(&l.listar, AccessFs::ReadDir.into()), (&l.leitura, AccessFs::from_read(abi)), (&l.escrita, AccessFs::from_all(abi))] {
+    for (paths, access) in [(&l.listar, AccessFs::ReadDir.into()), (&l.leitura, AccessFs::from_read(abi)), (&l.escrita, all)] {
         for p in paths {
             if let Ok(fd) = PathFd::new(p) {
                 // regras em arquivos (ex.: /dev/null) só aceitam direitos de arquivo
                 let a = if p.is_dir() { access } else { access & AccessFs::from_file(abi) };
                 rs = rs.add_rule(PathBeneath::new(fd, a)).map_err(|e| e.to_string())?;
             }
+        }
+    }
+    // the pinned ones: a folder swapped (for a link, or another folder) since kalangod looked gets no rule
+    for f in &l.fixas {
+        let Some(fd) = crate::allowlist::open_nofollow(&f.base, &f.caminho) else {
+            eprintln!("kalangod __tarefa: {}: {}", f.caminho.display(), kalango_i18n::tr("changed since it was approved: no writing there"));
+            continue;
+        };
+        use std::os::fd::AsRawFd;
+        let st = nix::sys::stat::fstat(fd.as_raw_fd()).map_err(|e| e.to_string())?;
+        if (st.st_dev, st.st_ino) != (f.dev, f.ino) {
+            eprintln!("kalangod __tarefa: {}: {}", f.caminho.display(), kalango_i18n::tr("changed since it was approved: no writing there"));
+            continue;
+        }
+        let dir = st.st_mode & libc::S_IFMT == libc::S_IFDIR;
+        let a = if dir { all } else { all & AccessFs::from_file(abi) };
+        rs = rs.add_rule(PathBeneath::new(fd, a)).map_err(|e| e.to_string())?;
+    }
+    // (the exact sockets a manifest names; without ABI 9 the program has no local sockets at all — the seccomp rule)
+    if unix {
+        for s in &l.sockets {
+            let fd = PathFd::new(s).map_err(|e| format!("{}: {e}", s.display()))?;
+            rs = rs.add_rule(PathBeneath::new(fd, AccessFs::ResolveUnix)).map_err(|e| e.to_string())?;
         }
     }
     for port in l.portas.iter().flatten() {

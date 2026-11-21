@@ -77,6 +77,15 @@ pub struct Config {
     /// Executáveis que podem aprovar sem terminal: a tela de aprovação do sistema.
     #[serde(default = "aprovadores_padrao")]
     pub aprovadores_graficos: Vec<PathBuf>,
+    /// The person's own interface (the shell): the only programs that may add or take out the folders agents'
+    /// commands write in (`kalango/pastas_adicionar`, `kalango/pastas_remover`). An agent — in the agents' slice or
+    /// any other program talking to kalangod — may not.
+    #[serde(default = "interface_padrao")]
+    pub interface_da_pessoa: Vec<PathBuf>,
+    /// Loader variables the person's interface may start with (a development session preloads its layer-shell
+    /// library: `LD_PRELOAD=…`); anything else loaded into it, or a tracer, and it is not taken as the person's.
+    #[serde(default)]
+    pub interface_ambiente_permitido: Vec<String>,
     /// Quantos pontos de restauração manter (os mais antigos são apagados).
     #[serde(default = "pontos_padrao")]
     pub pontos_max: usize,
@@ -158,6 +167,10 @@ fn controle_remoto_apps_padrao() -> Vec<String> {
 
 fn raiz_padrao() -> PathBuf {
     "/".into()
+}
+
+fn interface_padrao() -> Vec<PathBuf> {
+    vec!["/usr/libexec/kalango/kalango-shell".into()]
 }
 
 fn aprovadores_padrao() -> Vec<PathBuf> {
@@ -260,6 +273,8 @@ impl Config {
             home: None,
             login_path: None,
             aprovadores_graficos: aprovadores_padrao(),
+            interface_da_pessoa: interface_padrao(),
+            interface_ambiente_permitido: vec![],
             callers: vec![
                 CallerRule {
                     name: "agentes-nativos".into(),

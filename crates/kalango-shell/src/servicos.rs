@@ -199,6 +199,21 @@ pub fn kalangod_navegador(params: Value) -> Result<Value, String> {
     kalangod_rpc_ate("kalango/navegador", params, Duration::from_secs(60))
 }
 
+/// Where agents' commands write (kalangod's allowlist): the work folders and the project folders.
+pub fn kalangod_pastas() -> Result<Value, String> {
+    kalangod_rpc("kalango/pastas", json!({}))
+}
+
+/// Takes a project folder out (commands only read it again).
+pub fn kalangod_pastas_remover(caminho: &str) -> Result<Value, String> {
+    kalangod_rpc("kalango/pastas_remover", json!({"caminho": caminho}))
+}
+
+/// Adds a project folder: kalangod asks on the approval screen first (waits for the answer).
+pub fn kalangod_pastas_adicionar(caminho: &str) -> Result<Value, String> {
+    kalangod_rpc_ate("kalango/pastas_adicionar", json!({"caminho": caminho}), Duration::from_secs(150))
+}
+
 /// kalangod's tools as this process sees them (the agents center's built-in connectors).
 pub fn kalangod_ferramentas() -> Result<Vec<Value>, String> {
     kalangod_rpc("tools/list", json!({})).map(|v| v["tools"].as_array().cloned().unwrap_or_default())

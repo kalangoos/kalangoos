@@ -43,6 +43,11 @@ pub struct Pending {
     /// "Always" is refused for this request (the screen shows no such button): each change to a startup file is
     /// seen before it happens.
     pub no_always: bool,
+    /// What the approval screen shows for a request that is not a tool call as such: a folder an agent asks its
+    /// commands to write in (level "pasta": path, summary, first entries) or a command that installs for the person
+    /// (level "instalar": where it writes and why).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cartao: Option<Value>,
 }
 
 #[derive(Default)]
@@ -55,6 +60,8 @@ struct Inner {
     total_grants: HashMap<u32, Instant>,
     /// "always" answers: the same agent asking for the same system action with the same arguments is not asked again
     standing: Vec<Standing>,
+    /// requests answered "always" whose asker keeps the answer itself (a project folder), not as a standing answer
+    always: std::collections::HashSet<u64>,
 }
 
 /// An "always" answer from the person (system level only; the total level is always temporary). It covers one
@@ -129,7 +136,12 @@ impl Approvals {
     }
 
     /// Registra o pedido e espera a decisão (ou o tempo esgotar).
-    pub fn request(&self, mut p: Pending, timeout: Duration) -> Outcome {
+    pub fn request(&self, p: Pending, timeout: Duration) -> Outcome {
+        self.request_with_always(p, timeout).0
+    }
+
+    /// As `request`, also saying whether the person answered "always" (a folder: kept among the project folders).
+    pub fn request_with_always(&self, mut p: Pending, timeout: Duration) -> (Outcome, bool) {
         let id = {
             let mut g = self.inner.lock().unwrap();
             g.next += 1;
@@ -147,16 +159,17 @@ impl Approvals {
         loop {
             if let Some(d) = g.pending.get(&id).and_then(|p| p.decision) {
                 g.pending.remove(&id);
+                let always = g.always.remove(&id);
                 g.generation += 1;
                 self.cv.notify_all();
-                return if d { Outcome::Approved } else { Outcome::Denied };
+                return (if d { Outcome::Approved } else { Outcome::Denied }, d && always);
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 g.pending.remove(&id);
                 g.generation += 1;
                 self.cv.notify_all();
-                return Outcome::Timeout;
+                return (Outcome::Timeout, false);
             }
             g = self.cv.wait_timeout(g, left).unwrap().0;
         }
@@ -204,7 +217,7 @@ impl Approvals {
         if always && p.no_always {
             return Err(tr("this request cannot be answered with “always”: each change is approved on its own").into());
         }
-        if always && (!approve || p.level != "sistema") {
+        if always && (!approve || !matches!(p.level.as_str(), "sistema" | "pasta")) {
             return Err(tr("“always” is only for approving system changes; full access is always temporary").into());
         }
         g.pending.get_mut(&id).unwrap().decision = Some(approve);
@@ -212,7 +225,9 @@ impl Approvals {
             g.total_grants.insert(p.uid, Instant::now() + grant_total);
         }
         let mut saved = None;
-        if always {
+        if always && p.level == "pasta" {
+            g.always.insert(id);
+        } else if always {
             let s = Standing { uid: p.uid, exe: p.exe.clone(), tool: p.tool.clone(), args: canonical(&p.args), criado: crate::timeline::now() };
             if !g.standing.contains(&s) {
                 g.standing.push(s);
@@ -257,6 +272,13 @@ pub fn trusted_approver(exe: &str, trusted: &[std::path::PathBuf]) -> bool {
     let owner_ok = |m: &std::fs::Metadata| m.uid() == 0 || m.uid() == nix::unistd::geteuid().as_raw();
     let Ok(m) = std::fs::metadata(exe) else { return false };
     // o arquivo e a pasta onde ele está: nenhum dos dois pode ser trocado por outro usuário
-    let dir_ok = exe.parent().and_then(|d| std::fs::metadata(d).ok()).map(|d| owner_ok(&d) && d.mode() & 0o022 == 0).unwrap_or(false);
-    owner_ok(&m) && m.mode() & 0o022 == 0 && dir_ok
+    let dir_ok = exe.parent().and_then(|d| std::fs::metadata(d).ok()).map(|d| owner_ok(&d) && not_writable_by_others(&d)).unwrap_or(false);
+    owner_ok(&m) && not_writable_by_others(&m) && dir_ok
+}
+
+/// Nobody but its owner can change it: no write for others, and no write for a group other than root's (members of
+/// root's group can change root's files anyway — a system image with /usr at 775 root:root is no weaker).
+fn not_writable_by_others(m: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    m.mode() & 0o002 == 0 && (m.mode() & 0o020 == 0 || m.gid() == 0)
 }

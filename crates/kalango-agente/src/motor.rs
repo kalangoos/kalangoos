@@ -369,7 +369,9 @@ fn folders_note() -> String {
     if lista.is_empty() {
         return String::new();
     }
+    // (commands write only in the work folders, the approved project folders and their own TMPDIR: kalangod's allowlist)
     trf("The person's folders: {list}. Use these paths (absolute or starting with ~); never build one from the computer's name.", &[("list", lista.join(", "))])
+        + " " + tr("Commands you run write only in these work folders (not elsewhere in the home), in the project folders the person approved and in $TMPDIR; to work in another folder, ask for it first with tarefas__pedir_pasta.")
 }
 
 /// "~/Downloads (downloads)"… from a user-dirs.dirs text; under `area` when given (a test).

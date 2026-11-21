@@ -41,6 +41,10 @@ tela_auxiliar = "$ROOT/target/$PERFIL/kalango-tela"
 # files that run at login (agents' changes to them ask): the person's choice is in this session's settings; with a
 # test area, it is every caller's home ("~"), so "~/.bashrc" is the area's and never the real home's
 startup_setting = "${XDG_CONFIG_HOME:-~/.config}/kalango/agente-permissoes.json"
+# the person's own interface: only it adds or takes out the folders agents' commands write in
+interface_da_pessoa = ["$ROOT/target/$PERFIL/kalango-shell"]
+# (the development shell starts with the layer-shell library preloaded and these libraries' folder)
+interface_ambiente_permitido = ["LD_PRELOAD=$LIBS/libgtk4-layer-shell.so", "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"]
 $( [ -n "${KALANGO_AREA_TESTE:-}" ] && printf 'home = "%s"' "$KALANGO_AREA_TESTE" )
 [[callers]]
 name = "voce"

@@ -32,6 +32,11 @@ pub const DESTAQUES: &[(&str, &str, &str)] = &[
 /// The accent of the dark tokens: every colour of the shell drawn "in accent" is this one.
 pub const ACENTO: &str = "#A5A1E2";
 
+/// Text in the accent (links, "Remover", the agents' pill): its own dark value, a hair off the accent, so the light
+/// theme — made by swapping colours by value — gives it the light token's deeper green, readable on white, instead of
+/// the accent itself (AGENTS.md, "Tema claro").
+pub const ACENTO_TEXTO: &str = "#A6A2E3";
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tema {
     /// "escuro", "claro" or "automatico"
@@ -164,6 +169,14 @@ pub fn mapa(t: &Tema, claro_agora: bool) -> HashMap<String, String> {
     let acento = if claro_agora { do_claro(token_claro).unwrap_or_else(|| escuro_d.to_string()) } else { escuro_d.to_string() };
     if acento != ACENTO || claro_agora {
         m.insert(ACENTO.into(), acento.clone());
+        // text in the accent: the chosen accent on dark; on light, the light token for the default accent, and the
+        // chosen accent made deeper for the others (the light accents are pale on white)
+        let texto = match (claro_agora, t.destaque.as_str()) {
+            (false, _) => acento.clone(),
+            (true, "accent") => do_claro("k_accent_text").unwrap_or_else(|| misturar(&acento, "#000000", 0.30)),
+            (true, _) => misturar(&acento, "#000000", 0.30),
+        };
+        m.insert(ACENTO_TEXTO.into(), texto);
         // its hover (lighter on dark, darker on light) and its pale tint
         m.insert("#B4B0EA".into(), misturar(&acento, if claro_agora { "#000000" } else { "#FFFFFF" }, if claro_agora { 0.12 } else { 0.18 }));
         m.insert("#C9C6F2".into(), misturar(&acento, "#FFFFFF", 0.42));
@@ -583,6 +596,8 @@ mod tests {
         assert_eq!(m.get("#E2E2E6").map(String::as_str), Some("#322153"));
         // the default accent is the light theme's green
         assert_eq!(m.get(ACENTO).map(String::as_str), Some("#34CB79"));
+        // and text in it the deeper green of its own token (readable on white), not the accent
+        assert_eq!(m.get(ACENTO_TEXTO).map(String::as_str), Some("#248F55"));
         let css = css(&t, true);
         assert!(!css.contains("#16171B") && css.contains("#F0F0F5"));
     }
@@ -592,6 +607,8 @@ mod tests {
         let t = Tema { destaque: "teal".into(), ..Tema::default() };
         let m = mapa(&t, false);
         assert_eq!(m.get(ACENTO).map(String::as_str), Some("#8ED2C3"));
+        // (text in the accent follows the chosen accent too)
+        assert_eq!(m.get(ACENTO_TEXTO).map(String::as_str), Some("#8ED2C3"));
         assert!(!m.contains_key("#16171B"));
         assert!(mapa(&Tema::default(), false).is_empty());
     }
