@@ -92,6 +92,18 @@ pub fn lines_of(src: &str, selector: &str) -> (usize, usize) {
     }
 }
 
+/// The page an answer holds: its last closed ```html block with markup in it (the model wrote the page in the
+/// conversation instead of a file). The canvas shows it like a page the agent wrote to a file.
+pub fn page_in_answer(md: &str) -> Option<String> {
+    crate::fences::split(md).into_iter().rev().find_map(|p| match p {
+        crate::fences::Piece::Code(f) if f.closed && matches!(crate::code_block::parse_info(&f.info).0.as_str(), "html" | "htm" | "xhtml") => {
+            let low = f.body.to_lowercase();
+            ["<html", "<body", "<!doctype", "<div", "<h1", "<p>", "<section", "<main"].iter().any(|t| low.contains(t)).then(|| f.body.clone())
+        }
+        _ => None,
+    })
+}
+
 fn clock_since(t: &glib::DateTime) -> String {
     let now = glib::DateTime::now_local().map(|n| n.to_unix()).unwrap_or(0);
     let m = (now - t.to_unix()) / 60;
@@ -663,6 +675,17 @@ mod tests {
         // (a sheet on the web stays a link: it is fetched through the proxy)
         assert!(one.contains("x.example/a.css"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_page_written_in_the_answer() {
+        let md = "Aqui está a página:\n\n```html\n<!DOCTYPE html>\n<html><body><h1>Olá</h1></body></html>\n```\n\nSalve como index.html.";
+        assert_eq!(page_in_answer(md).as_deref(), Some("<!DOCTYPE html>\n<html><body><h1>Olá</h1></body></html>"));
+        // the last page when there are two; none in other languages, nor while the block is still arriving
+        let two = "```html\n<p>um</p>\n```\n```html\n<p>dois</p>\n```";
+        assert_eq!(page_in_answer(two).as_deref(), Some("<p>dois</p>"));
+        assert!(page_in_answer("```css\nbody { color: red }\n```").is_none());
+        assert!(page_in_answer("```html\n<html><body>").is_none());
     }
 
     #[test]

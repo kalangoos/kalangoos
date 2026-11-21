@@ -47,6 +47,8 @@ pub struct Graph {
 /// A node reference with its shape: `A`, `A[t]`, `A(t)`, `A{t}`, `A((t))`, `A([t])`, `A[(t)]`.
 fn node_ref(s: &str) -> Option<(String, Option<(String, Shape)>)> {
     let s = s.trim().trim_end_matches(';').trim();
+    // (a class given in place, "A[texto]:::destaque", is only looks: the node is the same)
+    let s = s.find(":::").map(|k| s[..k].trim()).unwrap_or(s);
     if s.is_empty() {
         return None;
     }
@@ -76,8 +78,9 @@ fn node_ref(s: &str) -> Option<(String, Option<(String, Shape)>)> {
     Some((id, Some(shape)))
 }
 
-/// The arrows a line may hold, longest first (so "-.->" is not read as "->").
-const ARROWS: [&str; 6] = ["-.->", "==>", "-->", "---", "-.-", "->"];
+/// The arrows a line may hold, longest first (so "-.->" is not read as "->"); a longer one ("--->", "==>>") takes
+/// its extra dashes, and "--o"/"--x" (circle and cross ends) are drawn as arrows.
+const ARROWS: [&str; 11] = ["<-->", "-.->", "==>", "-->", "---", "===", "-.-", "--o", "--x", "->", "~~~"];
 
 /// Splits "A -->|sim| B --> C" into nodes and the edges between them (with their labels and kind).
 fn chain(line: &str) -> Option<(Vec<String>, Vec<(String, bool)>)> {
@@ -86,7 +89,7 @@ fn chain(line: &str) -> Option<(Vec<String>, Vec<(String, bool)>)> {
     let mut rest = line.trim().to_string();
     loop {
         // the next arrow outside brackets
-        let mut found: Option<(usize, &str)> = None;
+        let mut found: Option<(usize, String)> = None;
         let mut depth = 0i32;
         let bytes: Vec<char> = rest.chars().collect();
         let mut i = 0;
@@ -98,11 +101,13 @@ fn chain(line: &str) -> Option<(Vec<String>, Vec<(String, bool)>)> {
                     let tail: String = bytes[i..].iter().collect();
                     // "-- texto -->": a label written inside the arrow
                     if tail.starts_with("-- ") || tail.starts_with("== ") {
-                        found = Some((i, if tail.starts_with("==") { "==" } else { "--" }));
+                        found = Some((i, if tail.starts_with("==") { "==" } else { "--" }.to_string()));
                         break;
                     }
-                    if let Some(a) = ARROWS.iter().find(|a| tail.starts_with(**a)) {
-                        found = Some((i, a));
+                    if let Some(a) = ARROWS.iter().find(|a| tail.starts_with(**a) && !(a.ends_with(['o', 'x']) && tail[a.len()..].starts_with(|c: char| c.is_alphanumeric()))) {
+                        // (the extra length of "--->" or "-..->" is the same arrow)
+                        let extra = tail[a.len()..].chars().take_while(|c| matches!(c, '-' | '=' | '.' | '>')).count();
+                        found = Some((i, tail[..a.len() + extra].to_string()));
                         break;
                     }
                 }
@@ -121,12 +126,12 @@ fn chain(line: &str) -> Option<(Vec<String>, Vec<(String, bool)>)> {
             // "-- rótulo -->"
             let close = ["-->", "==>", "---"].iter().filter_map(|a| after.find(a).map(|k| (k, a.len()))).min();
             let (k, n) = close?;
-            label = after[..k].trim().to_string();
+            label = after[..k].trim().trim_matches('"').to_string();
             after = after[k + n..].to_string();
         } else if after.trim_start().starts_with('|') {
             let t = after.trim_start()[1..].to_string();
             let k = t.find('|')?;
-            label = t[..k].trim().to_string();
+            label = t[..k].trim().trim_matches('"').to_string();
             after = t[k + 1..].to_string();
         }
         parts.push(before.trim().to_string());
@@ -240,6 +245,175 @@ pub fn layout(g: &Graph) -> (Vec<usize>, Vec<usize>) {
         }
     }
     (layer, place)
+}
+
+/// A step of a sequence diagram.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SeqItem {
+    /// `A->>B: texto` (`-->>`/`-->` dashed: a reply; `-x`/`-)` drawn as arrows)
+    Message { from: usize, to: usize, text: String, dashed: bool },
+    /// `Note over A,B: texto`, `Note right of A: texto` (the participants it spans)
+    Note { first: usize, last: usize, text: String },
+    /// `loop`, `alt`, `opt`, `par`, `critical`, `break`, `rect` up to their `end`: a frame with its label
+    Start { kind: String, label: String },
+    /// `else` / `and` inside a frame: a dashed line across it
+    Else { label: String },
+    End,
+}
+
+/// A mermaid sequence diagram: who takes part (in order) and what happens.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sequence {
+    pub participants: Vec<String>,
+    pub items: Vec<SeqItem>,
+}
+
+/// The arrows of a sequence diagram, longest first.
+const SEQ_ARROWS: [(&str, bool); 8] = [("-->>", true), ("->>", false), ("--x", true), ("-x", false), ("--)", true), ("-)", false), ("-->", true), ("->", false)];
+
+/// Reads a mermaid sequence diagram (None when it is not one, or has no message).
+pub fn parse_sequence(src: &str) -> Option<Sequence> {
+    let mut lines = src.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("%%"));
+    if lines.next()? != "sequenceDiagram" {
+        return None;
+    }
+    let mut ids: Vec<String> = Vec::new();
+    let mut seq = Sequence { participants: Vec::new(), items: Vec::new() };
+    fn who(ids: &mut Vec<String>, seq: &mut Sequence, id: &str, label: Option<&str>) -> Option<usize> {
+        let id = id.trim().trim_start_matches(['+', '-']).trim();
+        if id.is_empty() || id.contains(char::is_whitespace) && !id.starts_with('"') {
+            return None;
+        }
+        let id = id.trim_matches('"').to_string();
+        let k = match ids.iter().position(|x| *x == id) {
+            Some(k) => k,
+            None => {
+                ids.push(id.clone());
+                seq.participants.push(id);
+                ids.len() - 1
+            }
+        };
+        if let Some(l) = label {
+            seq.participants[k] = l.trim().trim_matches('"').to_string();
+        }
+        Some(k)
+    }
+    let mut depth = 0usize;
+    for l in lines {
+        let first = l.split_whitespace().next().unwrap_or("");
+        let rest = l[first.len()..].trim();
+        match first {
+            "participant" | "actor" => {
+                let (id, label) = match rest.split_once(" as ") {
+                    Some((a, b)) => (a, Some(b)),
+                    None => (rest, None),
+                };
+                who(&mut ids, &mut seq, id, label)?;
+            }
+            "loop" | "alt" | "opt" | "par" | "critical" | "break" | "rect" => {
+                depth += 1;
+                seq.items.push(SeqItem::Start { kind: first.to_string(), label: rest.to_string() });
+            }
+            "else" | "and" | "option" => seq.items.push(SeqItem::Else { label: rest.to_string() }),
+            "end" => {
+                depth = depth.checked_sub(1)?;
+                seq.items.push(SeqItem::End);
+            }
+            "Note" | "note" => {
+                let (place, text) = rest.split_once(':')?;
+                let place = place.trim();
+                let names = place.strip_prefix("over").or_else(|| place.strip_prefix("right of")).or_else(|| place.strip_prefix("left of"))?;
+                let ks: Vec<usize> = names.split(',').map(|n| who(&mut ids, &mut seq, n, None)).collect::<Option<_>>()?;
+                let (a, b) = (*ks.iter().min()?, *ks.iter().max()?);
+                seq.items.push(SeqItem::Note { first: a, last: b, text: text.trim().to_string() });
+            }
+            "autonumber" | "activate" | "deactivate" | "title" | "box" | "accTitle:" | "accDescr:" | "create" | "destroy" | "links" | "link" => {}
+            _ => {
+                // a message: "A->>B: texto"
+                let (at, (arrow, dashed)) = SEQ_ARROWS.iter().filter_map(|a| l.find(a.0).map(|k| (k, *a))).min_by_key(|(k, a)| (*k, std::cmp::Reverse(a.0.len())))?;
+                let from = who(&mut ids, &mut seq, &l[..at], None)?;
+                let after = &l[at + arrow.len()..];
+                let (to, text) = after.split_once(':').unwrap_or((after, ""));
+                let to = who(&mut ids, &mut seq, to, None)?;
+                seq.items.push(SeqItem::Message { from, to, text: text.trim().to_string(), dashed });
+            }
+        }
+    }
+    (depth == 0 && seq.items.iter().any(|i| matches!(i, SeqItem::Message { .. }))).then_some(seq)
+}
+
+/// Where a sequence diagram's parts go: each participant's box (its centre is its lifeline), the top of each step,
+/// the frames (x0, y0, x1, y1, the item that starts them, the tops of their `else` lines) and the whole size.
+#[derive(Debug)]
+pub struct SeqLayout {
+    pub heads: Vec<(f64, f64, f64, f64)>,
+    pub rows: Vec<f64>,
+    pub frames: Vec<(f64, f64, f64, f64, usize, Vec<f64>)>,
+    pub size: (f64, f64),
+}
+
+/// Lays a sequence diagram out with `measure(text, size) -> (w, h)` (pango in the shell, an estimate in tests).
+pub fn layout_sequence(s: &Sequence, measure: &dyn Fn(&str, f64) -> (f64, f64)) -> SeqLayout {
+    let n = s.participants.len();
+    let widths: Vec<f64> = s.participants.iter().map(|p| (measure(p, 13.0).0 + 32.0).max(100.0)).collect();
+    // the lifelines: far enough apart for the boxes, and for each message's label between its two ends
+    let mut centre = vec![0.0f64; n];
+    let mut x = 16.0;
+    for k in 0..n {
+        centre[k] = x + widths[k] / 2.0;
+        x += widths[k] + 48.0;
+    }
+    for it in &s.items {
+        let (a, b, need) = match it {
+            SeqItem::Message { from, to, text, .. } if from != to => ((*from).min(*to), (*from).max(*to), measure(text, 11.0).0 + 32.0),
+            SeqItem::Note { first, last, text } if first == last => (*first, (*first + 1).min(n - 1), measure(text, 12.0).0 / 2.0 + 24.0 + widths[*first] / 2.0),
+            _ => continue,
+        };
+        if a == b {
+            continue;
+        }
+        let have = centre[b] - centre[a];
+        if have < need {
+            for c in centre.iter_mut().skip(b) {
+                *c += need - have;
+            }
+        }
+    }
+    let top = 16.0;
+    let head_h = 36.0;
+    let heads: Vec<(f64, f64, f64, f64)> = (0..n).map(|k| (centre[k] - widths[k] / 2.0, top, widths[k], head_h)).collect();
+    let left = 16.0;
+    let right = heads.last().map(|h| h.0 + h.2).unwrap_or(116.0);
+    let mut y = top + head_h + 20.0;
+    let mut rows = Vec::new();
+    let mut frames = Vec::new();
+    let mut open: Vec<(usize, f64, Vec<f64>)> = Vec::new();
+    for (k, it) in s.items.iter().enumerate() {
+        rows.push(y);
+        y += match it {
+            SeqItem::Message { from, to, .. } if from == to => 52.0,
+            SeqItem::Message { .. } => 40.0,
+            SeqItem::Note { text, .. } => measure(text, 12.0).1 + 28.0,
+            SeqItem::Start { .. } => {
+                open.push((k, y, Vec::new()));
+                30.0
+            }
+            SeqItem::Else { .. } => {
+                if let Some(o) = open.last_mut() {
+                    o.2.push(y);
+                }
+                30.0
+            }
+            SeqItem::End => {
+                if let Some((start, y0, elses)) = open.pop() {
+                    let inset = 8.0 * (open.len() as f64 + 1.0);
+                    frames.push((left - 8.0 + inset, y0, right + 8.0 - inset, y + 6.0, start, elses));
+                }
+                14.0
+            }
+        };
+    }
+    SeqLayout { heads, rows, frames, size: (right + 16.0 + 8.0, y + 12.0) }
 }
 
 struct Drawn {
@@ -450,6 +624,7 @@ pub struct Diagram {
     area: gtk::DrawingArea,
     detail: gtk::Label,
     code: gtk::Box,
+    zoom: RefCell<Option<Rc<Zoom>>>,
 }
 
 thread_local! {
@@ -489,9 +664,14 @@ impl Diagram {
     fn refit(&self) {
         let g = self.shown();
         let (_, h) = size_of(&g);
-        // (no width of its own: it fits the column, laid out down when across does not fit)
-        self.area.set_content_width(0);
-        self.area.set_content_height(h.ceil() as i32);
+        // (no width of its own: it fits the column, laid out down when across does not fit; then the zoom's scale)
+        match self.zoom.borrow().as_ref() {
+            Some(z) => z.apply(),
+            None => {
+                self.area.set_content_width(0);
+                self.area.set_content_height(h.ceil() as i32);
+            }
+        }
         self.detail.set_text(&format!("{} · {}", tr("flowchart"), trf("{n} nodes", &[("n", g.nodes.len().to_string())])));
         while let Some(c) = self.code.first_child() {
             self.code.remove(&c);
@@ -587,10 +767,401 @@ impl Diagram {
     }
 }
 
+/// How tall a fitted diagram may be before it scrolls, and the smallest a fit makes it.
+const FIT_HEIGHT: f64 = 560.0;
+const FIT_MIN: f64 = 0.35;
+
+/// The scale that fits a drawing of `size` in `width` (and in [`FIT_HEIGHT`]): never bigger than its own size, never
+/// below [`FIT_MIN`] (the rest scrolls).
+pub fn fit_scale(width: f64, size: (f64, f64)) -> f64 {
+    if width <= 0.0 || size.0 <= 0.0 || size.1 <= 0.0 {
+        return 1.0;
+    }
+    (width / size.0).min(FIT_HEIGHT / size.1).clamp(FIT_MIN, 1.0)
+}
+
+/// The next zoom step from `z` (25% steps, 25% – 300%).
+pub fn zoom_step(z: f64, up: bool) -> f64 {
+    // (the next quarter strictly above or below: from 62% that is 75% or 50%)
+    let q = z / 0.25;
+    let k = if up { (q + 1e-9).floor() + 1.0 } else { (q - 1e-9).ceil() - 1.0 };
+    (k * 0.25).clamp(0.25, 3.0)
+}
+
+/// A diagram block's zoom (design "Chat · diagramas, documentos e realce de sintaxe" › Diagrama grande): fitted to
+/// the column until − or + is pressed; the middle shows the scale and goes back to fitting.
+pub struct Zoom {
+    /// a scale chosen with − / + (None: fitted)
+    pub manual: Cell<Option<f64>>,
+    /// the column's width, as last seen while fitted
+    pub view: Cell<f64>,
+    mid: gtk::ToggleButton,
+    area: gtk::DrawingArea,
+    rol: gtk::ScrolledWindow,
+    size: Box<dyn Fn() -> (f64, f64)>,
+}
+
+impl Zoom {
+    /// The scale now.
+    pub fn scale(&self) -> f64 {
+        self.manual.get().unwrap_or_else(|| fit_scale(self.view.get(), (self.size)()))
+    }
+
+    /// The area's size, the label and the drawing again after a change.
+    pub fn apply(&self) {
+        let (w, h) = (self.size)();
+        let z = self.scale();
+        if self.manual.get().is_some() {
+            self.area.set_content_width((w * z).ceil() as i32);
+            self.area.set_hexpand(false);
+            self.area.set_cursor_from_name(Some("grab"));
+            self.mid.set_label(&format!("{:.0}%", z * 100.0));
+            self.mid.set_active(false);
+        } else {
+            self.area.set_content_width(0);
+            self.area.set_hexpand(true);
+            self.area.set_cursor_from_name(None);
+            self.mid.set_label(&trf("Fit · {pct}%", &[("pct", format!("{:.0}", z * 100.0))]));
+            self.mid.set_active(true);
+        }
+        self.area.set_content_height((h * z).ceil() as i32);
+        self.rol.set_policy(gtk::PolicyType::Automatic, if h * z > FIT_HEIGHT { gtk::PolicyType::Automatic } else { gtk::PolicyType::Never });
+        self.area.queue_draw();
+        if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+            eprintln!("debug diagrama: zoom {:.0}%{} ({:.0}×{:.0})", z * 100.0, if self.manual.get().is_none() { " ajustado" } else { "" }, w * z, h * z);
+        }
+    }
+}
+
+/// The zoom group (− · Ajustar · 62% · +) for a block whose drawing is `area` in `rol`, `size` its size at 100%; drag
+/// moves a zoomed drawing, Ctrl+wheel zooms.
+fn zoom_controls(area: &gtk::DrawingArea, rol: &gtk::ScrolledWindow, size: impl Fn() -> (f64, f64) + 'static) -> (gtk::Box, Rc<Zoom>) {
+    let seg = caixa(Orientation::Horizontal, 2, "tabela-segmentado");
+    seg.set_valign(Align::Center);
+    let minus = gtk::Button::with_label("−");
+    let mid = gtk::ToggleButton::with_label("");
+    let plus = gtk::Button::with_label("+");
+    minus.set_tooltip_text(Some(tr("Zoom out")));
+    plus.set_tooltip_text(Some(tr("Zoom in")));
+    mid.set_tooltip_text(Some(tr("Fit to the width")));
+    for b in [minus.upcast_ref::<gtk::Widget>(), mid.upcast_ref(), plus.upcast_ref()] {
+        b.add_css_class("tabela-aba");
+        seg.append(b);
+    }
+    minus.add_css_class("diagrama-zoom-passo");
+    plus.add_css_class("diagrama-zoom-passo");
+    rol.set_max_content_height(FIT_HEIGHT as i32);
+    let z = Rc::new(Zoom { manual: Cell::new(None), view: Cell::new(0.0), mid: mid.clone(), area: area.clone(), rol: rol.clone(), size: Box::new(size) });
+    let step = |z: &Rc<Zoom>, up: bool| {
+        let now = z.scale();
+        z.manual.set(Some(zoom_step(now, up)));
+        z.apply();
+    };
+    let zw = Rc::downgrade(&z);
+    minus.connect_clicked(move |_| if let Some(z) = zw.upgrade() { step(&z, false) });
+    let zw = Rc::downgrade(&z);
+    plus.connect_clicked(move |_| if let Some(z) = zw.upgrade() { step(&z, true) });
+    let zw = Rc::downgrade(&z);
+    mid.connect_clicked(move |_| {
+        if let Some(z) = zw.upgrade() {
+            z.manual.set(None);
+            z.apply();
+        }
+    });
+    // (the column's width while fitted: a zoomed drawing is as wide as itself)
+    let zw = Rc::downgrade(&z);
+    area.connect_resize(move |_, w, _| {
+        let Some(z) = zw.upgrade() else { return };
+        if z.manual.get().is_none() && (z.view.replace(f64::from(w)) - f64::from(w)).abs() > 0.5 {
+            gtk::glib::idle_add_local_once(move || z.apply());
+        }
+    });
+    // drag moves a zoomed drawing
+    let drag = gtk::GestureDrag::new();
+    let start = Rc::new(Cell::new((0.0, 0.0)));
+    let (r1, s1) = (rol.clone(), start.clone());
+    drag.connect_drag_begin(move |_, _, _| s1.set((r1.hadjustment().value(), r1.vadjustment().value())));
+    let (r2, s2) = (rol.clone(), start);
+    drag.connect_drag_update(move |_, dx, dy| {
+        let (x, y) = s2.get();
+        r2.hadjustment().set_value(x - dx);
+        r2.vadjustment().set_value(y - dy);
+    });
+    area.add_controller(drag);
+    // Ctrl + wheel zooms
+    let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    let zw = Rc::downgrade(&z);
+    wheel.connect_scroll(move |c, _, dy| {
+        let Some(z) = zw.upgrade() else { return gtk::glib::Propagation::Proceed };
+        if !c.current_event_state().contains(gtk::gdk::ModifierType::CONTROL_MASK) || dy == 0.0 {
+            return gtk::glib::Propagation::Proceed;
+        }
+        step(&z, dy < 0.0);
+        gtk::glib::Propagation::Stop
+    });
+    rol.add_controller(wheel);
+    crate::central::posicao_debug("diagrama zoom mais", plus.upcast_ref());
+    crate::central::posicao_debug("diagrama zoom ajustar", mid.upcast_ref());
+    (seg, z)
+}
+
+fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    cr.new_sub_path();
+    cr.arc(x + w - r, y + r, r, -FRAC_PI_2, 0.0);
+    cr.arc(x + w - r, y + h - r, r, 0.0, FRAC_PI_2);
+    cr.arc(x + r, y + h - r, r, FRAC_PI_2, PI);
+    cr.arc(x + r, y + r, r, PI, 3.0 * FRAC_PI_2);
+    cr.close_path();
+}
+
+/// A sequence diagram drawn (design "Chat · diagramas, documentos e realce de sintaxe"): the participants as the
+/// flowchart's nodes, dashed lifelines, messages in muted (replies dashed) with their labels on the panel, notes in
+/// gold, loop/alt frames in the border colour with their label in the corner.
+fn draw_sequence(cr: &gtk::cairo::Context, s: &Sequence, ox: f64, oy: f64) {
+    let rgb = |h: &str| crate::tema::rgb(h);
+    let measure = |t: &str, size: f64| {
+        let (w, h) = text_layout(cr, t, size).pixel_size();
+        (f64::from(w), f64::from(h))
+    };
+    let l = layout_sequence(s, &measure);
+    let (accent, muted, border, gold, text, panel) = (rgb("#A5A1E2"), rgb("#8E8F99"), rgb("#26272F"), rgb("#E5C98C"), rgb("#E2E2E6"), rgb("#101114"));
+    let label = |t: &str, size: f64, cx: f64, y: f64, c: (f64, f64, f64), bg: bool| {
+        let lay = text_layout(cr, t, size);
+        let (w, h) = lay.pixel_size();
+        let (w, h) = (f64::from(w), f64::from(h));
+        if bg {
+            cr.set_source_rgb(panel.0, panel.1, panel.2);
+            rounded(cr, cx - w / 2.0 - 5.0, y - 1.0, w + 10.0, h + 2.0, 3.0);
+            let _ = cr.fill();
+        }
+        cr.set_source_rgb(c.0, c.1, c.2);
+        cr.move_to(cx - w / 2.0, y);
+        pangocairo::functions::show_layout(cr, &lay);
+    };
+    cr.set_line_width(1.0);
+    // the frames (loop, alt…) under everything
+    for (x0, y0, x1, y1, start, elses) in &l.frames {
+        cr.set_source_rgb(border.0, border.1, border.2);
+        rounded(cr, ox + x0, oy + y0, x1 - x0, y1 - y0, 4.0);
+        let _ = cr.stroke();
+        if let SeqItem::Start { kind, label: t } = &s.items[*start] {
+            let lay = text_layout(cr, &format!("{kind}  {t}"), 11.0);
+            cr.set_source_rgb(muted.0, muted.1, muted.2);
+            cr.move_to(ox + x0 + 8.0, oy + y0 + 6.0);
+            pangocairo::functions::show_layout(cr, &lay);
+        }
+        for ey in elses {
+            cr.set_source_rgb(border.0, border.1, border.2);
+            cr.set_dash(&[4.0, 4.0], 0.0);
+            cr.move_to(ox + x0, oy + ey);
+            cr.line_to(ox + x1, oy + ey);
+            let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
+        }
+    }
+    // the else lines' labels (by the rows)
+    for (k, it) in s.items.iter().enumerate() {
+        if let SeqItem::Else { label: t } = it {
+            let lay = text_layout(cr, &format!("[{t}]"), 11.0);
+            cr.set_source_rgb(muted.0, muted.1, muted.2);
+            let x0 = l.frames.iter().filter(|f| f.1 < l.rows[k] && l.rows[k] < f.3).map(|f| f.0).fold(f64::MIN, f64::max);
+            cr.move_to(ox + x0 + 8.0, oy + l.rows[k] + 6.0);
+            pangocairo::functions::show_layout(cr, &lay);
+        }
+    }
+    // lifelines and the participants
+    for (k, h) in l.heads.iter().enumerate() {
+        let cx = h.0 + h.2 / 2.0;
+        cr.set_source_rgb(border.0, border.1, border.2);
+        cr.set_line_width(1.5);
+        cr.set_dash(&[4.0, 4.0], 0.0);
+        cr.move_to(ox + cx, oy + h.1 + h.3);
+        cr.line_to(ox + cx, oy + l.size.1 - 12.0);
+        let _ = cr.stroke();
+        cr.set_dash(&[], 0.0);
+        rounded(cr, ox + h.0, oy + h.1, h.2, h.3, 4.0);
+        cr.set_source_rgb(panel.0, panel.1, panel.2);
+        let _ = cr.fill_preserve();
+        cr.set_source_rgba(accent.0, accent.1, accent.2, 0.12);
+        let _ = cr.fill_preserve();
+        cr.set_source_rgb(accent.0, accent.1, accent.2);
+        let _ = cr.stroke();
+        let lay = text_layout(cr, &s.participants[k], 13.0);
+        let (w, th) = lay.pixel_size();
+        cr.set_source_rgb(text.0, text.1, text.2);
+        cr.move_to(ox + cx - f64::from(w) / 2.0, oy + h.1 + (h.3 - f64::from(th)) / 2.0);
+        pangocairo::functions::show_layout(cr, &lay);
+    }
+    let centre = |k: usize| l.heads[k].0 + l.heads[k].2 / 2.0;
+    for (k, it) in s.items.iter().enumerate() {
+        let y = l.rows[k];
+        match it {
+            SeqItem::Message { from, to, text: t, dashed } => {
+                cr.set_source_rgb(muted.0, muted.1, muted.2);
+                cr.set_line_width(1.5);
+                if *dashed {
+                    cr.set_dash(&[5.0, 4.0], 0.0);
+                }
+                let (x0, x1, ay) = if from == to {
+                    // to itself: out to the right and back, a little lower
+                    let x = centre(*from);
+                    cr.move_to(ox + x, oy + y + 22.0);
+                    cr.line_to(ox + x + 34.0, oy + y + 22.0);
+                    cr.line_to(ox + x + 34.0, oy + y + 40.0);
+                    cr.line_to(ox + x + 2.0, oy + y + 40.0);
+                    (x + 34.0, x, y + 40.0)
+                } else {
+                    let (x0, x1) = (centre(*from), centre(*to));
+                    let dir = (x1 - x0).signum();
+                    cr.move_to(ox + x0, oy + y + 22.0);
+                    cr.line_to(ox + x1 - dir * 2.0, oy + y + 22.0);
+                    (x0, x1, y + 22.0)
+                };
+                let _ = cr.stroke();
+                cr.set_dash(&[], 0.0);
+                let dir = (x1 - x0).signum();
+                cr.move_to(ox + x1, oy + ay);
+                cr.line_to(ox + x1 - dir * 8.0, oy + ay - 4.0);
+                cr.line_to(ox + x1 - dir * 8.0, oy + ay + 4.0);
+                cr.close_path();
+                let _ = cr.fill();
+                if !t.is_empty() {
+                    let cx = if from == to { centre(*from) + 40.0 + measure(t, 11.0).0 / 2.0 } else { (x0 + x1) / 2.0 };
+                    label(t, 11.0, ox + cx, oy + y + 2.0, muted, true);
+                }
+            }
+            SeqItem::Note { first, last, text: t } => {
+                let (w, h) = measure(t, 12.0);
+                let (a, b) = (centre(*first), centre(*last));
+                let width = (b - a + 100.0).max(w + 24.0);
+                let x = (a + b) / 2.0 - width / 2.0;
+                rounded(cr, ox + x, oy + y + 6.0, width, h + 14.0, 4.0);
+                cr.set_source_rgb(panel.0, panel.1, panel.2);
+                let _ = cr.fill_preserve();
+                cr.set_source_rgba(gold.0, gold.1, gold.2, 0.12);
+                let _ = cr.fill_preserve();
+                cr.set_source_rgb(gold.0, gold.1, gold.2);
+                cr.set_line_width(1.0);
+                let _ = cr.stroke();
+                label(t, 12.0, ox + (a + b) / 2.0, oy + y + 13.0, text, false);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The size a sequence diagram takes.
+fn sequence_size(s: &Sequence) -> (f64, f64) {
+    gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 1, 1).ok().and_then(|x| gtk::cairo::Context::new(&x).ok())
+        .map(|cr| layout_sequence(s, &|t: &str, size: f64| { let (w, h) = text_layout(&cr, t, size).pixel_size(); (f64::from(w), f64::from(h)) }).size)
+        .unwrap_or((400.0, 200.0))
+}
+
+/// The block for a sequence diagram: the flowchart's header ("Mermaid", what it holds, Diagrama/Código, ↓ PNG), the
+/// drawing (wider than the column: it scrolls sideways).
+fn new_sequence(src: &str, s: Sequence) -> gtk::Widget {
+    let s = Rc::new(s);
+    let bloco = caixa(Orientation::Vertical, 0, "md-bloco");
+    let cab = caixa(Orientation::Horizontal, 8, "md-bloco-cab");
+    cab.append(&ui_icon("camadas", "#8E8F99", 16));
+    cab.append(&rotulo("Mermaid", "md-bloco-titulo"));
+    let msgs = s.items.iter().filter(|i| matches!(i, SeqItem::Message { .. })).count();
+    let det = rotulo(&format!("{} · {} · {}", tr("sequence"), trf("{n} participants", &[("n", s.participants.len().to_string())]), trf("{n} messages", &[("n", msgs.to_string())])), "md-bloco-detalhe");
+    det.set_hexpand(true);
+    det.set_xalign(0.0);
+    det.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    det.set_max_width_chars(1);
+    cab.append(&det);
+    let seg = caixa(Orientation::Horizontal, 2, "tabela-segmentado");
+    seg.set_valign(Align::Center);
+    let b_d = gtk::ToggleButton::with_label(tr("Diagram"));
+    let b_c = gtk::ToggleButton::with_label(tr("Code"));
+    for b in [&b_d, &b_c] {
+        b.add_css_class("tabela-aba");
+        seg.append(b);
+    }
+    b_c.set_group(Some(&b_d));
+    b_d.set_active(true);
+    cab.append(&seg);
+    let area = gtk::DrawingArea::new();
+    let rol = gtk::ScrolledWindow::new();
+    rol.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
+    rol.set_propagate_natural_height(true);
+    rol.set_child(Some(&area));
+    rol.add_css_class("diagrama-area");
+    let size = sequence_size(&s);
+    let (zoom_bar, zoom) = zoom_controls(&area, &rol, move || size);
+    cab.append(&zoom_bar);
+    let png = gtk::Button::new();
+    png.add_css_class("md-bloco-icone");
+    png.set_child(Some(&ui_icon("download", "#8E8F99", 16)));
+    png.set_tooltip_text(Some(tr("Save as PNG in Downloads")));
+    png.set_valign(Align::Center);
+    cab.append(&png);
+    bloco.append(&cab);
+    bloco.append(&caixa(Orientation::Horizontal, 0, "md-bloco-div"));
+    let vistas = gtk::Stack::new();
+    vistas.set_vhomogeneous(false);
+    vistas.set_interpolate_size(true);
+    let s2 = s.clone();
+    let zw = Rc::downgrade(&zoom);
+    area.set_draw_func(move |_, cr, aw, _| {
+        let z = zw.upgrade().map(|z| z.scale()).unwrap_or(1.0);
+        cr.scale(z, z);
+        draw_sequence(cr, &s2, ((f64::from(aw) / z - size.0) / 2.0).max(0.0), 0.0);
+    });
+    zoom.apply();
+    // (the block keeps its zoom alive)
+    unsafe {
+        bloco.set_data("zoom", zoom);
+    }
+    vistas.add_named(&rol, Some("diagrama"));
+    vistas.add_named(&crate::code_block::new("mermaid", src, false), Some("codigo"));
+    bloco.append(&vistas);
+    let v = vistas.clone();
+    b_c.connect_toggled(move |b| v.set_visible_child_name(if b.is_active() { "codigo" } else { "diagrama" }));
+    let s3 = s.clone();
+    png.connect_clicked(move |b| {
+        let dir = crate::pastas::downloads();
+        let _ = std::fs::create_dir_all(&dir);
+        let p = crate::widgets::nome_livre(&dir, tr("diagram"), "png");
+        let (w, h) = sequence_size(&s3);
+        let ok = (|| -> Result<(), String> {
+            let img = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, (w * 2.0) as i32, (h * 2.0) as i32).map_err(|e| e.to_string())?;
+            let cr = gtk::cairo::Context::new(&img).map_err(|e| e.to_string())?;
+            cr.scale(2.0, 2.0);
+            let bg = crate::tema::rgb("#101114");
+            cr.set_source_rgb(bg.0, bg.1, bg.2);
+            let _ = cr.paint();
+            draw_sequence(&cr, &s3, 0.0, 0.0);
+            drop(cr);
+            // (the pixels through a GDK texture, which writes PNG)
+            img.flush();
+            let (iw, ih, stride) = (img.width(), img.height(), img.stride() as usize);
+            let mut img = img;
+            let data = img.data().map_err(|e| e.to_string())?.to_vec();
+            let tex = gtk::gdk::MemoryTexture::new(iw, ih, gtk::gdk::MemoryFormat::B8g8r8a8Premultiplied, &gtk::glib::Bytes::from_owned(data), stride);
+            tex.save_to_png(&p).map_err(|e| e.to_string())
+        })();
+        match ok {
+            Ok(()) => b.set_tooltip_text(Some(&trf("Saved in {folder}", &[("folder", dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())]))),
+            Err(e) => eprintln!("kalango-shell: diagrama em PNG: {e}"),
+        }
+    });
+    if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+        eprintln!("debug diagrama: sequência {} participantes, {msgs} mensagens", s.participants.len());
+    }
+    bloco.upcast()
+}
+
 /// The block for a mermaid source (None when it is not a flowchart: the code block shows it instead). `conversa`: an
 /// answer of the agent's (the Canvas tab edits it), not a document's preview.
 pub fn new(src: &str, conversa: bool) -> Option<gtk::Widget> {
-    let g = Rc::new(parse(src)?);
+    let Some(g) = parse(src) else {
+        return parse_sequence(src).map(|s| new_sequence(src, s));
+    };
+    let g = Rc::new(g);
     let bloco = caixa(Orientation::Vertical, 0, "md-bloco");
     let cab = caixa(Orientation::Horizontal, 8, "md-bloco-cab");
     cab.append(&ui_icon("camadas", "#8E8F99", 16));
@@ -632,16 +1203,22 @@ pub fn new(src: &str, conversa: bool) -> Option<gtk::Widget> {
     let code = caixa(Orientation::Vertical, 0, "");
     vistas.add_named(&code, Some("codigo"));
     bloco.append(&vistas);
-    let d = Rc::new(Diagram { src: RefCell::new(src.to_string()), graph: RefCell::new(g.clone()), square: Cell::new(false), mono: Cell::new(false), width: Cell::new(0), area: area.clone(), detail: det, code });
+    let d = Rc::new(Diagram { src: RefCell::new(src.to_string()), graph: RefCell::new(g.clone()), square: Cell::new(false), mono: Cell::new(false), width: Cell::new(0), area: area.clone(), detail: det, code, zoom: RefCell::new(None) });
+    let dw = Rc::downgrade(&d);
+    let (zoom_bar, zoom) = zoom_controls(&area, &rol, move || dw.upgrade().map(|d| size_of(&d.shown())).unwrap_or((400.0, 200.0)));
+    cab.insert_child_after(&zoom_bar, Some(&seg));
+    *d.zoom.borrow_mut() = Some(zoom.clone());
     d.refit();
     let dw = Rc::downgrade(&d);
     area.connect_resize(move |_, w, _| {
         let Some(d) = dw.upgrade() else { return };
-        if d.width.replace(w) != w {
+        // (the column's width, while fitted: a left-to-right chart wider than it is drawn top to bottom)
+        if d.zoom.borrow().as_ref().is_some_and(|z| z.manual.get().is_none()) && d.width.replace(w) != w {
             let d2 = d.clone();
             gtk::glib::idle_add_local_once(move || {
-                let (_, h) = size_of(&d2.shown());
-                d2.area.set_content_height(h.ceil() as i32);
+                if let Some(z) = d2.zoom.borrow().as_ref() {
+                    z.apply();
+                }
             });
         }
     });
@@ -649,8 +1226,10 @@ pub fn new(src: &str, conversa: bool) -> Option<gtk::Widget> {
     area.set_draw_func(move |_, cr, w, _| {
         let Some(d) = dw.upgrade() else { return };
         let g = d.shown();
+        let z = d.zoom.borrow().as_ref().map(|z| z.scale()).unwrap_or(1.0);
+        cr.scale(z, z);
         let m = measure(cr, &g);
-        draw(cr, &g, &m, ((f64::from(w) - m.size.0) / 2.0).max(0.0), 0.0, d.square.get(), d.mono.get());
+        draw(cr, &g, &m, ((f64::from(w) / z - m.size.0) / 2.0).max(0.0), 0.0, d.square.get(), d.mono.get());
     });
     let v = vistas.clone();
     b_c.connect_toggled(move |b| v.set_visible_child_name(if b.is_active() { "codigo" } else { "diagrama" }));
@@ -709,6 +1288,113 @@ mod tests {
         assert!(layer[5] > layer[4]);
     }
 
+    /// A text's size as the shell's font gives it, roughly (tests have no fonts to measure).
+    fn estimate(t: &str, size: f64) -> (f64, f64) {
+        (t.chars().count() as f64 * size * 0.55, size * 1.3)
+    }
+
+    #[test]
+    fn sequence_diagrams() {
+        let src = "sequenceDiagram\n    autonumber\n    participant P as Pessoa\n    participant A as Agente\n    actor K as kalangod\n    P->>+A: crie a página\n    loop até ficar pronta\n        A->>K: arquivos.escrever\n        alt aprovado\n            K-->>A: ok\n        else negado\n            K--xA: você não permitiu\n        end\n    end\n    Note over A,K: tudo na Linha do tempo\n    A-->>-P: pronto\n    A->>A: revisa";
+        let s = parse_sequence(src).unwrap();
+        assert_eq!(s.participants, ["Pessoa", "Agente", "kalangod"]);
+        assert_eq!(s.items.iter().filter(|i| matches!(i, SeqItem::Message { .. })).count(), 6);
+        assert_eq!(s.items[0], SeqItem::Message { from: 0, to: 1, text: "crie a página".into(), dashed: false });
+        assert!(s.items.contains(&SeqItem::Message { from: 2, to: 1, text: "você não permitiu".into(), dashed: true }));
+        assert!(s.items.contains(&SeqItem::Note { first: 1, last: 2, text: "tudo na Linha do tempo".into() }));
+        let l = layout_sequence(&s, &estimate);
+        // the boxes side by side, apart; each label fits between its two lifelines
+        for w in l.heads.windows(2) {
+            assert!(w[0].0 + w[0].2 < w[1].0, "{:?}", l.heads);
+        }
+        for it in &s.items {
+            if let SeqItem::Message { from, to, text, .. } = it {
+                if from != to {
+                    let (a, b) = (l.heads[*from], l.heads[*to]);
+                    assert!(((a.0 + a.2 / 2.0) - (b.0 + b.2 / 2.0)).abs() > estimate(text, 11.0).0, "{text}");
+                }
+            }
+        }
+        // the steps go down, the two frames nest, everything inside the size
+        assert!(l.rows.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(l.frames.len(), 2);
+        let (inner, outer) = (&l.frames[0], &l.frames[1]);
+        assert!(outer.0 < inner.0 && inner.2 < outer.2 && outer.1 < inner.1 && inner.3 < outer.3);
+        assert_eq!(inner.5.len(), 1);
+        assert!(l.rows.last().unwrap() + 40.0 <= l.size.1);
+        assert!(l.heads.iter().all(|h| h.0 + h.2 <= l.size.0));
+        // participants met only in messages; what is not a sequence diagram
+        let s = parse_sequence("sequenceDiagram\nAlice->>John: Olá\nJohn-->>Alice: Oi!").unwrap();
+        assert_eq!(s.participants, ["Alice", "John"]);
+        assert!(parse_sequence("sequenceDiagram\nparticipant A").is_none());
+        assert!(parse_sequence("sequenceDiagram\nloop x\nA->>B: y").is_none());
+        assert!(parse_sequence("flowchart TD\nA-->B").is_none());
+        assert!(parse_sequence("<diagrama>\n<!-- Elementos aqui -->\n</diagrama>").is_none());
+    }
+
+    /// The resident memory now, in KiB.
+    fn rss_kib() -> u64 {
+        std::fs::read_to_string("/proc/self/statm").ok().and_then(|s| s.split_whitespace().nth(1).and_then(|p| p.parse::<u64>().ok())).map(|p| p * 4).unwrap_or(0)
+    }
+
+    #[test]
+    fn thirty_nodes_render() {
+        // 30 steps, a decision every 5 with a way back: laid out and drawn (the shell's pango and cairo) on a surface
+        let mut src = String::from("flowchart TD\n");
+        for i in 0..29 {
+            src.push_str(&format!("  N{i}[Passo {i} do projeto] --> N{}[Passo {} do projeto]\n", i + 1, i + 1));
+            if i % 5 == 4 {
+                src.push_str(&format!("  N{i} -->|refazer| N{}\n", i - 3));
+            }
+        }
+        let g = parse(&src).unwrap();
+        assert_eq!(g.nodes.len(), 30);
+        // (the first round also starts fontconfig and pango: the second is what a diagram costs)
+        for round in ["primeiro", "segundo"] {
+            let before = rss_kib();
+            let t = std::time::Instant::now();
+            let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 1, 1).unwrap();
+            let cr = gtk::cairo::Context::new(&surface).unwrap();
+            let d = measure(&cr, &g);
+            let laid = t.elapsed();
+            let img = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, d.size.0.ceil() as i32, d.size.1.ceil() as i32).unwrap();
+            let cr = gtk::cairo::Context::new(&img).unwrap();
+            let d = measure(&cr, &g);
+            draw(&cr, &g, &d, 0.0, 0.0, false, false);
+            drop(cr);
+            let all = t.elapsed();
+            let after = rss_kib();
+            eprintln!("fluxograma de 30 nós ({round}): layout {:.2} ms, layout+desenho {:.2} ms, {:.0}×{:.0} px, memória +{} KiB (superfície {} KiB)",
+                laid.as_secs_f64() * 1000.0, all.as_secs_f64() * 1000.0, d.size.0, d.size.1, after.saturating_sub(before), img.stride() as i64 * img.height() as i64 / 1024);
+            if round == "segundo" {
+                assert!(all.as_millis() < 500, "{all:?}");
+            }
+        }
+        let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 1, 1).unwrap();
+        let d = measure(&gtk::cairo::Context::new(&surface).unwrap(), &g);
+        // no box over another
+        for (i, a) in d.boxes.iter().enumerate() {
+            for b in d.boxes.iter().skip(i + 1) {
+                assert!(a.0 + a.2 <= b.0 || b.0 + b.2 <= a.0 || a.1 + a.3 <= b.1 || b.1 + b.3 <= a.1, "{a:?} {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn zoom_fits_and_steps() {
+        // a small diagram stays at its size; a wide one fits the column; a tall one fits 560 px, never below 35%
+        assert_eq!(fit_scale(700.0, (400.0, 200.0)), 1.0);
+        assert!((fit_scale(700.0, (1400.0, 300.0)) - 0.5).abs() < 1e-9);
+        assert!((fit_scale(700.0, (230.0, 1120.0)) - 0.5).abs() < 1e-9);
+        assert_eq!(fit_scale(700.0, (230.0, 2740.0)), FIT_MIN);
+        assert_eq!(fit_scale(0.0, (230.0, 2740.0)), 1.0);
+        assert_eq!(zoom_step(0.62, true), 0.75);
+        assert_eq!(zoom_step(0.62, false), 0.5);
+        assert_eq!(zoom_step(0.25, false), 0.25);
+        assert_eq!(zoom_step(3.0, true), 3.0);
+        assert_eq!(zoom_step(1.0, true), 1.25);
+    }
+
     #[test]
     fn other_writings() {
         let g = parse("graph TD\nA((Início)) -- sim --> B([Fim])\nB -.-> C & D").unwrap();
@@ -718,6 +1404,12 @@ mod tests {
         assert_eq!(g.edges.len(), 3);
         assert!(g.edges[1].dashed);
         assert!(parse("sequenceDiagram\nA->>B: oi").is_none());
+        // what models write besides: quoted labels, classes in place, longer and other arrows, styling lines
+        let g = parse("graph LR\nA[\"Início (agora)\"]:::k --->|\"sim\"| B\nB --o C\nC <--> D\nclassDef k fill:#fff;\nclass A k\nstyle B stroke:#f00\nsubgraph S [Grupo]\ndirection TB\nD --> E\nend").unwrap();
+        assert_eq!(g.nodes[0].text, "Início (agora)");
+        assert_eq!(g.nodes.len(), 5);
+        assert_eq!(g.edges.len(), 4);
+        assert_eq!(g.edges[0].label, "sim");
         // a cycle still lays out
         let g = parse("flowchart LR\nA-->B\nB-->A").unwrap();
         let (layer, _) = layout(&g);
