@@ -19,6 +19,10 @@ pub struct State {
     pub cfg: Config,
     pub timeline: Arc<Timeline>,
     pub approvals: Approvals,
+    /// the project folders and the folders approved for one task (where agents' commands write: `allowlist.rs`)
+    pub folders: crate::allowlist::Store,
+    /// the agents' grant caches (allowlist.rs: pruned when their grant goes, by age and by size)
+    pub caches: crate::allowlist::CacheIndex,
     pub remote_control: crate::remote_control::RemoteControl,
     pub screen: crate::screen_control::ScreenControl,
 }
@@ -35,7 +39,15 @@ pub fn serve(cfg: Config) -> std::io::Result<()> {
     std::fs::create_dir_all(&cfg.state_dir)?;
     std::fs::set_permissions(&cfg.state_dir, std::fs::Permissions::from_mode(0o700))?;
     let remote_control = crate::remote_control::RemoteControl::new(cfg.controle_remoto.clone(), cfg.controle_remoto_sempre.clone());
-    let state = Arc::new(State { timeline: Arc::new(Timeline::open(&cfg.state_dir)?), approvals: Approvals::open(&cfg.state_dir), remote_control, screen: Default::default(), cfg });
+    let state = Arc::new(State { timeline: Arc::new(Timeline::open(&cfg.state_dir)?), approvals: Approvals::open(&cfg.state_dir), folders: crate::allowlist::Store::open(&cfg.state_dir), caches: crate::allowlist::CacheIndex::open(&cfg.state_dir), remote_control, screen: Default::default(), cfg });
+    // the agents' grant caches: pruned now and every hour (a grant that went, unused for 30 days, over 10 GB)
+    {
+        let st = state.clone();
+        std::thread::spawn(move || loop {
+            crate::allowlist::prune_caches(&st);
+            std::thread::sleep(Duration::from_secs(3600));
+        });
+    }
     if let Err(e) = crate::guard::start(state.cfg.protected_paths.clone(), state.timeline.clone()) {
         eprintln!("kalangod: {}", kalango_i18n::trf("eBPF guard {e}", &[("e", e.to_string())]));
     }
@@ -321,10 +333,45 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
         "kalango/inicio" => {
             let name = params.get("ferramenta").and_then(Value::as_str).unwrap_or("");
             let a = params.get("argumentos").cloned().unwrap_or(json!({}));
-            let hit = startup_files(st, peer, rule, name, &a);
-            let files: Vec<String> = hit.iter().map(|(_, b)| crate::startup::tilde(b, &peer.home)).collect();
-            let ask = !hit.is_empty() && crate::startup::mode(&st.cfg, peer) == crate::startup::Mode::Ask;
+            let g = gate_hits(st, peer, rule, name, &a);
+            let files: Vec<String> = g.all().iter().map(|(_, b)| crate::startup::tilde(b, &peer.home)).collect();
+            let ask = g.asks(st, peer);
             ok(id, json!({"pede": ask, "arquivos": files}))
+        }
+        // where agents' commands write (Permissões › Pastas dos comandos): the work folders and the project folders
+        "kalango/pastas" => {
+            let home = &crate::allowlist::real_home(&peer.home);
+            let work: Vec<String> = crate::allowlist::work_folders(home, &crate::allowlist::protected(&st.cfg, home)).iter().map(|p| crate::startup::tilde(p, home)).collect();
+            let projects: Vec<Value> = st.folders.list(peer.uid).iter().map(|p| json!({"caminho": crate::startup::tilde(&p.caminho, home), "real": p.caminho, "origem": p.origem, "criado": p.criado})).collect();
+            // the folders approved for one task, while they last (the person sees them end)
+            let tasks: Vec<Value> = st.folders.task_grants(peer.uid).iter().map(|t| json!({"caminho": crate::startup::tilde(&t.caminho, home), "real": t.caminho,
+                "programa": t.exe, "ate": t.ate})).collect();
+            ok(id, json!({"trabalho": work, "projetos": projects, "tarefa": tasks}))
+        }
+        // (taking one out only removes permission; still only the person: an agent must not drop what the person set,
+        // nor clear its own grants to ask again)
+        "kalango/pastas_remover" => {
+            if !crate::allowlist::is_person_ui(peer, &st.cfg.interface_da_pessoa, &st.cfg.interface_ambiente_permitido) {
+                return Some(err(id, -32003, kalango_i18n::tr("only you change this, in Agents › Permissions")));
+            }
+            let raw = params.get("caminho").and_then(Value::as_str).unwrap_or("");
+            let home = crate::allowlist::real_home(&peer.home);
+            let p = crate::policy::normalize(&crate::policy::expand(raw, &home));
+            let gone = st.folders.remove(peer.uid, &p);
+            // (the caches of grants that held it go with it)
+            let caches = if gone { crate::allowlist::prune_caches(st) } else { vec![] };
+            ok(id, json!({"removida": gone, "caches_removidos": caches.len()}))
+        }
+        // the person adds a project folder: confirmed on the approval screen, where no agent answers
+        "kalango/pastas_adicionar" => {
+            if !crate::allowlist::is_person_ui(peer, &st.cfg.interface_da_pessoa, &st.cfg.interface_ambiente_permitido) {
+                return Some(err(id, -32003, kalango_i18n::tr("only you change this, in Agents › Permissions")));
+            }
+            let raw = params.get("caminho").and_then(Value::as_str).unwrap_or("");
+            match crate::allowlist::ask_folder(st, peer, &format!("{} ({})", rule.name, peer.exe), "kalango/pastas_adicionar", raw, true) {
+                Ok((p, _)) => ok(id, json!({"caminho": crate::startup::tilde(&p, &peer.home)})),
+                Err(e) => err(id, -32003, &e),
+            }
         }
         // the folders no agent reaches (the agents center shows them as "never")
         "kalango/protegidas" => ok(id, json!({"pastas": st.cfg.protected_paths})),
@@ -354,12 +401,47 @@ fn log_with(st: &State, peer: &Peer, rule: &CallerRule, tool: &str, level: Level
     })
 }
 
-/// The startup files (`startup.rs`) a call would change, when it may change them at all (a path the tool refuses
-/// anyway is not asked about): (the files as the person reads them, the paths as given).
-fn startup_files(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value) -> Vec<(String, std::path::PathBuf)> {
-    let hit = crate::startup::touched(name, args, peer, &st.cfg);
-    let refused = crate::startup::changed_paths(name, args).iter().any(|raw| crate::sandbox::check_change_path(raw, peer, &rule.allowed_paths, &st.cfg.protected_paths).is_err());
-    if refused { vec![] } else { hit }
+/// What a call changes that the startup gate asks about: the files that run at login (`startup.rs`), and anything
+/// outside the folders agents work in (the allowlist, as for commands: the work folders, the project folders and the
+/// folders approved for this task) — so ~/.cargo/env, nvm.sh, conda.sh and whatever else a program reads from the
+/// home are covered without a list of them. (the path as given, the path it is or leads to)
+struct GateHits {
+    startup: Vec<(String, std::path::PathBuf)>,
+    outside: Vec<(String, std::path::PathBuf)>,
+}
+
+impl GateHits {
+    fn all(&self) -> Vec<(String, std::path::PathBuf)> {
+        self.startup.iter().chain(&self.outside).cloned().collect()
+    }
+
+    /// Whether the person is asked: always for a change outside the work folders; for a startup file, unless the
+    /// person chose to let those through ("Permitir automaticamente" is about startup files only).
+    fn asks(&self, st: &State, peer: &Peer) -> bool {
+        !self.outside.is_empty() || (!self.startup.is_empty() && crate::startup::mode(&st.cfg, peer) == crate::startup::Mode::Ask)
+    }
+}
+
+/// (a path the tool refuses anyway is not asked about)
+fn gate_hits(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value) -> GateHits {
+    let none = GateHits { startup: vec![], outside: vec![] };
+    let changed = crate::startup::changed_paths(name, args);
+    if changed.is_empty() || changed.iter().any(|raw| crate::sandbox::check_change_path(raw, peer, &rule.allowed_paths, &st.cfg.protected_paths).is_err()) {
+        return none;
+    }
+    let startup = crate::startup::touched(name, args, peer, &st.cfg);
+    let home = crate::allowlist::real_home(&peer.home);
+    let allowed: Vec<std::path::PathBuf> = rule.allowed_paths.iter().map(|p| crate::sandbox::resolve_existing(&crate::policy::expand(p, &peer.home))).collect();
+    let inside = crate::allowlist::writable(&crate::allowlist::candidates(st, peer), &allowed);
+    let outside = changed.into_iter().filter(|raw| !startup.iter().any(|(r, _)| r == raw)).filter_map(|raw| {
+        let p = crate::policy::normalize(&crate::policy::expand(&raw, &peer.home));
+        // (as written, from the real home, and where links lead: inside only if all three are)
+        let from_real = p.strip_prefix(&peer.home).map(|r| home.join(r)).unwrap_or_else(|_| p.clone());
+        let r = crate::sandbox::resolve_existing(&p);
+        let ok = [&from_real, &r].iter().all(|q| inside.iter().any(|w| crate::policy::is_within(q, w)));
+        (!ok).then_some((raw, r))
+    }).collect();
+    GateHits { startup, outside }
 }
 
 /// Files that run at the person's next login: a change asks every time, with the exact diff and never "always",
@@ -368,15 +450,24 @@ fn startup_files(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &
 /// `approved` paths (only those: the rest of the startup files stay read-only for it).
 /// Every way a startup file is changed comes through here: a tool call, and the inverse an undo runs.
 fn startup_gate(st: &State, peer: &Peer, rule: &CallerRule, tool: &tools::Tool, name: &str, args: &Value) -> Result<Option<(Value, Vec<std::path::PathBuf>)>, String> {
-    let hit = startup_files(st, peer, rule, name, args);
+    let g = gate_hits(st, peer, rule, name, args);
+    let hit = g.all();
     if hit.is_empty() {
         return Ok(None);
     }
     let files: Vec<String> = hit.iter().map(|(raw, base)| crate::startup::shown(raw, base, &peer.home)).collect();
-    let auto = crate::startup::mode(&st.cfg, peer) == crate::startup::Mode::Allow;
+    let auto = !g.asks(st, peer);
+    // only outside the work folders (no startup file): the card says so instead of "runs when you log in"
+    let outside_only = g.startup.is_empty();
+    // (asked only because it has another name, a hard link: not said to run at login when it is not a startup path)
+    let paths = crate::startup::paths(&st.cfg, peer);
+    let linked_only = !outside_only && g.startup.iter().all(|(_, b)| !paths.iter().any(|x| crate::policy::is_within(b, x) || crate::policy::is_within(x, b)));
     let roots: Vec<std::path::PathBuf> = rule.allowed_paths.iter().map(|a| crate::policy::expand(a, &peer.home)).collect();
     let copies = st.cfg.state_dir.join("copias").join(peer.uid.to_string());
-    let detail = crate::startup::approval_detail(name, args, &hit, peer, &roots, &copies);
+    let mut detail = crate::startup::approval_detail(name, args, &hit, peer, &roots, &copies);
+    if outside_only {
+        detail["fora"] = json!(true);
+    }
     let approved: Vec<std::path::PathBuf> = crate::startup::changed_paths(name, args).iter()
         .map(|raw| crate::policy::normalize(&crate::policy::expand(raw, &peer.home))).collect();
     // (the timeline keeps what changed, for the agents center to show)
@@ -384,15 +475,19 @@ fn startup_gate(st: &State, peer: &Peer, rule: &CallerRule, tool: &tools::Tool, 
     if !auto {
         let p = Pending {
             id: 0, tool: name.into(), level: "inicio".into(), args: args.clone(), caller: format!("{} ({})", rule.name, peer.exe), uid: peer.uid, pid: peer.pid,
-            reason: kalango_i18n::trf("change {files}, which runs when you log in", &[("files", files.join(", "))]),
+            reason: if outside_only { kalango_i18n::trf("change {files}, outside the folders agents work in", &[("files", files.join(", "))]) }
+                else if linked_only { kalango_i18n::trf("change {files}, a file with another name (a hard link)", &[("files", files.join(", "))]) }
+                else { kalango_i18n::trf("change {files}, which runs when you log in", &[("files", files.join(", "))]) },
             descricao: kalango_i18n::tr(tool.description).into(), efeito: match tool.effect { crate::policy::Effect::Leitura => "leitura", crate::policy::Effect::Escreve => "escreve", crate::policy::Effect::Destrutiva => "destrutiva" }.into(),
-            reversivel: tool.reversible, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: Some(detail.clone()), no_always: true,
+            reversivel: tool.reversible, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: Some(detail.clone()), no_always: true, cartao: None
         };
         match st.approvals.request(p, Duration::from_secs(st.cfg.approval_timeout_s)) {
             Outcome::Approved => {}
             Outcome::Denied => {
                 log_with(st, peer, rule, name, tool.level, args, "negado", kalango_i18n::tr("the person denied"), None, None, None, Some(mark(false)));
-                return Err(kalango_i18n::tr("the person denied this change to a file that runs when they log in").into());
+                return Err(if outside_only { kalango_i18n::tr("the person denied this change outside the folders agents work in") }
+                    else if linked_only { kalango_i18n::tr("the person denied this change to a file with another name (a hard link)") }
+                    else { kalango_i18n::tr("the person denied this change to a file that runs when they log in") }.into());
             }
             Outcome::Timeout => {
                 log_with(st, peer, rule, name, tool.level, args, "negado", kalango_i18n::tr("no answer from the person"), None, None, None, Some(mark(false)));
@@ -409,7 +504,7 @@ fn undo_asks_startup(st: &State, peer: &Peer, rule: &CallerRule, args: &Value) -
     let Some(e) = args.get("id").and_then(Value::as_u64).and_then(|id| st.timeline.get(id)) else { return false };
     let Some(inv) = e.inverse else { return false };
     let (tname, targs) = (inv["ferramenta"].as_str().unwrap_or(""), &inv["argumentos"]);
-    !startup_files(st, peer, rule, tname, targs).is_empty() && crate::startup::mode(&st.cfg, peer) == crate::startup::Mode::Ask
+    gate_hits(st, peer, rule, tname, targs).asks(st, peer)
 }
 
 /// Fluxo de uma chamada: nível → aprovação → ponto de restauração → execução → registro.
@@ -424,7 +519,7 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
         let p = Pending {
             id: 0, tool: name.into(), level: level.into(), args: args.clone(), caller: format!("{} ({})", rule.name, peer.exe), uid: peer.uid, pid: peer.pid, reason,
             descricao: kalango_i18n::tr(tool.description).into(), efeito: match tool.effect { crate::policy::Effect::Leitura => "leitura", crate::policy::Effect::Escreve => "escreve", crate::policy::Effect::Destrutiva => "destrutiva" }.into(),
-            reversivel: tool.reversible, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: None, no_always: false,
+            reversivel: tool.reversible, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: None, no_always: false, cartao: None
         };
         match st.approvals.request(p, timeout) {
             Outcome::Approved => Ok(()),
@@ -502,7 +597,7 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
                     id: 0, tool: "rede_local".into(), level: "rede local".into(), args: endereco, caller: format!("{} ({})", rule.name, peer.exe), uid: peer.uid, pid: peer.pid,
                     reason: kalango_i18n::trf("open {url}, on your local network", &[("url", args["url"].as_str().unwrap_or("").to_string())]),
                     descricao: kalango_i18n::tr("Reach an address of your local network (a router, a printer, a NAS)").into(), efeito: "leitura".into(),
-                    reversivel: true, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: None, no_always: false,
+                    reversivel: true, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: None, no_always: false, cartao: None
                 };
                 match st.approvals.request(pedido, timeout) {
                     Outcome::Approved => {}

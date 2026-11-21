@@ -13,6 +13,7 @@
 //!
 //! O soquete padrão é /run/kalango/mcp.sock; KALANGOD_SOCKET muda isso.
 
+mod allowlist;
 mod approval;
 mod cofre;
 mod remoto;

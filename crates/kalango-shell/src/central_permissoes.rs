@@ -116,6 +116,8 @@ pub struct Permissoes {
     inicio_valor: gtk::Label,
     inicio_marcas: Vec<gtk::Image>,
     inicio_opcoes: Vec<gtk::Button>,
+    /// where agents' commands write (design page 32): the work folders and the project folders
+    projetos: gtk::Box,
     perfil: RefCell<Value>,
     /// filling the controls: their signals are not the person's changes
     preenchendo: Cell<bool>,
@@ -254,7 +256,7 @@ impl Permissoes {
         linha.append(&seletor);
         cartao.append(&linha);
         corpo.append(&cartao);
-        let ajuda = rotulo(tr("These files run every time you log in or open a terminal: what an agent puts in them runs as you. With “Ask every time”, each change an agent makes shows exactly what changes and asks for your approval, without “Always”. The commands agents run do not touch these files: to change one, the agent uses the file tools, which ask. With “Allow automatically”, the change happens, goes to the timeline with undo, and you get a notice."), "central-legenda");
+        let ajuda = rotulo(tr("These files run when you log in or open a terminal: each change an agent makes shows what changes and asks for your approval, without “Always”."), "central-legenda");
         ajuda.set_xalign(0.0);
         ajuda.set_wrap(true);
         ajuda.set_max_width_chars(1);
@@ -262,6 +264,31 @@ impl Permissoes {
         ajuda.set_margin_top(12);
         ajuda.add_css_class("central-inicio-ajuda");
         corpo.append(&ajuda);
+        // ---- where agents' commands write (design page 32)
+        let titulo_pastas = rotulo(tr("COMMAND FOLDERS"), "central-painel-secao");
+        titulo_pastas.set_xalign(0.0);
+        titulo_pastas.set_margin_top(22);
+        titulo_pastas.set_margin_bottom(12);
+        corpo.append(&titulo_pastas);
+        let projetos = caixa(Orientation::Vertical, 0, "central-cartao");
+        corpo.append(&projetos);
+        let adicionar_projeto = gtk::Button::new();
+        adicionar_projeto.add_css_class("central-adicionar");
+        let apc = caixa(Orientation::Horizontal, 8, "");
+        apc.append(&ui_icon("mais", "#C9CAD1", 14));
+        apc.append(&rotulo(tr("Add project folder"), ""));
+        adicionar_projeto.set_child(Some(&apc));
+        adicionar_projeto.set_halign(Align::Start);
+        adicionar_projeto.set_margin_top(14);
+        corpo.append(&adicionar_projeto);
+        let ajuda_pastas = rotulo(tr("Agents' commands write only in these folders and in a temporary folder of their own task; in the rest of your home they only read, and the protected folders not even that. Installing something for your user (pip --user, npm -g, cargo install) asks first, one command at a time."), "central-legenda");
+        ajuda_pastas.set_xalign(0.0);
+        ajuda_pastas.set_wrap(true);
+        ajuda_pastas.set_max_width_chars(1);
+        ajuda_pastas.set_hexpand(true);
+        ajuda_pastas.set_margin_top(12);
+        ajuda_pastas.add_css_class("central-inicio-ajuda");
+        corpo.append(&ajuda_pastas);
         // (the table, the legend and the setting for all agents scroll: on a short screen the page must not make the
         // window taller than the output — a window keeps its biggest size, and the pages after it would be cut)
         let rolagem = gtk::ScrolledWindow::new();
@@ -367,7 +394,7 @@ impl Permissoes {
 
         let p = Rc::new(Permissoes {
             raiz, medidas: m, shell: Rc::downgrade(shell), linhas, sugestao, sugestao_texto, sugestao_coluna: RefCell::default(), agente, pastas,
-            tokens, tokens_v, tokens_espera: RefCell::default(), horario, pausar_glifo, pausar_rotulo, inicio_valor, inicio_marcas, inicio_opcoes, perfil: RefCell::new(Value::Null),
+            tokens, tokens_v, tokens_espera: RefCell::default(), horario, pausar_glifo, pausar_rotulo, inicio_valor, inicio_marcas, inicio_opcoes, projetos, perfil: RefCell::new(Value::Null),
             preenchendo: Cell::new(false),
         });
         for (i, b) in p.inicio_opcoes.iter().enumerate() {
@@ -380,6 +407,25 @@ impl Permissoes {
             });
         }
         crate::central::posicao_debug("arquivos de início", seletor.upcast_ref());
+        let w = Rc::downgrade(&p);
+        adicionar_projeto.connect_clicked(move |_| {
+            let Some(p) = w.upgrade() else { return };
+            let w = Rc::downgrade(&p);
+            crate::arquivos::seletor::escolher_pasta(tr("Agents"), tr("Add project folder"), Some(glib::home_dir()), move |caminho| {
+                let Some(p) = w.upgrade() else { return };
+                let w = Rc::downgrade(&p);
+                let c = caminho.display().to_string();
+                // (kalangod asks on the approval screen: an agent cannot add one by calling the same method)
+                crate::lateral::em_segundo_plano(move || crate::servicos::kalangod_pastas_adicionar(&c), move |r| {
+                    if let Err(e) = r {
+                        eprintln!("kalango-shell: adicionar pasta de projeto: {e}");
+                    }
+                    if let Some(p) = w.upgrade() {
+                        p.recarregar_pastas();
+                    }
+                });
+            });
+        });
         let w = Rc::downgrade(&p);
         mudar.connect_clicked(move |_| {
             if let Some(p) = w.upgrade() {
@@ -452,8 +498,113 @@ impl Permissoes {
         p
     }
 
+    /// Reads where agents' commands write (kalangod) and shows it.
+    fn recarregar_pastas(self: &Rc<Self>) {
+        let w = Rc::downgrade(self);
+        crate::lateral::em_segundo_plano(crate::servicos::kalangod_pastas, move |r| {
+            let Some(p) = w.upgrade() else { return };
+            match r {
+                Ok(v) => p.render_pastas(&v),
+                Err(e) => eprintln!("kalango-shell: pastas dos comandos: {e}"),
+            }
+        });
+    }
+
+    /// The command folders card: the work folders ("always"), then each project folder with how it got there.
+    fn render_pastas(self: &Rc<Self>, v: &Value) {
+        while let Some(x) = self.projetos.first_child() {
+            self.projetos.remove(&x);
+        }
+        let linha = |titulo: &str, sub: &str| {
+            let l = caixa(Orientation::Horizontal, 12, "central-pasta");
+            l.append(&ui_icon("pasta", "#8E8F99", 16));
+            let col = caixa(Orientation::Vertical, 0, "");
+            col.set_hexpand(true);
+            col.set_valign(Align::Center);
+            let n = rotulo(titulo, "central-pasta-nome");
+            n.set_xalign(0.0);
+            n.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+            n.set_max_width_chars(1);
+            col.append(&n);
+            let d = rotulo(sub, "central-agente-sub");
+            d.set_xalign(0.0);
+            d.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            d.set_max_width_chars(1);
+            col.append(&d);
+            l.append(&col);
+            l
+        };
+        let nomes = |p: &str| p.trim_start_matches("~/").to_string();
+        let trabalho: Vec<String> = v["trabalho"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(nomes)).collect();
+        let l = linha(tr("Work folders"), &if trabalho.is_empty() { tr("none found").to_string() } else { trabalho.join(" · ") });
+        let chip = rotulo(tr("always"), "central-celula");
+        chip.add_css_class("livre");
+        chip.set_valign(Align::Center);
+        l.append(&chip);
+        self.projetos.append(&l);
+        let projetos = v["projetos"].as_array().cloned().unwrap_or_default();
+        for pr in &projetos {
+            let caminho = pr["caminho"].as_str().unwrap_or("").to_string();
+            let quando = glib::DateTime::from_unix_local(pr["criado"].as_i64().unwrap_or(0)).ok()
+                .and_then(|d| d.format("%-d %b").ok()).map(|s| s.to_lowercase().trim_end_matches('.').to_string()).unwrap_or_default();
+            let sub = if pr["origem"] == "adicionada" {
+                trf("project folder · added by you on {date}", &[("date", quando)])
+            } else {
+                trf("project folder · approved by you on {date}", &[("date", quando)])
+            };
+            let l = linha(&caminho, &sub);
+            let remover = gtk::Button::with_label(tr("Remove"));
+            remover.add_css_class("central-remover");
+            remover.set_valign(Align::Center);
+            let w = Rc::downgrade(self);
+            remover.connect_clicked(move |_| {
+                let c = caminho.clone();
+                let w = w.clone();
+                crate::lateral::em_segundo_plano(move || crate::servicos::kalangod_pastas_remover(&c), move |r| {
+                    if let Err(e) = r {
+                        eprintln!("kalango-shell: remover pasta de projeto: {e}");
+                    }
+                    if let Some(p) = w.upgrade() {
+                        p.recarregar_pastas();
+                    }
+                });
+            });
+            l.append(&remover);
+            self.projetos.append(&l);
+        }
+        // the folders approved for one task, until they end (at most 30 min, or when the asking program ends)
+        let tarefas = v["tarefa"].as_array().cloned().unwrap_or_default();
+        for t in &tarefas {
+            let caminho = t["caminho"].as_str().unwrap_or("").to_string();
+            let ate = glib::DateTime::from_unix_local(t["ate"].as_i64().unwrap_or(0)).ok().and_then(|d| d.format("%H:%M").ok()).map(|s| s.to_string()).unwrap_or_default();
+            let l = linha(&caminho, &trf("only this task · until {time}", &[("time", ate)]));
+            let remover = gtk::Button::with_label(tr("Remove"));
+            remover.add_css_class("central-remover");
+            remover.set_valign(Align::Center);
+            let w = Rc::downgrade(self);
+            remover.connect_clicked(move |_| {
+                let c = caminho.clone();
+                let w = w.clone();
+                crate::lateral::em_segundo_plano(move || crate::servicos::kalangod_pastas_remover(&c), move |r| {
+                    if let Err(e) = r {
+                        eprintln!("kalango-shell: remover pasta da tarefa: {e}");
+                    }
+                    if let Some(p) = w.upgrade() {
+                        p.recarregar_pastas();
+                    }
+                });
+            });
+            l.append(&remover);
+            self.projetos.append(&l);
+        }
+        if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+            eprintln!("debug central: pastas dos comandos ({}; {} de projeto; {} da tarefa)", trabalho.join(", "), projetos.len(), tarefas.len());
+        }
+    }
+
     /// Reads the agent's permissions again (in the background) and shows them.
     pub fn recarregar(self: &Rc<Self>) {
+        self.recarregar_pastas();
         let w = Rc::downgrade(self);
         let bin = crate::voz::agent_binary();
         crate::lateral::em_segundo_plano(move || {

@@ -230,3 +230,63 @@ fn segredo_do_cofre_chega_so_ao_conector() {
     let o = casa.cmd(&["conector", "testar", m.to_str().unwrap()]).env("KALANGO_COFRE", "arquivo").output().unwrap();
     assert!(String::from_utf8_lossy(&o.stderr).contains("não está no cofre"));
 }
+
+fn landlock_abi() -> i64 {
+    unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, std::ptr::null::<u8>(), 0usize, 1u32) }.max(0)
+}
+
+/// A connector cannot reach the person's session bus (nor a stand-in socket of another program) and cannot have
+/// systemd run anything for it — the VirtualDesk review's escape: `systemd-run --user` through /run/user/UID/bus
+/// landed as the person outside every rule. With Landlock ABI 9 the kernel keeps it off sockets it did not make;
+/// older kernels give it no local sockets at all.
+#[test]
+fn a_connector_cannot_reach_the_session_bus_nor_run_systemd() {
+    if !user_systemd() {
+        return;
+    }
+    let casa = Casa::new();
+    let outro = casa.dir.path().join("outro.sock");
+    let _l = std::os::unix::net::UnixListener::bind(&outro).unwrap();
+    let uid = nix::unistd::getuid().as_raw();
+    let m = casa.manifesto("");
+    let mut p = Ponte::new(&casa, &m);
+    let script = format!("import socket\nfor a in ['/run/user/{uid}/bus', '{}']:\n    try:\n        s = socket.socket(socket.AF_UNIX); s.connect(a); print('CONECTOU', a)\n    except OSError as e:\n        print('recusado', e.errno)\n", outro.display());
+    let (_, out) = p.call("executar", json!({"programa": ["/usr/bin/python3", "-c", script]}));
+    assert!(!out.contains("CONECTOU") && out.matches("recusado").count() == 2, "{out}");
+    let (_, out) = p.call("executar", json!({"programa": ["/bin/sh", "-c", format!("XDG_RUNTIME_DIR=/run/user/{uid} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus systemd-run --user --quiet --scope /bin/true 2>&1; echo codigo=$?")]}));
+    assert!(out.contains("codigo=") && !out.contains("codigo=0"), "systemd-run --user must fail: {out}");
+}
+
+/// A socket the connector needs (a database's) is declared in its manifest, by the person, and it is the only other
+/// one it reaches — where the kernel can keep it to that (Landlock ABI 9); elsewhere such a connector does not start.
+/// A socket through which programs get started (the session bus) is never given, whatever the manifest says.
+#[test]
+fn a_connectors_declared_socket_and_nothing_else() {
+    if !user_systemd() {
+        return;
+    }
+    let casa = Casa::new();
+    let banco = casa.dir.path().join("banco.sock");
+    let outro = casa.dir.path().join("outro.sock");
+    let _a = std::os::unix::net::UnixListener::bind(&banco).unwrap();
+    let _b = std::os::unix::net::UnixListener::bind(&outro).unwrap();
+    let uid = nix::unistd::getuid().as_raw();
+    // the session bus: refused before anything runs
+    if Path::new(&format!("/run/user/{uid}/bus")).exists() {
+        let m = casa.manifesto(&format!("sockets = [\"/run/user/{uid}/bus\"]"));
+        let o = casa.cmd(&["conector", "testar", m.to_str().unwrap()]).output().unwrap();
+        let txt = String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr);
+        assert!(txt.contains("fora do isolamento"), "{txt}");
+    }
+    let m = casa.manifesto(&format!("sockets = [\"{}\"]", banco.display()));
+    if landlock_abi() < 9 {
+        let o = casa.cmd(&["conector", "testar", m.to_str().unwrap()]).output().unwrap();
+        let txt = String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr);
+        assert!(txt.contains("ABI 9"), "without Landlock ABI 9 it does not start: {txt}");
+        return;
+    }
+    let mut p = Ponte::new(&casa, &m);
+    let script = format!("import socket\nfor a in ['{}', '{}']:\n    try:\n        s = socket.socket(socket.AF_UNIX); s.connect(a); print('conectou', a)\n    except OSError as e:\n        print('recusado', a, e.errno)\n", banco.display(), outro.display());
+    let (_, out) = p.call("executar", json!({"programa": ["/usr/bin/python3", "-c", script]}));
+    assert!(out.contains(&format!("conectou {}", banco.display())) && out.contains(&format!("recusado {}", outro.display())), "{out}");
+}

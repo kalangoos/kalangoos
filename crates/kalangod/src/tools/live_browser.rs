@@ -121,11 +121,14 @@ impl Session {
         if let Some(d) = moli.parent() {
             leitura.push(d.to_path_buf());
         }
-        let landlock = Landlock { leitura, listar: vec![], escrita: vec![dir.clone(), PathBuf::from("/dev/null"), PathBuf::from("/dev/shm")], portas: Some(vec![proxy.port]) };
+        let landlock = Landlock { leitura, listar: vec![], escrita: vec![dir.clone(), PathBuf::from("/dev/null"), PathBuf::from("/dev/shm")], portas: Some(vec![proxy.port]), fixas: vec![], sockets: vec![] };
         let lim = Limits { memoria_mb: 1024, cpu_pct: 200, processos: 128, tempo_s: LIFETIME_S };
         let programa = moli.display().to_string();
-        let prep = limits::prepare_command(Pedido { programa: &programa, argumentos: &args, uid, gid, limites: lim, landlock: Some(landlock), seccomp: None,
-            ambiente: Some(env), pasta: Some(dir.clone()), dry_run: false }, "kalango-navegador")?;
+        let prep = limits::prepare_command(Pedido { programa: &programa, argumentos: &args, uid, gid, limites: lim, landlock: Some(landlock),
+        // (no other program's local socket: the session bus would let a page's exploit start programs outside the browser's
+        // isolation; the network is the proxy's one port, by Landlock)
+        seccomp: Some(limits::Seccomp { sem_rede: false, sem_unix: true }),
+            ambiente: Some(env), pasta: Some(dir.clone()), dry_run: false, tmp_privado: false, extra: vec![] }, "kalango-navegador")?;
         let mut cmd = prep.cmd;
         // fd 3: what Moli reads (our writes); fd 4: what it writes (our reads)
         let (child_reads, we_write) = pipe().map_err(|e| e.to_string())?;

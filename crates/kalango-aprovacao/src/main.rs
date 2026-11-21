@@ -104,6 +104,8 @@ struct Ui {
     risco: Label,
     frase: Label,
     comando: Label,
+    /// the muted lines under the command (a folder's summary, where an install writes)
+    detalhe: Label,
     escopo: Label,
     rodape: Label,
     erro: Label,
@@ -161,6 +163,39 @@ fn startup_warning(files: &[String]) -> String {
     } else {
         trf("{file} runs when you log in. What is in it runs as you, without asking again.", &[("file", first)])
     }
+}
+
+/// A size as the card shows it: "18 MB", "1.4 GB".
+fn human_size(bytes: u64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = bytes as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i + 1 < units.len() {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i > 0 && v < 10.0 { format!("{v:.1} {}", units[i]) } else { format!("{v:.0} {}", units[i]) }
+}
+
+/// A folder's summary on its card (design page 32): "214 files · 18 MB · git repository (main)", then its first entries.
+fn folder_lines(c: &Value) -> (String, String) {
+    let n = c["arquivos"].as_u64().unwrap_or(0);
+    let mut parts = vec![if c["mais"] == true {
+        trf("more than {n} files", &[("n", n.to_string())])
+    } else if n == 1 {
+        tr("1 file").to_string()
+    } else {
+        trf("{n} files", &[("n", n.to_string())])
+    }, human_size(c["bytes"].as_u64().unwrap_or(0))];
+    if let Some(b) = c["git"].as_str() {
+        parts.push(if b.is_empty() { tr("git repository").to_string() } else { trf("git repository ({branch})", &[("branch", b.to_string())]) });
+    }
+    let mut entries: Vec<String> = c["entradas"].as_array().into_iter().flatten().filter_map(|e| e.as_str().map(str::to_string)).collect();
+    if c["outras"].as_u64().unwrap_or(0) > 0 {
+        entries.push("…".into());
+    }
+    let entries = if entries.is_empty() { tr("(empty folder)").to_string() } else { entries.join(" · ") };
+    (parts.join(" · "), entries)
 }
 
 fn capitalized(s: &str) -> String {
@@ -235,14 +270,76 @@ impl Ui {
         self.aviso.set_visible(false);
         self.diff.set_visible(false);
         self.comando.set_visible(true);
+        self.detalhe.set_visible(false);
+        self.sempre.set_label(tr("Always"));
+        // a folder for the agents' commands (design page 32): its path, summary and first entries; "only this task" or
+        // "always in this folder" (the person's own request, from Permissões: add it, or not)
+        if nivel == "pasta" {
+            let c = &p["cartao"];
+            let pessoa = c["pessoa"] == true;
+            self.risco.set_text(tr("Medium risk"));
+            self.risco.set_css_classes(&["risco", "medio"]);
+            self.frase.set_text(&if pessoa {
+                tr("Add this project folder? Agents' commands will write in it:").to_string()
+            } else {
+                trf("The agent {agent} wants its commands to write in this folder:", &[("agent", agente)])
+            });
+            self.comando.set_text(c["caminho"].as_str().unwrap_or(""));
+            let (summary, entries) = folder_lines(c);
+            self.detalhe.set_text(&format!("{summary}\n{entries}"));
+            self.detalhe.set_visible(true);
+            self.escopo.set_text(tr("Commands will be able to create, change and delete files here · outside the work folders they keep only reading · files that run at login stay protected"));
+            if pessoa {
+                self.aprovar.set_label(tr("Add folder"));
+                self.sempre.set_visible(false);
+            } else {
+                self.aprovar.set_label(tr("Only this task"));
+                self.sempre.set_label(tr("Always in this folder"));
+                self.sempre.set_visible(true);
+            }
+            self.mostrar_comum(p);
+            return;
+        }
+        // a command that installs for the person, outside the work folders (design page 32): where it writes, a
+        // warning when that is on the PATH; once, never "always"
+        if nivel == "instalar" {
+            let c = &p["cartao"];
+            self.risco.set_text(tr("Medium risk"));
+            self.risco.set_css_classes(&["risco", "medio"]);
+            self.frase.set_text(&trf("The agent {agent} wants to run a command that installs for your user:", &[("agent", agente)]));
+            let on_path: Vec<String> = c["no_path"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect();
+            if !on_path.is_empty() {
+                self.aviso_texto.set_text(&trf("{folder} is on your PATH: what is installed there runs when you type its name. In a project, a local environment (python -m venv .venv) does not need this.", &[("folder", on_path.join(", "))]));
+                self.aviso.set_visible(true);
+            }
+            self.comando.set_text(c["comando"].as_str().unwrap_or(""));
+            let writes: Vec<String> = c["escreve"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect();
+            self.detalhe.set_text(&trf("writes in: {folders}", &[("folders", writes.join(" · "))]));
+            self.detalhe.set_visible(true);
+            self.escopo.set_text(tr("Only for this command · outside the work folders, the rest stays read-only · cannot be undone from the timeline"));
+            self.aprovar.set_label(tr("Allow once"));
+            self.sempre.set_visible(false);
+            self.mostrar_comum(p);
+            return;
+        }
         // a file that runs at login (design page 30): high risk, what it does, the exact diff; never "always"
         if nivel == "inicio" {
             self.risco.set_text(tr("High risk"));
             self.risco.set_css_classes(&["risco", "alto"]);
-            self.frase.set_text(&trf("The agent {agent} wants to change a file that runs when you log in:", &[("agent", agente)]));
             let st = &p["startup"];
+            // (outside the folders agents work in, but not a startup file: ~/.cargo/env, a program's settings…)
+            let fora = st["fora"] == true;
+            self.frase.set_text(&if fora {
+                trf("The agent {agent} wants to change a file outside the folders it works in:", &[("agent", agente.clone())])
+            } else if st["outro_nome"] == true {
+                trf("The agent {agent} wants to change a file with another name:", &[("agent", agente.clone())])
+            } else {
+                trf("The agent {agent} wants to change a file that runs when you log in:", &[("agent", agente.clone())])
+            });
             let files: Vec<String> = st["arquivos"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_string)).collect();
-            self.aviso_texto.set_text(&if st["outro_nome"] == true {
+            self.aviso_texto.set_text(&if fora && st["outro_nome"] != true {
+                trf("{file} is outside the folders agents work in: your programs read what is there, some of it every time you open a terminal.", &[("file", files.first().cloned().unwrap_or_default())])
+            } else if st["outro_nome"] == true {
                 trf("{file} has another name (a hard link) and may be a file that runs when you log in: what is in it may run as you.", &[("file", files.first().cloned().unwrap_or_default())])
             } else {
                 startup_warning(&files)
@@ -252,7 +349,8 @@ impl Ui {
             self.sempre.set_visible(false);
             self.show_diff(&files, st);
             let what = st["o_que"].as_str().map(capitalized).unwrap_or_default();
-            self.escopo.set_text(&[what, tr("can be undone in the timeline").into(), tr("startup files have no “Always”: each change asks").into()]
+            let sem_sempre = if fora { tr("changes outside the work folders have no “Always”: each one asks") } else { tr("startup files have no “Always”: each change asks") };
+            self.escopo.set_text(&[what, tr("can be undone in the timeline").into(), sem_sempre.into()]
                 .into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · "));
             self.aprovar.set_label(tr("Allow once"));
             self.sempre.set_visible(false);
@@ -517,7 +615,26 @@ mod platform_tests {
 }
 
 fn demo_pedido() -> Value {
+    // (KALANGO_APROVACAO_DEMO=pasta / instalar: the folder and the install cards, as in design page 32)
+    match std::env::var("KALANGO_APROVACAO_DEMO").as_deref() {
+        Ok("pasta") => return json!({"id": 7, "tool": "tarefas.pedir_pasta", "level": "pasta", "caller": "Assistente (/usr/libexec/kalango/agente)",
+            "descricao": "", "efeito": "escreve", "reversivel": true, "no_always": false, "args": {"pasta": "~/Projetos/kalango-site"}, "reason": "", "criado": now(), "prazo_s": 120,
+            "cartao": {"caminho": "~/Projetos/kalango-site", "arquivos": 214, "mais": false, "bytes": 18_874_368u64, "git": "main",
+                "entradas": ["public/", "src/", "package.json", "README.md"], "outras": 3, "pessoa": false}}),
+        Ok("instalar") => return json!({"id": 7, "tool": "tarefas.executar", "level": "instalar", "caller": "Assistente (/usr/libexec/kalango/agente)",
+            "descricao": "", "efeito": "escreve", "reversivel": false, "no_always": true, "args": {"programa": "pip"}, "reason": "", "criado": now(), "prazo_s": 120,
+            "cartao": {"comando": "pip install --user requests", "escreve": ["~/.local/lib/python3.12", "~/.local/bin"], "no_path": ["~/.local/bin"], "o_que": "pip install --user"}}),
+        _ => {}
+    }
     // (KALANGO_APROVACAO_DEMO=inicio: a change to a file that runs at login, as in design page 30)
+    // (KALANGO_APROVACAO_DEMO=fora: a change outside the folders agents work in)
+    if std::env::var("KALANGO_APROVACAO_DEMO").as_deref() == Ok("fora") {
+        let l = |t: &str, x: &str| json!({"t": t, "l": x});
+        return json!({"id": 7, "tool": "arquivos.escrever", "level": "inicio", "caller": "Assistente (/usr/libexec/kalango/agente)",
+            "descricao": "", "efeito": "escreve", "reversivel": true, "no_always": true, "args": {"caminho": "~/.cargo/env"}, "reason": "", "criado": now(), "prazo_s": 120,
+            "startup": {"arquivos": ["~/.cargo/env"], "fora": true, "o_que": tr("Writes a file"), "resumo": tr("1 line changes"),
+                "linhas": [l(" ", "#!/bin/sh"), l(" ", "case \":${PATH}:\" in"), l("+", "export PATH=\"$HOME/.cache/x:$PATH\"")]}});
+    }
     if std::env::var("KALANGO_APROVACAO_DEMO").as_deref() == Ok("inicio") {
         let l = |t: &str, x: &str| json!({"t": t, "l": x});
         return json!({"id": 7, "tool": "arquivos.escrever", "level": "inicio", "caller": "Assistente (/usr/libexec/kalango/agente)",
@@ -597,6 +714,15 @@ fn build(app: &Application) {
     let frase = label("", "frase");
     let comando = label("", "comando");
     comando.set_selectable(false);
+    comando.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    let detalhe = label("", "comando-detalhe");
+    detalhe.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    detalhe.set_visible(false);
+    // the command and its muted lines share one box
+    let caixa = GBox::new(Orientation::Vertical, 0);
+    caixa.add_css_class("caixa-comando");
+    caixa.append(&comando);
+    caixa.append(&detalhe);
     let escopo = label("", "escopo");
     let erro = label("", "erro");
     erro.set_visible(false);
@@ -635,7 +761,7 @@ fn build(app: &Application) {
     acoes.append(&sempre);
     let rodape = label("", "prazo");
 
-    for w in [topo.upcast_ref::<gtk::Widget>(), frase.upcast_ref(), aviso.upcast_ref(), comando.upcast_ref(), diff.upcast_ref(), escopo.upcast_ref(), erro.upcast_ref(), acoes.upcast_ref(), rodape.upcast_ref()] {
+    for w in [topo.upcast_ref::<gtk::Widget>(), frase.upcast_ref(), aviso.upcast_ref(), caixa.upcast_ref(), diff.upcast_ref(), escopo.upcast_ref(), erro.upcast_ref(), acoes.upcast_ref(), rodape.upcast_ref()] {
         cartao.append(w);
     }
     fundo.set_hexpand(true);
@@ -649,7 +775,9 @@ fn build(app: &Application) {
     raiz.add_overlay(&cartao_a);
     win.set_child(Some(&raiz));
 
-    let ui = Rc::new(Ui { win: win.clone(), risco, frase, comando, escopo, rodape, erro, aprovar: aprovar.clone(), negar: negar.clone(), sempre: sempre.clone(),
+    // (the box goes with the command: hidden for a startup file, where the diff takes its place)
+    comando.bind_property("visible", &caixa, "visible").sync_create().build();
+    let ui = Rc::new(Ui { win: win.clone(), risco, frase, comando, detalhe, escopo, rodape, erro, aprovar: aprovar.clone(), negar: negar.clone(), sempre: sempre.clone(),
         aviso, aviso_texto, diff, diff_linhas, atual: RefCell::new(None), camada: !janela, fundo: fundo_a, cartao: cartao_a, desde: Cell::new(Instant::now()), waiting: Cell::new(0), havia: Cell::new(false) });
     aprovar.connect_clicked({ let ui = ui.clone(); move |_| ui.decidir(true, false) });
     negar.connect_clicked({ let ui = ui.clone(); move |_| ui.decidir(false, false) });
@@ -732,6 +860,21 @@ fn main() -> glib::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_summary_reads_as_on_the_card() {
+        assert_eq!(human_size(18_874_368), "18 MB");
+        assert_eq!(human_size(1_503_238_553), "1.4 GB");
+        assert_eq!(human_size(900), "900 B");
+        let (a, b) = folder_lines(&json!({"arquivos": 214, "bytes": 18_874_368u64, "git": "main", "entradas": ["src/", "package.json"], "outras": 2}));
+        // (in the language of the machine that runs the test)
+        let files = |n: &str| trf("{n} files", &[("n", n.to_string())]);
+        assert_eq!(a, format!("{} · 18 MB · {}", files("214"), trf("git repository ({branch})", &[("branch", "main".into())])));
+        assert_eq!(b, "src/ · package.json · …");
+        let (a, b) = folder_lines(&json!({"arquivos": 20000, "mais": true, "bytes": 0, "git": null, "entradas": [], "outras": 0}));
+        assert_eq!(a, format!("{} · 0 B", trf("more than {n} files", &[("n", "20000".into())])));
+        assert_eq!(b, tr("(empty folder)"));
+    }
 
     #[test]
     fn the_sound_request_has_the_actions_signature() {

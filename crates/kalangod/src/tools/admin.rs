@@ -63,11 +63,13 @@ pub fn tools() -> Vec<Tool> {
         t("pacotes.versoes", n_("Installs exact package versions (including older ones)"), Sistema, Escreve, true,
             || obj(json!({"versoes": {"type": "array", "items": {"type": "string", "description": "pacote=versão"}, "minItems": 1, "maxItems": 500}}), &["versoes"]), pkg_versions),
         // ---------------------------------------------------------------- tarefas
-        t("tarefas.executar", n_("Runs a program as you, with memory, CPU, process and time limits, writing only in the allowed folders"), Usuario, Destrutiva, false,
+        t("tarefas.executar", n_("Runs a program as you, with memory, CPU, process and time limits; it reads your files (not the protected ones) and writes only in the work folders (Documentos, Downloads…), the project folders, its own TMPDIR, its own build caches (cargo, npm, Go, pip) and its own shared memory (/dev/shm, only when kalangod runs as root)"), Usuario, Destrutiva, false,
             || obj(json!({
                 "programa": {"type": "string"}, "argumentos": {"type": "array", "items": {"type": "string"}}, "pasta": {"type": "string"},
                 "memoria_mb": {"type": "integer", "minimum": 16}, "cpu_pct": {"type": "integer", "minimum": 1}, "processos": {"type": "integer", "minimum": 1}, "tempo_s": {"type": "integer", "minimum": 1}
             }), &["programa"]), task_run),
+        t("tarefas.pedir_pasta", n_("Asks the person to let your commands write in a folder (a project); outside the work folders and the approved ones, commands only read"), Usuario, Leitura, false,
+            || obj(json!({"pasta": {"type": "string", "description": "the folder, e.g. ~/Projetos/site"}}), &["pasta"]), folder_request),
         // ---------------------------------------------------------------- pontos de restauração
         t("pontos.listar", n_("System restore points"), Observar, Leitura, false, none, points_list),
         t("pontos.criar", n_("Creates a restore point now"), Sistema, Escreve, false, || obj(json!({"descricao": {"type": "string"}}), &[]), points_create),
@@ -693,41 +695,132 @@ fn pkg_versions(c: &Ctx, a: &Value) -> Result<Out, String> {
 pub const SISTEMA_LEITURA: &[&str] = &["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc", "/opt", "/proc", "/sys", "/dev", "/run", "/var/lib", "/var/cache", "/snap", "/nix"];
 pub const SISTEMA_ESCRITA: &[&str] = &["/tmp", "/var/tmp", "/dev/null", "/dev/zero", "/dev/full", "/dev/tty", "/dev/pts", "/dev/shm"];
 
+/// An agent asks for a folder its commands may write in: the person answers on the approval screen (`allowlist.rs`).
+fn folder_request(c: &Ctx, a: &Value) -> Result<Out, String> {
+    let st = c.state.ok_or(tr("not available here"))?;
+    let raw = s(a, "pasta")?;
+    let (p, always) = crate::allowlist::ask_folder(st, c.peer, &format!("{} ({})", c.rule.name, c.peer.exe), "tarefas.pedir_pasta", raw, false)?;
+    let shown = crate::startup::tilde(&p, &c.peer.home);
+    Ok(Out::read(json!({"pasta": shown, "sempre": always}), if always { trf("commands write in {path} from now on", &[("path", shown)]) } else { trf("commands write in {path} during this task", &[("path", shown)]) }))
+}
+
 fn task_run(c: &Ctx, a: &Value) -> Result<Out, String> {
     let prog = s(a, "programa")?;
     if prog.is_empty() || prog.starts_with('-') {
         return Err(kalango_i18n::tr("invalid program").into());
     }
     let args = strings(a, "argumentos");
+    let home = &c.peer.home;
     let pasta = match a.get("pasta").and_then(Value::as_str) {
         Some(p) => Some(crate::sandbox::check_path(p, c.peer, &c.rule.allowed_paths, &c.cfg.protected_paths)?),
-        None => Some(c.peer.home.clone()),
+        None => Some(home.clone()),
     };
-    // the allowed folders, cut around the protected ones (nothing) and, unless the person lets agents change them,
-    // around the files that run at login (read only): Landlock grants, it cannot except (startup.rs, `carve`)
-    let roots: Vec<std::path::PathBuf> = c.rule.allowed_paths.iter().map(|p| crate::policy::expand(p, &c.peer.home)).collect();
-    let protected: Vec<std::path::PathBuf> = c.cfg.protected_paths.iter().map(|p| crate::policy::expand(p, &c.peer.home)).collect();
+    // the allowlist (allowlist.rs): the command reads the caller's allowed folders, cut around the protected ones
+    // (nothing), and writes only in the work folders, the project folders and the folders approved for this task —
+    // narrowed to the allowed ones, cut around the files that run at login and the PATH folders (read only; Landlock
+    // grants, it cannot except: startup.rs, `carve`) — and in its own temporary folder (limits.rs)
+    let allowed: Vec<std::path::PathBuf> = c.rule.allowed_paths.iter().map(|p| crate::policy::expand(p, home)).collect();
+    let protected = crate::allowlist::protected(c.cfg, home);
     let startup: Vec<std::path::PathBuf> = crate::startup::paths(c.cfg, c.peer);
     let auto = crate::startup::mode(c.cfg, c.peer) == crate::startup::Mode::Allow;
-    // (Landlock goes by path: a hard link of a startup file elsewhere would be the same file, writable under the other
-    // name; while the person wants to be asked, commands wait until it is gone)
+    // (Landlock goes by path: a hard link of a startup file in a work folder would be the same file, writable under the
+    // other name; while the person wants to be asked, commands wait until it is gone)
     if !auto {
         if let Some(f) = crate::startup::hardlinked(c.peer, c.cfg) {
             return Err(trf("{file} runs when you log in and has another name (a hard link) elsewhere: commands are refused until that link is removed (the file tools still work, asking first)",
-                &[("file", crate::startup::tilde(&f, &c.peer.home))]));
+                &[("file", crate::startup::tilde(&f, home))]));
         }
     }
-    let cut = crate::startup::carve(&roots, &protected, if auto { &[] } else { &startup });
-    let landlock = Landlock { leitura: SISTEMA_LEITURA.iter().map(Into::into).chain(cut.read).collect(), escrita: cut.write.into_iter().chain(SISTEMA_ESCRITA.iter().map(Into::into)).collect(),
-        listar: cut.list, portas: None };
+    // (every write rule is reached from the real home, without links: allowlist.rs, `pin`)
+    let rh = crate::allowlist::real_home(home);
+    let candidates = match c.state {
+        Some(st) => crate::allowlist::candidates(st, c.peer),
+        None => crate::allowlist::work_folders(&rh, &protected),
+    };
+    let allowed_real: Vec<std::path::PathBuf> = allowed.iter().map(|p| crate::sandbox::resolve_existing(p)).collect();
+    let mut write_roots = crate::allowlist::writable(&candidates, &allowed_real);
+    let mut read_only: Vec<std::path::PathBuf> = if auto { vec![] } else { startup.clone() };
+    // installing for the person writes outside the work folders: asked first, for this command only
+    // (the grant, before an install widens it: the agents' cache is this caller's with exactly these folders)
+    let scope = crate::allowlist::cache_scope(&c.rule.name, &write_roots);
+    let grant_roots = write_roots.clone();
+    let mut unset: &[&str] = &[];
+    if let Some(i) = crate::allowlist::installs_for_user(prog, &args, &rh) {
+        let st = c.state.ok_or(tr("not available here"))?;
+        let program_folder = |s: &std::path::Path, w: &std::path::Path| s == w || (crate::policy::is_within(s, w) && s.ends_with("bin"));
+        let on_path = i.writes.iter().filter(|w| startup.iter().any(|s| program_folder(s, w))).map(|w| crate::startup::tilde(w, &rh)).collect::<Vec<_>>();
+        let writes: Vec<String> = i.writes.iter().map(|w| crate::startup::tilde(w, &rh)).collect();
+        let p = crate::approval::Pending {
+            id: 0, tool: "tarefas.executar".into(), level: "instalar".into(), args: a.clone(), caller: format!("{} ({})", c.rule.name, c.peer.exe), uid: c.peer.uid, pid: c.peer.pid,
+            reason: trf("{what}: writes in {folders}", &[("what", i.what.to_string()), ("folders", writes.join(", "))]),
+            descricao: tr("Runs a command that installs for your user, outside the work folders").into(), efeito: "escreve".into(), reversivel: false,
+            criado: 0, prazo_s: 0, exe: c.peer.exe.clone(), decision: None, startup: None, no_always: true,
+            cartao: Some(json!({"comando": std::iter::once(prog.to_string()).chain(args.iter().cloned()).collect::<Vec<_>>().join(" "), "escreve": writes, "no_path": on_path, "o_que": i.what})),
+        };
+        match st.approvals.request(p, std::time::Duration::from_secs(c.cfg.approval_timeout_s)) {
+            crate::approval::Outcome::Approved => {}
+            crate::approval::Outcome::Denied => return Err(trf("the person did not let {what} write outside the work folders (inside a project folder no approval is needed: python -m venv .venv, npm install without -g, cargo build — with the agents' own caches)", &[("what", i.what.to_string())])),
+            crate::approval::Outcome::Timeout => return Err(tr("no approval within the time limit").into()),
+        }
+        read_only.retain(|s| !i.writes.iter().any(|w| program_folder(s, w)));
+        read_only.extend(i.keep);
+        // (a folder the card names that is not there yet, ~/go/bin: made now, as the person)
+        write_roots.extend(i.writes.iter().filter_map(|w| crate::allowlist::ensure_dir(&rh, w, c.peer.uid, c.peer.gid)));
+        unset = i.unset;
+    }
+    // the agents' own caches (cargo, npm, Go, pip…): never the person's, which feed the person's own builds
+    let cache = crate::allowlist::agents_cache(home, &scope, c.peer.uid, c.peer.gid);
+    if let (Some(st), Some(_)) = (c.state, &cache) {
+        st.caches.touch(c.peer.uid, home, &scope, &grant_roots);
+    }
+    let mut extra: Vec<(String, String)> = cache.iter().flat_map(|d| crate::allowlist::CACHE_VARS.iter().filter(|(k, _)| !unset.contains(k))
+        .map(move |(k, sub)| (k.to_string(), d.join(sub).display().to_string()))).collect();
+    // (the person's home as HOME: the tools find their own settings there, read only)
+    extra.push(("HOME".into(), rh.display().to_string()));
+    extra.extend(unset.iter().map(|k| (k.to_string(), String::new())));
+    // the cache's settings files: read only (kalangod writes them)
+    if let Some(d) = &cache {
+        read_only.extend(crate::allowlist::CACHE_KEEP.iter().map(|k| d.join(k)));
+    }
+    write_roots.extend(cache);
+    let reads = crate::startup::carve(&allowed, &protected, &[]);
+    let writes = crate::startup::carve(&write_roots, &protected, &read_only);
+    // each write rule pinned to what is there now: one swapped in the meantime (for a link, or another folder) gets no
+    // rule (limits.rs); one that already goes through a link here is left out
+    // (and only inside the folders asked for: `carve` follows a link at a folder's own place — one swapped in right then
+    // would lead elsewhere, and what is there is not what was approved)
+    let fixas: Vec<limits::Fixa> = writes.write.iter().filter(|p| write_roots.iter().any(|r| crate::policy::is_within(p, r))).filter_map(|p| {
+        let f = crate::allowlist::pin(p, &rh);
+        if f.is_none() {
+            eprintln!("kalangod: {}: não fixada (fora da pasta pessoal ou por um link): sem escrita ali", p.display());
+        }
+        f
+    }).collect();
+    let landlock = Landlock {
+        leitura: SISTEMA_LEITURA.iter().map(Into::into).chain(reads.write).chain(reads.read).chain(writes.read).collect(),
+        // (no shared /tmp, /var/tmp nor /dev/shm: the command has its own TMPDIR, and nothing it leaves is picked up by
+        // the person's programs)
+        escrita: SISTEMA_ESCRITA.iter().filter(|p| !p.ends_with("tmp") && !p.ends_with("shm")).map(Into::into).collect(),
+        listar: reads.list.into_iter().chain(writes.list).collect(), portas: None, fixas, sockets: vec![],
+    };
     let lim = c.cfg.limites.narrowed(a);
     // with the changes let through, what the command changes in them still goes to the timeline, with undo
-    let before = auto.then(|| crate::startup::snapshot(c.peer, c.cfg, &roots));
+    let before = auto.then(|| crate::startup::snapshot(c.peer, c.cfg, &write_roots));
     // (no local sockets: nothing the command asks for over D-Bus or systemd runs outside its cgroup — see Seccomp)
     let v = limits::run_task(Pedido { programa: prog, argumentos: &args, uid: c.peer.uid, gid: c.peer.gid, limites: lim, landlock: Some(landlock),
-        seccomp: Some(limits::Seccomp { sem_rede: false, sem_unix: true }), ambiente: None, pasta, dry_run: false })?;
+        seccomp: Some(limits::Seccomp { sem_rede: false, sem_unix: true }), ambiente: None, pasta, dry_run: false, tmp_privado: true, extra })?;
     if let Some(before) = before {
-        record_startup_changes(c, prog, &before, &crate::startup::snapshot(c.peer, c.cfg, &roots));
+        record_startup_changes(c, prog, &before, &crate::startup::snapshot(c.peer, c.cfg, &write_roots));
+    }
+    // (without root there is no private shared memory for the task, and the shared one is the person's: Python's
+    // multiprocessing locks and pools fail — said, so the agent does not guess)
+    let mut v = v;
+    let erros = v["erros"].as_str().unwrap_or("").to_string();
+    if limits::landlock_abi() < 9 && (erros.contains("forkserver") || erros.contains("AF_UNIX")) {
+        v["nota"] = json!(tr("this kernel's Landlock cannot keep commands off other programs' local sockets (it needs ABI 9), so commands get no local sockets at all: Python's process pools (forkserver) fail here; use threads, or the \"fork\" start method"));
+    }
+    if !limits::private_shm() && (erros.contains("SemLock") || erros.contains("/dev/shm")) {
+        v["nota"] = json!(tr("this system runs kalangod without root, so commands get no shared memory (/dev/shm): Python's multiprocessing locks and process pools fail here; use threads, or run it as the person"));
     }
     let resumo = if v["estourou_memoria"] == true { tr("stopped: over the memory limit").to_string() }
         else if v["estourou_tempo"] == true { tr("stopped: over the time limit").to_string() }
@@ -771,7 +864,7 @@ fn record_startup_changes(c: &Ctx, prog: &str, before: &std::collections::BTreeM
 
 /// Usada por `sistema.executar` (nível total): root, sem Landlock, mas ainda com limites.
 pub fn run_as_root(c: &Ctx, prog: &str, args: &[String]) -> Result<Value, String> {
-    limits::run_task(Pedido { programa: prog, argumentos: args, uid: 0, gid: 0, limites: c.cfg.limites.clone(), landlock: None, seccomp: None, ambiente: None, pasta: None, dry_run: c.cfg.dry_run })
+    limits::run_task(Pedido { programa: prog, argumentos: args, uid: 0, gid: 0, limites: c.cfg.limites.clone(), landlock: None, seccomp: None, ambiente: None, pasta: None, dry_run: c.cfg.dry_run, tmp_privado: false, extra: vec![] })
 }
 
 // ------------------------------------------------------------------ pontos

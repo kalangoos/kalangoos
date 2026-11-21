@@ -917,6 +917,8 @@ button.central-celula:hover { filter: brightness(1.25); }
 .central-sugestao { background: alpha(@k_accent, 0.06); border: 1px solid alpha(@k_accent, 0.35); border-radius: 4px; padding: 9px 12px 9px 14px; }
 .central-sugestao-texto { font-size: 12px; color: @k_text; }
 .central-sugestao-botao { background: alpha(@k_accent, 0.22); color: #C9C6F2; border: none; box-shadow: none; border-radius: 4px; padding: 4px 10px; min-height: 0; font-size: 12px; font-weight: 600; }
+/* a project folder's "Remove" (design page 32): text in the accent, its own token so the light theme is readable */
+.central-remover { background: alpha(@k_accent, 0.16); color: @k_accent_text; border: none; box-shadow: none; border-radius: 4px; padding: 4px 10px; min-height: 0; font-size: 12px; font-weight: 600; }
 .central-painel { background: #18191E; border-left: 1px solid #26272F; padding: 22px 21px 18px 21px; }
 .central-painel .central-botao { padding: 0 8px; }
 .central-painel-agente { font-size: 12px; font-weight: 600; letter-spacing: 1px; color: @k_text; }

@@ -68,6 +68,45 @@ pub struct Manifesto {
     /// The agent starts it only when a request needs it (true, the default) or together with itself (false).
     #[serde(default = "sim")]
     pub sob_demanda: bool,
+    /// Local sockets it talks to (a program's own, e.g. a database's): the exact socket files, set by the person in the
+    /// manifest (no agent writes manifests). Every other socket stays out of reach — the session bus and systemd above
+    /// all, through which a connector would start programs outside its cgroup and rules (`check_sockets`).
+    #[serde(default)]
+    pub sockets: Vec<String>,
+}
+
+/// Sockets through which a program asks something else to run programs for it, outside its cgroup and rules: never
+/// a connector's, whatever the manifest says (the D-Bus buses, systemd's own, container engines).
+fn starts_programs(p: &Path, uid: u32) -> bool {
+    let s = p.to_string_lossy();
+    let user = format!("/run/user/{uid}/");
+    s == format!("{user}bus") || s.starts_with(&format!("{user}systemd/")) || s.starts_with(&format!("{user}podman/")) || s.starts_with(&format!("{user}docker"))
+        || ["/run/dbus/system_bus_socket", "/var/run/dbus/system_bus_socket", "/run/systemd/private", "/run/docker.sock", "/var/run/docker.sock",
+            "/run/podman/podman.sock", "/run/containerd/containerd.sock", "/run/snapd.socket", "/run/snapd-snap.socket"].contains(&s.as_ref())
+        || s.starts_with("/run/systemd/") && s.ends_with("private")
+}
+
+/// The manifest's sockets as they really are: each an existing socket file, none of those that start programs
+/// (`starts_programs`). Scoping a connector to exact sockets needs Landlock ABI 9; on an older kernel a connector
+/// with sockets does not start (it would have none, or all).
+pub fn check_sockets(m: &Manifesto) -> Result<Vec<PathBuf>, String> {
+    use std::os::unix::fs::FileTypeExt;
+    let uid = nix::unistd::getuid().as_raw();
+    let mut out = Vec::new();
+    for raw in &m.sockets {
+        let p = std::fs::canonicalize(expand(raw)).map_err(|e| trf("the manifest's socket {path}: {e}", &[("path", raw.clone()), ("e", e.to_string())]))?;
+        if !std::fs::metadata(&p).map(|md| md.file_type().is_socket()).unwrap_or(false) {
+            return Err(trf("the manifest's socket {path} is not a socket", &[("path", raw.clone())]));
+        }
+        if starts_programs(&p, uid) {
+            return Err(trf("the manifest asks for {path}: through it a connector would start programs outside its isolation (D-Bus, systemd, containers), so no connector gets it", &[("path", p.display().to_string())]));
+        }
+        out.push(p);
+    }
+    if !out.is_empty() && crate::limits::landlock_abi() < 9 {
+        return Err(tr("this kernel cannot keep a connector to the sockets its manifest names (it needs Landlock ABI 9), so a connector with sockets does not start here").into());
+    }
+    Ok(out)
 }
 
 fn sim() -> bool {
@@ -175,6 +214,7 @@ fn startup_write(escrita: &[PathBuf], startup: &[PathBuf]) -> Option<(PathBuf, P
 }
 
 pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
+    let sockets = check_sockets(m)?;
     let (dados, registro) = paths(&m.nome);
     std::fs::create_dir_all(dados.join("tmp")).map_err(|e| format!("{}: {e}", dados.display()))?;
     if let Some(d) = registro.parent() {
@@ -206,6 +246,14 @@ pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
             return Err(trf("the manifest asks for access to {path}, which is or contains the protected folder {protected}", &[("path", p.display().to_string()), ("protected", x.display().to_string())]));
         }
     }
+    // the allowlist (allowlist.rs): besides its own data folder, a connector writes only in the work folders
+    let work = crate::allowlist::work_folders(&home(), &protegidas);
+    if let Some(p) = m.escrita.iter().map(|p| expand(p)).find(|p| {
+        let real = crate::sandbox::resolve_existing(p);
+        !work.iter().any(|w| crate::policy::is_within(p, w) && crate::policy::is_within(&real, w))
+    }) {
+        return Err(trf("the manifest asks to write {path}: connectors write only in their own folder and in the work folders (Documentos, Downloads…)", &[("path", p.display().to_string())]));
+    }
     // a connector that writes where programs start at login would run them as the person, outside its cgroup: only
     // when the person lets agents change those files (startup.rs)
     let setting = xdg("XDG_CONFIG_HOME", ".config").join("kalango/agente-permissoes.json");
@@ -227,7 +275,7 @@ pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
         ambiente.insert(k.clone(), crate::cofre::resolve(v)?);
     }
     let isolamento = json!({
-        "leitura": leitura, "escrita": escrita,
+        "leitura": leitura, "escrita": escrita, "sockets": sockets,
         "rede": match &portas { Some(p) if p.is_empty() => json!("nenhuma"), Some(p) => json!({"portas_tcp": p}), None => json!("livre") },
         "limites": m.limites, "ambiente": ambiente.keys().collect::<Vec<_>>(), "registro": registro,
     });
@@ -239,8 +287,10 @@ pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
     }
     let prep = limits::prepare_command(Pedido {
         programa: &m.comando, argumentos: &m.argumentos, uid, gid, limites: lim,
-        landlock: Some(Landlock { leitura, escrita, listar: vec![], portas }), seccomp: Some(Seccomp { sem_rede: !m.rede, sem_unix: false }), ambiente: Some(ambiente),
-        pasta: Some(pasta.unwrap_or(dados)), dry_run: false,
+        // (no local sockets but its own and the ones the manifest names: on Landlock ABI 9 the kernel keeps it to them,
+        // on older kernels it gets none — see `check_sockets` and limits.rs)
+        landlock: Some(Landlock { leitura, escrita, listar: vec![], portas, fixas: vec![], sockets: sockets.clone() }), seccomp: Some(Seccomp { sem_rede: !m.rede, sem_unix: true }), ambiente: Some(ambiente),
+        pasta: Some(pasta.unwrap_or(dados)), dry_run: false, tmp_privado: false, extra: vec![],
     }, "kalango-conector")?;
     let mut cmd = prep.cmd;
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
