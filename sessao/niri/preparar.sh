@@ -31,6 +31,10 @@
 #          a janela com o foco; o que o outro lado digita vem pelo teclado virtual e não passa por aí.
 #   0010 · sem aceleração na GPU principal (VirtualBox ou VMware sem 3D, um servidor com VGA simples), aceita o
 #          renderizador por software (llvmpipe) nela, em vez de ficar sem tela; as outras GPUs continuam recusando.
+#   0011 · agente na tela: com um agente controlando a tela (uma linha "pid" do arquivo de 0008 com a palavra "agente", que
+#          o kalangod escreve para o kalango-tela), o teclado, o mouse ou o toque da própria pessoa rodam KALANGO_PESSOA_ATIVA
+#          (kalangod tela pessoa: a sessão do agente termina) — só que aconteceu, nunca qual tecla; no máximo uma vez por
+#          segundo; e com a sessão bloqueada o ponteiro virtual não faz nada.
 set -eu
 cd "$(dirname "$0")/../.."
 BASE=8ed0da44d974c32c6877d2f4630c314da0717ecb

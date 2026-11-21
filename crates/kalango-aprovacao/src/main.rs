@@ -117,6 +117,8 @@ struct Ui {
     desde: Cell<Instant>,
     /// how many more requests wait after this one
     waiting: Cell<usize>,
+    /// a request was already showing when this one came (the card changes without leaving)
+    havia: Cell<bool>,
 }
 
 /// The agent's name in "name (/path/to/exe)".
@@ -169,7 +171,7 @@ impl Ui {
         };
         self.waiting.set(lista.len() - 1);
         let mesmo = self.atual.borrow().as_ref().map(|a| a["id"] == p["id"]).unwrap_or(false);
-        let havia = self.atual.borrow().is_some();
+        self.havia.set(self.atual.borrow().is_some());
         if mesmo {
             return;
         }
@@ -182,6 +184,26 @@ impl Ui {
         self.risco.set_css_classes(&["risco", if alto { "alto" } else { "medio" }]);
         let agente = agent_name(p["caller"].as_str().unwrap_or("?"));
         let tool = p["tool"].as_str().unwrap_or("");
+        // controlling the screen (design page 29): the window, the time and what the agent may do; never "always"
+        if tool == "tela.controlar" {
+            self.risco.set_text(tr("Medium risk"));
+            self.risco.set_css_classes(&["risco", "medio"]);
+            let a = &p["args"];
+            let quem = a["agente"].as_str().map(str::to_string).unwrap_or(agente);
+            self.frase.set_text(&trf("The agent {agent} wants to control the screen:", &[("agent", quem)]));
+            let minutos = a["minutos"].as_u64().unwrap_or(10).to_string();
+            self.comando.set_text(&[
+                trf("Window: {w}", &[("w", a["janela"].as_str().unwrap_or("").to_string())]),
+                trf("For {n} min · up to {max} actions", &[("n", minutos.clone()), ("max", a["acoes"].as_u64().unwrap_or(0).to_string())]),
+                tr("Click, type, shortcuts, scroll and drag").to_string(),
+            ].join("\n"));
+            self.escopo.set_text(tr("Never: approvals, passwords, the lock screen, Settings › Privacy and Users · moving your mouse or typing stops it"));
+            self.aprovar.set_label(&trf("Allow for {n} min", &[("n", minutos)]));
+            self.sempre.set_visible(false);
+            self.mostrar_comum(p);
+            return;
+        }
+        self.aprovar.set_label(tr("Allow once"));
         self.frase.set_text(&if nivel == "total" {
             trf("The agent {agent} asks for full access to use “{tool}”:", &[("agent", agente), ("tool", tool.to_string())])
         } else {
@@ -200,6 +222,12 @@ impl Ui {
         self.escopo.set_text(&escopo.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "));
         // "always" covers only this same request, and never full access (it is always temporary)
         self.sempre.set_visible(nivel == "sistema");
+        self.mostrar_comum(p);
+    }
+
+    /// What every request shares: the error line, the deadline, the buttons held for a moment, the card's motion.
+    fn mostrar_comum(self: &Rc<Self>, p: &Value) {
+        let havia = self.havia.get();
         self.erro.set_text("");
         self.erro.set_visible(false);
         self.atualizar_prazo();
@@ -348,9 +376,22 @@ fn demo_pedido() -> Value {
         "args": {"nomes": ["libreoffice-draw", "hplip"]}, "reason": "mudança no sistema", "criado": now(), "prazo_s": 120})
 }
 
+/// Whether the person chose the light theme ("automatico": light from 7 h to 19 h), as the shell decides it.
+fn light_theme() -> bool {
+    let v: Value = std::fs::read(glib::user_config_dir().join("kalango/tema.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
+    match v["estilo"].as_str() {
+        Some("claro") => true,
+        Some("automatico") => glib::DateTime::now_local().map(|d| (7..19).contains(&d.hour())).unwrap_or(false),
+        _ => false,
+    }
+}
+
 fn build(app: &Application) {
     let css = gtk::CssProvider::new();
-    css.load_from_string(&format!("{}\n{}", include_str!("../assets/tokens-dark.css"), include_str!("../assets/style.css")));
+    // the person's theme (Settings › Appearance, the shell's tema.json): the light tokens on a light theme (design
+    // "Aprovação · controlar a tela · claro", page 29)
+    let tokens = if light_theme() { concat!(include_str!("../../kalango-shell/assets/tokens-light.css"), "\n.cartao { border-color: @k_border; }") } else { include_str!("../assets/tokens-dark.css") };
+    css.load_from_string(&format!("{tokens}\n{}", include_str!("../assets/style.css")));
     // above the person's own ~/.config/gtk-4.0/gtk.css (USER priority): a desktop theme from elsewhere ("button { border-radius: 12px }")
     // must not redraw the system's interface
     gtk::style_context_add_provider_for_display(&gdk::Display::default().unwrap(), &css, gtk::STYLE_PROVIDER_PRIORITY_USER + 1);
@@ -390,7 +431,7 @@ fn build(app: &Application) {
 
     let topo = GBox::new(Orientation::Horizontal, 8);
     let escudo = gtk::Image::from_paintable(Some(&gdk::Texture::from_bytes(&glib::Bytes::from_owned(
-        include_str!("../../kalango-shell/assets/ui/escudo.svg").replace("#8E8F99", "#E5C98C").into_bytes())).unwrap()));
+        include_str!("../../kalango-shell/assets/ui/escudo.svg").replace("#8E8F99", if light_theme() { "#7A5611" } else { "#E5C98C" }).into_bytes())).unwrap()));
     escudo.set_pixel_size(16);
     topo.append(&escudo);
     let titulo = label(tr("Permission needed"), "titulo");
@@ -436,7 +477,7 @@ fn build(app: &Application) {
     win.set_child(Some(&raiz));
 
     let ui = Rc::new(Ui { win: win.clone(), risco, frase, comando, escopo, rodape, erro, aprovar: aprovar.clone(), negar: negar.clone(), sempre: sempre.clone(),
-        atual: RefCell::new(None), camada: !janela, fundo: fundo_a, cartao: cartao_a, desde: Cell::new(Instant::now()), waiting: Cell::new(0) });
+        atual: RefCell::new(None), camada: !janela, fundo: fundo_a, cartao: cartao_a, desde: Cell::new(Instant::now()), waiting: Cell::new(0), havia: Cell::new(false) });
     aprovar.connect_clicked({ let ui = ui.clone(); move |_| ui.decidir(true, false) });
     negar.connect_clicked({ let ui = ui.clone(); move |_| ui.decidir(false, false) });
     sempre.connect_clicked({ let ui = ui.clone(); move |_| ui.decidir(true, true) });

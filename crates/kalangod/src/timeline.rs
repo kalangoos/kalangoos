@@ -24,6 +24,10 @@ pub struct Entry {
     /// Chamada que desfaz esta (ferramenta + argumentos), quando existe.
     pub inverse: Option<Value>,
     pub restore_point: Option<String>,
+    /// A small picture of the screen after an action on it (`tela.*`): the file's name in the state folder's
+    /// `tela/`, read back through `kalango/miniatura` by its owner only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub miniatura: Option<String>,
 }
 
 pub struct Timeline {

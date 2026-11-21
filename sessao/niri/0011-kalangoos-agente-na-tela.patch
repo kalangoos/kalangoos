@@ -1,0 +1,169 @@
+diff --git a/src/handlers/mod.rs b/src/handlers/mod.rs
+index 23584c5..583873a 100644
+--- a/src/handlers/mod.rs
++++ b/src/handlers/mod.rs
+@@ -676,25 +676,45 @@ impl VirtualPointerHandler for State {
+     }
+ 
+     fn on_virtual_pointer_motion(&mut self, event: VirtualPointerMotionEvent) {
++        if self.kalango_virtual_pointer_held() {
++            return;
++        }
+         self.process_input_event(InputEvent::<VirtualPointerInputBackend>::PointerMotion { event });
+     }
+ 
+     fn on_virtual_pointer_motion_absolute(&mut self, event: VirtualPointerMotionAbsoluteEvent) {
++        if self.kalango_virtual_pointer_held() {
++            return;
++        }
+         self.process_input_event(
+             InputEvent::<VirtualPointerInputBackend>::PointerMotionAbsolute { event },
+         );
+     }
+ 
+     fn on_virtual_pointer_button(&mut self, event: VirtualPointerButtonEvent) {
++        if self.kalango_virtual_pointer_held() {
++            return;
++        }
+         self.process_input_event(InputEvent::<VirtualPointerInputBackend>::PointerButton { event });
+     }
+ 
+     fn on_virtual_pointer_axis(&mut self, event: VirtualPointerAxisEvent) {
++        if self.kalango_virtual_pointer_held() {
++            return;
++        }
+         self.process_input_event(InputEvent::<VirtualPointerInputBackend>::PointerAxis { event });
+     }
+ }
+ delegate_virtual_pointer!(State);
+ 
++impl State {
++    /// KalangoOS: with the session locked and an agent controlling the screen, the virtual pointer does nothing —
++    /// the lock screen is never an agent's to click (kalangod also ends the session when the shell locks).
++    fn kalango_virtual_pointer_held(&self) -> bool {
++        self.niri.is_locked() && crate::remote_control::agent_session_active()
++    }
++}
++
+ impl DrmLeaseHandler for State {
+     fn drm_lease_state(&mut self, node: DrmNode) -> &mut DrmLeaseState {
+         self.backend
+diff --git a/src/input/mod.rs b/src/input/mod.rs
+index 4eed23f..f7912ca 100644
+--- a/src/input/mod.rs
++++ b/src/input/mod.rs
+@@ -167,6 +167,22 @@ impl State {
+         let hide_exit_confirm_dialog =
+             self.niri.exit_confirm_dialog.is_open() && should_hide_exit_confirm_dialog(&event);
+ 
++        // KalangoOS: the person's own keyboard or mouse while an agent controls the screen
++        if std::any::TypeId::of::<I>()
++            != std::any::TypeId::of::<crate::protocols::virtual_pointer::VirtualPointerInputBackend>()
++            && matches!(
++                event,
++                InputEvent::Keyboard { .. }
++                    | InputEvent::PointerMotion { .. }
++                    | InputEvent::PointerMotionAbsolute { .. }
++                    | InputEvent::PointerButton { .. }
++                    | InputEvent::PointerAxis { .. }
++                    | InputEvent::TouchDown { .. }
++            )
++        {
++            self.kalango_person_input();
++        }
++
+         let mut consumed_by_a11y = false;
+         use InputEvent::*;
+         match event {
+@@ -680,6 +696,28 @@ impl State {
+         }
+     }
+ 
++    /// KalangoOS: the person used this computer's own keyboard, mouse or touch while an agent controls the screen
++    /// (`remote_control::agent_session_active`): `KALANGO_PESSOA_ATIVA` runs (kalangod ends the agent's session —
++    /// the agent yields). Only that it happened is told, never which key. The agent's own input comes through the
++    /// virtual pointer and keyboard and never counts. The allow file is read at most twice a second, and the
++    /// command runs at most once a second.
++    fn kalango_person_input(&mut self) {
++        let now = std::time::Instant::now();
++        let recent = |t: Option<std::time::Instant>, ms: u64| {
++            t.is_some_and(|t| now.duration_since(t) < Duration::from_millis(ms))
++        };
++        if recent(self.niri.kalango_person_told, 1000)
++            || recent(self.niri.kalango_person_checked, 500)
++        {
++            return;
++        }
++        self.niri.kalango_person_checked = Some(now);
++        if crate::remote_control::agent_session_active() {
++            self.niri.kalango_person_told = Some(now);
++            kalango_spawn("KALANGO_PESSOA_ATIVA");
++        }
++    }
++
+     /// Another key or a click with Mod: no tap, no hold.
+     fn kalango_mod_cancel(&mut self) {
+         if let Some(m) = self.niri.kalango_mod.take() {
+diff --git a/src/niri.rs b/src/niri.rs
+index fce124d..d046a36 100644
+--- a/src/niri.rs
++++ b/src/niri.rs
+@@ -360,6 +360,10 @@ pub struct Niri {
+     pub kalango_mod: Option<KalangoMod>,
+     /// KalangoOS: when Escape was last pressed (Esc Esc ends a remote session).
+     pub kalango_last_escape: Option<std::time::Instant>,
++    /// KalangoOS: when the person's own input was last checked against an agent's screen session, and when the
++    /// session was last told (both throttle reading the allow file and spawning).
++    pub kalango_person_checked: Option<std::time::Instant>,
++    pub kalango_person_told: Option<std::time::Instant>,
+     pub keyboard_focus: KeyboardFocus,
+     pub layer_shell_on_demand_focus: Option<LayerSurface>,
+     pub idle_inhibiting_surfaces: HashSet<WlSurface>,
+@@ -2637,6 +2641,8 @@ impl Niri {
+             bind_repeat_timer: Option::default(),
+             kalango_mod: None,
+             kalango_last_escape: None,
++            kalango_person_checked: None,
++            kalango_person_told: None,
+             presentation_state,
+             security_context_state,
+             gamma_control_manager_state,
+diff --git a/src/remote_control.rs b/src/remote_control.rs
+index 321439d..94ec815 100644
+--- a/src/remote_control.rs
++++ b/src/remote_control.rs
+@@ -103,6 +103,22 @@ pub fn session_active() -> bool {
+         .is_some_and(|text| in_session(&text))
+ }
+ 
++/// Whether an agent controls the screen: a grant by pid with the word `agente` among its capabilities (kalangod
++/// writes it for the screen helper of an agent's session; Kalango Remote's grants do not have it).
++pub fn agent_in_session(text: &str) -> bool {
++    text.lines().any(|line| {
++        let f: Vec<&str> = line.split_whitespace().collect();
++        matches!(f.as_slice(), ["pid", _, _, caps] if caps.split(',').any(|c| c == "agente"))
++    })
++}
++
++/// Whether an agent controls the screen of this compositor now (see `agent_in_session`).
++pub fn agent_session_active() -> bool {
++    std::env::var_os("KALANGO_NIRI_CONTROLE")
++        .and_then(|path| std::fs::read_to_string(path).ok())
++        .is_some_and(|text| agent_in_session(&text))
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -130,4 +146,11 @@ mod tests {
+         assert!(!in_session("exe /usr/bin/kalango-shell teclado\n"));
+         assert!(in_session("exe /usr/bin/kalango-shell teclado\npid 4242 987654 captura\n"));
+     }
++
++    #[test]
++    fn an_agent_session_is_marked() {
++        assert!(!agent_in_session("pid 4242 987654 captura,ponteiro,teclado\n"), "Kalango Remote's");
++        assert!(agent_in_session("exe /usr/bin/kalango-shell teclado\npid 7 9 captura,ponteiro,teclado,agente\n"));
++        assert!(!agent_in_session("exe /usr/bin/x captura,agente\n"), "only a grant to one process");
++    }
+ }

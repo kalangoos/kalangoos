@@ -29,6 +29,8 @@ pub struct AgenteUsando {
     botao: RefCell<Option<gtk::Button>>,
     /// what it said last: (who, done, total) — the expanded island shows it
     ultimo: RefCell<Option<(String, usize, usize)>>,
+    /// the Stop button's place on the output, as last told to kalangod (an agent's click there is refused)
+    contado: RefCell<Option<[i32; 4]>>,
 }
 
 /// Its height on screen, with the gap under it (the approval card moves down by this much).
@@ -44,6 +46,10 @@ impl AgenteUsando {
         janela.set_anchor(Edge::Top, true);
         janela.set_margin(Edge::Top, crate::superficies::BARRA_ALTURA + 10);
         janela.add_css_class("pedido-aviso-janela");
+        // (a layer window keeps its biggest size: the banner follows its text when it gets shorter)
+        janela.set_resizable(false);
+        // (content-sized: a shorter text gives the room back)
+        janela.set_resizable(false);
         // (gaps after the spark: 1 px less than the design's, its image has 1 px more for the outline)
         let c = caixa(Orientation::Horizontal, 9, "usando-faixa");
         c.append(&estrela(13, "#A5A1E2"));
@@ -53,13 +59,14 @@ impl AgenteUsando {
         c.append(&progresso);
         let parar = gtk::Button::new();
         parar.add_css_class("usando-parar");
-        let pc = caixa(Orientation::Horizontal, 6, "");
-        pc.append(&ui_icon("parar", "#1C1D24", 8));
+        // (the glyph's 8 px square sits in a 16 px box: 4 px of the gap and of the padding are its margin)
+        let pc = caixa(Orientation::Horizontal, 2, "");
+        pc.append(&ui_icon("parar", "#1C1D24", 16));
         pc.append(&rotulo(tr("Stop (Esc)"), ""));
         parar.set_child(Some(&pc));
         c.append(&parar);
         janela.set_child(Some(&c));
-        let a = Rc::new(AgenteUsando { janela, titulo, progresso, parar: RefCell::default(), ilha: RefCell::default(), ao_mudar: RefCell::default(), botao: RefCell::default(), ultimo: RefCell::default() });
+        let a = Rc::new(AgenteUsando { janela, titulo, progresso, parar: RefCell::default(), ilha: RefCell::default(), ao_mudar: RefCell::default(), botao: RefCell::default(), ultimo: RefCell::default(), contado: RefCell::default() });
         let w = Rc::downgrade(&a);
         parar.connect_clicked(move |_| {
             if let Some(a) = w.upgrade() {
@@ -88,13 +95,14 @@ impl AgenteUsando {
     }
 
     /// The agent is using `app`: `feitos` of `total` items so far; `parar` stops it.
-    pub fn mostrar(&self, quem: &str, app: &str, feitos: usize, total: usize, unidade: &str, parar: impl Fn() + 'static) {
+    pub fn mostrar(self: &Rc<Self>, quem: &str, app: &str, feitos: usize, total: usize, unidade: &str, parar: impl Fn() + 'static) {
         self.titulo.set_text(&trf("{who} is using {app}", &[("who", quem.to_string()), ("app", app.to_string())]));
         self.progresso.set_text(&format!("· {feitos}/{total} {unidade}"));
         *self.parar.borrow_mut() = Some(Box::new(parar));
         *self.ultimo.borrow_mut() = Some((quem.to_string(), feitos, total));
         let estava = self.janela.is_visible();
         self.janela.present();
+        self.regiao_de_entrada(false);
         if let Some(f) = self.ilha.borrow().as_ref() {
             f(Some((quem.to_string(), feitos, total)));
         }
@@ -119,12 +127,105 @@ impl AgenteUsando {
         }
     }
 
+    /// Only the Stop button takes input: a click anywhere else on the banner goes through to the window under it (an
+    /// agent controlling the screen clicks the window, never the banner). With the button hidden, nothing takes input.
+    /// While an agent controls the screen (`controle`), the button's place on the output goes to kalangod, which
+    /// refuses an agent's click there: Stop is the person's.
+    fn regiao_de_entrada(self: &Rc<Self>, controle: bool) {
+        let me = Rc::downgrade(self);
+        // (after the banner's layout: its size and the button's place are known then)
+        gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(120), move || {
+            let Some(me) = me.upgrade() else { return };
+            let Some(surface) = me.janela.surface() else { return };
+            let botao = me.botao.borrow().clone().filter(|b| b.is_visible() && me.janela.is_visible());
+            let r = botao.and_then(|b| b.compute_bounds(&me.janela));
+            let region = gtk::cairo::Region::create();
+            if let Some(r) = &r {
+                let _ = region.union_rectangle(&gtk::cairo::RectangleInt::new(r.x() as i32, r.y() as i32, r.width().ceil() as i32, r.height().ceil() as i32));
+            }
+            surface.set_input_region(&region);
+            let lugar = match (&r, controle) {
+                (Some(r), true) => {
+                    let m = gtk::gdk::Display::default().and_then(|d| d.monitors().item(0)).and_downcast::<gtk::gdk::Monitor>();
+                    let w = m.as_ref().map(|m| m.geometry().width()).unwrap_or(0);
+                    let x0 = (w - me.janela.width()) / 2;
+                    // (its margin counts from below the top bar; with the taskbar there is no top bar: the strip
+                    // told covers both places)
+                    let y0 = crate::superficies::BARRA_ALTURA + 10;
+                    Some(([x0 + r.x() as i32, y0 + r.y() as i32, r.width().ceil() as i32, r.height().ceil() as i32 + crate::superficies::BARRA_ALTURA],
+                        m.and_then(|m| m.connector()).map(|c| c.to_string()).unwrap_or_default()))
+                }
+                _ => None,
+            };
+            let novo = lugar.as_ref().map(|(r, _)| *r);
+            if *me.contado.borrow() == novo {
+                return;
+            }
+            *me.contado.borrow_mut() = novo;
+            let params = match lugar {
+                Some((r, saida)) => serde_json::json!({"acao": "faixa", "saida": saida, "x": r[0], "y": r[1], "w": r[2], "h": r[3]}),
+                None => serde_json::json!({"acao": "faixa"}),
+            };
+            if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+                eprintln!("debug usando: botão parar na tela {params}");
+            }
+            std::thread::spawn(move || {
+                let _ = crate::servicos::kalangod_rpc("kalango/tela", params);
+            });
+        });
+    }
+
+    /// An agent controls the screen (kalangod's session): "{who} is controlling {window} · n/max actions · m:ss".
+    pub fn mostrar_controle(self: &Rc<Self>, quem: &str, janela: &str, acoes: u64, max: u64, restante_s: u64, parar: impl Fn() + 'static) {
+        self.titulo.set_text(&trf("{who} is controlling {window}", &[("who", quem.to_string()), ("window", janela.to_string())]));
+        self.progresso.set_text(&format!("· {}", trf("{n}/{max} actions · {time}", &[("n", acoes.to_string()), ("max", max.to_string()),
+            ("time", format!("{}:{:02}", restante_s / 60, restante_s % 60))])));
+        if let Some(b) = self.botao.borrow().as_ref() {
+            b.set_visible(true);
+        }
+        *self.parar.borrow_mut() = Some(Box::new(parar));
+        let estava = self.janela.is_visible();
+        self.janela.present();
+        if !estava {
+            for f in self.ao_mudar.borrow().iter() {
+                f(true);
+            }
+        }
+        self.regiao_de_entrada(true);
+    }
+
+    /// A short notice in the banner's place (no stop button): "You took over · the agent stopped and waits for you".
+    pub fn mostrar_aviso(self: &Rc<Self>, titulo: &str, detalhe: &str) {
+        self.titulo.set_text(titulo);
+        self.progresso.set_text(&format!("· {detalhe}"));
+        if let Some(b) = self.botao.borrow().as_ref() {
+            b.set_visible(false);
+        }
+        self.parar.borrow_mut().take();
+        let estava = self.janela.is_visible();
+        self.janela.present();
+        if !estava {
+            for f in self.ao_mudar.borrow().iter() {
+                f(true);
+            }
+        }
+        self.regiao_de_entrada(false);
+    }
+
     pub fn esconder(&self) {
         if !self.janela.is_visible() {
             return;
         }
         self.janela.set_visible(false);
         self.parar.borrow_mut().take();
+        if self.contado.borrow_mut().take().is_some() {
+            std::thread::spawn(|| {
+                let _ = crate::servicos::kalangod_rpc("kalango/tela", serde_json::json!({"acao": "faixa"}));
+            });
+        }
+        if let Some(b) = self.botao.borrow().as_ref() {
+            b.set_visible(true);
+        }
         if let Some(f) = self.ilha.borrow().as_ref() {
             f(None);
         }

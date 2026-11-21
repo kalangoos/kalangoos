@@ -13,7 +13,7 @@ R="$ROOT/poc/.deps/root"; LIBS="$R/usr/lib/x86_64-linux-gnu"
 export LD_LIBRARY_PATH="$LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" PATH="$R/usr/bin:$PATH"
 N="${KALANGO_NIRI:-$ROOT/poc/.deps/src/niri/target/release/niri}"
 [ -x "$N" ] || { echo "falta o niri em poc/.deps/src/niri (cargo build --release lá)"; exit 1; }
-PKG_CONFIG_PATH="$LIBS/pkgconfig" cargo build --release -q -p kalango-shell -p kalango-aprovacao -p kalangod -p kalango-agente || exit 1
+PKG_CONFIG_PATH="$LIBS/pkgconfig" cargo build --release -q -p kalango-shell -p kalango-aprovacao -p kalangod -p kalango-agente -p kalango-tela || exit 1
 T=$(mktemp -d /tmp/kalango-sessao-XXXX)
 mkdir -p "$T/raiz/etc"
 # KALANGO_AREA_TESTE: the only folder the agents may touch (tests and captures: never the person's real home, which
@@ -32,6 +32,8 @@ restore_root = "$T/raiz"
 controle_remoto = "$T/controle-remoto"
 controle_remoto_sempre = ["$ROOT/target/release/kalango-shell teclado"]
 controle_remoto_apps = ["${KALANGO_REMOTE_APP:-$ROOT/../kalango-remote/target/release/kalango-remote}", "$ROOT/../kalango-remote/target/debug/kalango-remote", "/usr/bin/kalango-remote"]
+# an agent operating the screen (tela.*): the helper kalangod starts for a session, as the person
+tela_auxiliar = "$ROOT/target/release/kalango-tela"
 [[callers]]
 name = "voce"
 max_level = "total"
@@ -70,6 +72,12 @@ cat > "$T/kalango-shell" <<SH
 exec env KALANGO_SHELL_DEV=1 LD_PRELOAD=$LIBS/libgtk4-layer-shell.so GDK_BACKEND=wayland $ROOT/target/release/kalango-shell "\$@"
 SH
 chmod +x "$T/kalango-shell"
+# the person's own mouse or keyboard while an agent controls the screen (niri patch 0011): the session ends
+cat > "$T/tela-pessoa" <<SH
+#!/bin/sh
+exec env KALANGOD_SOCKET=$T/mcp.sock $ROOT/target/release/kalangod tela pessoa
+SH
+chmod +x "$T/tela-pessoa"
 # Super alone (niri patch 0003; in this nested session the Mod key is Alt): a tap opens the search, held it is voice mode
 export KALANGO_MOD_TAP="$T/kalango-shell super tocar" KALANGO_MOD_HOLD="$T/kalango-shell super segurar" KALANGO_MOD_HOLD_END="$T/kalango-shell super soltar" KALANGO_MOD_HOLD_CANCEL="$T/kalango-shell super cancelar"
 # cursor: o mesmo tema e tamanho do desktop de quem está testando
@@ -84,6 +92,6 @@ echo "sessão de teste em $T (registros: $T/niri.log, $T/shell.log, $T/aprovacao
 # teste não se misturam com os do seu desktop
 # XMODIFIERS=@im=none: com o IBus via XIM, as letras chegariam ao niri como texto do método de entrada,
 # que ele descarta (os atalhos passam, a digitação não).          
-KALANGO_ESC_DUPLO="${KALANGO_REMOTE_APP:-$ROOT/../kalango-remote/target/release/kalango-remote} end-sessions" KALANGO_NIRI_CONTROLE="$T/controle-remoto" KALANGO_NIRI_CONTROLE_DONO="$(id -u)" XMODIFIERS=@im=none XCURSOR_THEME="$CURSOR_TEMA" XCURSOR_SIZE="$CURSOR_TAMANHO" /usr/bin/dbus-run-session -- "$N" --config "$T/niri.kdl" > "$T/niri.log" 2>&1
+KALANGO_PESSOA_ATIVA="$T/tela-pessoa" KALANGO_ESC_DUPLO="${KALANGO_REMOTE_APP:-$ROOT/../kalango-remote/target/release/kalango-remote} end-sessions" KALANGO_NIRI_CONTROLE="$T/controle-remoto" KALANGO_NIRI_CONTROLE_DONO="$(id -u)" XMODIFIERS=@im=none XCURSOR_THEME="$CURSOR_TEMA" XCURSOR_SIZE="$CURSOR_TAMANHO" /usr/bin/dbus-run-session -- "$N" --config "$T/niri.kdl" > "$T/niri.log" 2>&1
 kill $KP 2>/dev/null
 pkill -f "$T/shell.sh"; pkill -f "$T/aprovacao.sh"

@@ -30,7 +30,7 @@ mkdir -p "$W" && chmod 755 "$W"
 SUITE=${KALANGO_IMAGEM_SUITE:-resolute}
 MIRROR=${KALANGO_IMAGEM_MIRROR:-http://archive.ubuntu.com/ubuntu}
 DEPS=$ROOT/poc/.deps
-for f in target/release/kalango-shell target/release/kalangod target/release/kalango-agente target/release/kalango-aprovacao \
+for f in target/release/kalango-shell target/release/kalangod target/release/kalango-agente target/release/kalango-aprovacao target/release/kalango-tela \
          target/release/kalango-entrada target/release/kalango-instalador "$DEPS/src/niri/target/release/niri"; do
   [ -x "$f" ] || { echo "falta $f: compile antes (cargo build --release; o niri em poc/.deps/src/niri)"; exit 1; }
 done
@@ -55,7 +55,7 @@ chmod 755 "$C/usr/bin/niri"
 install -m 755 "$DEPS/src/niri/resources/niri-session" "$C/usr/bin/niri-session"
 cp "$DEPS/src/niri/resources/niri.service" "$DEPS/src/niri/resources/niri-shutdown.target" "$C/usr/lib/systemd/user/"
 sed -i 's#^ExecStart=niri --session#ExecStart=/usr/bin/niri --session#' "$C/usr/lib/systemd/user/niri.service"
-for b in kalango-shell kalango-aprovacao kalangod kalango-agente kalango-entrada kalango-instalador; do
+for b in kalango-shell kalango-aprovacao kalangod kalango-agente kalango-entrada kalango-instalador kalango-tela; do
   install -m 755 "target/release/$b" "$C/usr/libexec/kalango/$b"
 done
 # (o shell usa a camada do gtk4-layer-shell: o pacote libgtk4-layer-shell0 da imagem, pré-carregado)

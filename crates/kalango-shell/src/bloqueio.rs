@@ -124,6 +124,7 @@ impl Bloqueio {
 
     /// Ends the lock. The instance is taken out first: the library calls ::unlocked from inside this call.
     fn desbloquear(&self) {
+        Self::tell_kalangod(false);
         let inst = self.inst.borrow().clone();
         if let Some(i) = inst {
             unsafe { gtk_session_lock_instance_unlock(i.as_ptr()) };
@@ -135,7 +136,15 @@ impl Bloqueio {
     }
 
     /// Locks the session (the compositor's lock).
+    /// kalangod is told the screen is locked (an agent controlling it stops, and none starts) or open again.
+    fn tell_kalangod(locked: bool) {
+        std::thread::spawn(move || {
+            let _ = crate::servicos::kalangod_rpc("kalango/tela", serde_json::json!({"acao": "bloqueio", "ativo": locked}));
+        });
+    }
+
     pub fn bloquear(self: &Rc<Self>) {
+        Self::tell_kalangod(true);
         if self.inst.borrow().is_some() {
             return;
         }

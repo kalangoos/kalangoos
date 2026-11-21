@@ -1013,6 +1013,10 @@ impl SystemPage {
             _ => tr("This computer"),
         };
         self.frame.painel_titulo.set_text(title);
+        // (Users is a page of its own in the window's title: kalangod keeps agents operating the screen out of it)
+        if let Some(w) = self.body.root().and_downcast::<gtk::Window>() {
+            crate::configuracoes::set_section_title(&w, if id == "usuarios" { "usuarios" } else { "sistema" });
+        }
         self.mostrar();
     }
 

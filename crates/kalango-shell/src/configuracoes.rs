@@ -33,6 +33,20 @@ extern "C" {
     fn gdk_wayland_toplevel_set_application_id(toplevel: *mut gdk::ffi::GdkToplevel, id: *const std::ffi::c_char);
 }
 
+/// The window's title says the section ("Privacy and security — Settings"): the window list (Alt+Tab, the
+/// taskbar) names it, and kalangod keeps agents operating the screen out of Privacy and security, Users and Agents
+/// and AI by it (`screen.rs` in kalangod).
+pub fn set_section_title(janela: &impl IsA<gtk::Window>, id: &str) {
+    let name = match id {
+        "usuarios" => Some(tr("Users")),
+        _ => SECOES.iter().find(|s| s.0 == id).map(|s| tr(s.2)),
+    };
+    match name {
+        Some(n) if id != "inicio" => janela.set_title(Some(&format!("{n} — {}", tr("Settings")))),
+        _ => janela.set_title(Some(tr("Settings"))),
+    }
+}
+
 /// The sections of the rail: (id, glyph, name).
 pub const SECOES: &[(&str, &str, &str)] = &[
     ("inicio", "casa", n_("Home")),
@@ -857,6 +871,7 @@ impl Configuracoes {
             return;
         }
         self.paginas.set_visible_child_name(id);
+        set_section_title(&self.janela, id);
         // the page's own height from the design, unless the person sized the window
         if self.compacto.get() == Some(false) && !self.janela.is_maximized() {
             let agora = (c_w(&self.janela), c_h(&self.janela));

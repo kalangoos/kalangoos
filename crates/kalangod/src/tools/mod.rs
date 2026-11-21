@@ -10,6 +10,7 @@ pub mod live_browser;
 pub mod gpu;
 pub mod maquinas;
 pub mod web;
+pub mod tela;
 
 use crate::peer::Peer;
 use crate::policy::{CallerRule, Config, Effect, Level};
@@ -25,6 +26,8 @@ pub struct Ctx<'a> {
     pub timeline: &'a Timeline,
     /// an address of the person's network they approved for this call (web tools only)
     pub lan: Option<(String, u16)>,
+    /// the server's state (the screen tools' sessions, approvals and grants); None when undoing
+    pub state: Option<&'a crate::server::State>,
 }
 
 /// Resultado de uma ferramenta.
@@ -62,6 +65,7 @@ pub fn all() -> Vec<Tool> {
     v.extend(web::tools());
     v.extend(maquinas::tools());
     v.extend(gpu::tools());
+    v.extend(tela::tools());
     v
 }
 
