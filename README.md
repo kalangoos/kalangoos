@@ -56,8 +56,8 @@ arriscado e pode ser desfeito.
 | Shell e niri com patches (barra, dock, barras laterais, área de trabalho, bloqueio, janelas e espaços) | Funcionam, com testes automáticos na sessão e na VM |
 | Apps do sistema (Arquivos, Configurações, Terminal, Editor, Calculadora, Central de agentes…) | Vários prontos; outros em andamento ([docs/telas.md](docs/telas.md)) |
 | `kalangod` (aprovação, desfazer, Linha do tempo, níveis de poder) | Funciona; as regras do kernel (eBPF LSM, Landlock, seccomp, cgroups) valem com o kernel do KalangoOS |
-| Agentes locais (`kalango-agente`, LFM3 via llama.cpp) e gestão de contexto | Funcionam; o modelo de decisão d1 (opcional, baixado à parte) responde nos blocos "Decidir" dos Fluxos |
-| Kalango Remote e Kalango Audio | Vêm na ISO (repositórios próprios, em commits fixos) |
+| Agentes locais (`kalango-agente`, LFM3 via llama.cpp) e gestão de contexto | Funcionam; o modelo de decisão d1 (opcional, baixado à parte) responde nos blocos "Decidir" dos Fluxos e recomenda na tela de aprovação; aprovar sozinho o que é de baixo risco é opcional e vem desligado |
+| Kalango Remote e Kalango Audio | Vêm na ISO (repositórios próprios, em commits fixos). O Remote tem senha fixa, duas etapas, gravação, servidor próprio e modo de privacidade; ainda não foi testado entre dois computadores físicos nem numa sessão real (não aninhada) do niri; o Mosh não foi testado; o caminho da tela de bloqueio e o quadro de transição sob a cobertura do modo de privacidade só são cobertos pelo código, não por um teste |
 | Kalango VirtualDesk e Kalango Fluxos | Repositórios próprios, **fora da ISO** da prévia: o `kalangod` já tem as ferramentas `vm.*` e o shell tem as telas (Sandbox, editor de fluxo); o serviço de fluxos é de um repositório privado |
 | Hardware real, acessibilidade, inglês | **Pendentes**: matriz de hardware incompleta, sem certificação de acessibilidade, interface só em português |
 
