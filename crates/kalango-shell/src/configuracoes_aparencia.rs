@@ -799,7 +799,12 @@ impl Aparencia {
         a.aba("tema");
         a.preencher();
         let w = Rc::downgrade(&a);
-        tema::ao_mudar(move || if let Some(a) = w.upgrade() { a.preencher() });
+        // (while this page lives: it leaves with it)
+        tema::ao_mudar_enquanto(move || {
+            let Some(a) = w.upgrade() else { return false };
+            a.preencher();
+            true
+        });
         a
     }
 

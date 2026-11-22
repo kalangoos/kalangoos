@@ -793,6 +793,11 @@ impl Monitor {
     fn new(app: &gtk::Application, shell: &Rc<Shell>) -> Rc<Monitor> {
         let (w, h) = crate::superficies::tamanho_de_janela(1500, 910);
         let window = gtk::ApplicationWindow::builder().application(app).title(tr("System Monitor")).default_width(w).default_height(h).build();
+        // (its app id as its name: the state written by `kalango-shell estado` finds it by it)
+        window.set_widget_name("os.kalango.Monitor");
+        // (closed for a while, the window lets go of its surface and renderer and keeps its widgets: see
+        // superficies::release_resources_when_hidden)
+        crate::superficies::release_resources_when_hidden(&window, || true);
         window.add_css_class("ed-janela");
         let sem_barra = gtk::Box::new(Orientation::Horizontal, 0);
         sem_barra.set_visible(false);

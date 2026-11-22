@@ -262,6 +262,8 @@ pub struct Agendador {
     _volumes: gio::VolumeMonitor,
     /// the agents center's page listens (redraws when a run starts or ends)
     pub ao_mudar: RefCell<Vec<Box<dyn Fn()>>>,
+    /// listeners that last while they answer true (a page's: gone with it)
+    ao_mudar_enquanto: RefCell<Vec<Box<dyn Fn() -> bool>>>,
     iniciado: Cell<bool>,
 }
 
@@ -269,7 +271,7 @@ impl Agendador {
     pub fn new(shell: &Rc<Shell>) -> Rc<Agendador> {
         let a = Rc::new(Agendador {
             shell: Rc::downgrade(shell), rodando: RefCell::default(), adiadas: RefCell::default(), espaco: RefCell::default(),
-            _volumes: gio::VolumeMonitor::get(), ao_mudar: RefCell::default(), iniciado: Cell::new(false),
+            _volumes: gio::VolumeMonitor::get(), ao_mudar: RefCell::default(), ao_mudar_enquanto: RefCell::default(), iniciado: Cell::new(false),
         });
         // a USB device (a drive) mounted
         let w = Rc::downgrade(&a);
@@ -314,10 +316,21 @@ impl Agendador {
         a
     }
 
-    fn avisar(&self) {
+    /// Told of each change while `f` answers true (the Central's Routines page, built again, leaves with the old one).
+    pub fn ouvir_enquanto(&self, f: impl Fn() -> bool + 'static) {
+        self.ao_mudar_enquanto.borrow_mut().push(Box::new(f));
+    }
+
+    pub(crate) fn avisar(&self) {
         for f in self.ao_mudar.borrow().iter() {
             f();
         }
+        // (taken out while they run: one may add another)
+        let mut vivos = std::mem::take(&mut *self.ao_mudar_enquanto.borrow_mut());
+        vivos.retain(|f| f());
+        let mut agora = self.ao_mudar_enquanto.borrow_mut();
+        vivos.append(&mut agora);
+        *agora = vivos;
     }
 
     fn foco_ativo(&self) -> bool {

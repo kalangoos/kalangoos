@@ -263,11 +263,12 @@ impl PaginaRotinas {
         // the scheduler says when a run starts or ends
         if let Some(a) = shell.agendador() {
             let w = Rc::downgrade(&p);
-            a.ao_mudar.borrow_mut().push(Box::new(move || {
-                if let Some(p) = w.upgrade() {
-                    p.render();
-                }
-            }));
+            // (while this page lives: a page built again — the Central built anew — added one more each time)
+            a.ouvir_enquanto(move || {
+                let Some(p) = w.upgrade() else { return false };
+                p.render();
+                true
+            });
         }
         p
     }

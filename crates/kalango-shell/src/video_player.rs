@@ -126,6 +126,8 @@ pub struct VideoPlayer {
     announced: Cell<bool>,
     sound_waiters: RefCell<Vec<SoundWaiter>>,
     generation: Cell<u64>,
+    /// the position timer runs (only while the window shows or the video plays)
+    ticking: Cell<bool>,
     shell: Weak<Shell>,
 }
 
@@ -257,9 +259,16 @@ impl VideoPlayer {
         media::init();
         let (w, h) = crate::superficies::tamanho_de_janela(1500, 910);
         let window = gtk::ApplicationWindow::builder().application(app).title(tr("Video")).default_width(w).default_height(h).build();
+        // (its app id as its name: the state written by `kalango-shell estado` finds it by it)
+        window.set_widget_name("os.kalango.Video");
         // (one window for the app, kept: closing hides it and opening shows it again — a closed GTK window shown again
         // could not be closed any more, and it kept text input from the other windows)
         window.set_hide_on_close(true);
+        // (closed for a while, the window lets go of its surface and renderer and keeps its widgets: see
+        // superficies::release_resources_when_hidden — not while it plays: its frames keep coming into the window's picture)
+        crate::superficies::release_resources_when_hidden(&window, || {
+            crate::release_policy::video(PLAYER.with(|x| x.borrow().as_ref().is_some_and(|p| p.playing.get())))
+        });
         window.add_css_class("ed-janela");
         let sem_barra = gtk::Box::new(Orientation::Horizontal, 0);
         sem_barra.set_visible(false);
@@ -435,7 +444,7 @@ impl VideoPlayer {
             muted: Cell::new(false), dragging: Cell::new(false), chapters: RefCell::default(), start_at: Cell::new(None), captions_on: Cell::new(false), sound: RefCell::default(),
             sound_loading: Cell::new(false), said: RefCell::default(), transcribing: Cell::new(false), heard: RefCell::default(),
             last_motion: Cell::new(glib::monotonic_time()), over_controls: Cell::new(false), compact: Cell::new(false), clicks: Cell::new(0), pointer: Cell::new((-1.0, -1.0)), announced: Cell::new(false),
-            sound_waiters: RefCell::default(), generation: Cell::new(0),
+            sound_waiters: RefCell::default(), generation: Cell::new(0), ticking: Cell::new(false),
             shell: Rc::downgrade(shell),
         });
         p.wire(&close, &vp);
@@ -696,10 +705,33 @@ impl VideoPlayer {
             let j = j.clone();
             glib::idle_add_local_once(move || gtk::prelude::GtkWindowExt::set_focus(&j, None::<&gtk::Widget>));
         });
-        // the position, the captions and the controls' fading, five times a second
+        // the position, the captions and the controls' fading, five times a second — while the window shows or the
+        // video plays
+        self.ensure_ticking();
+        let w = Rc::downgrade(self);
+        // (shown again: brought up to date at once — paused or moved by MPRIS or a media key while the timer slept —,
+        // as the timer that never slept showed it)
+        self.window.connect_map(move |_| {
+            if let Some(p) = w.upgrade() {
+                p.tick();
+                p.ensure_ticking();
+            }
+        });
+    }
+
+    fn ensure_ticking(self: &Rc<Self>) {
+        if self.ticking.replace(true) {
+            return;
+        }
         let w = Rc::downgrade(self);
         glib::timeout_add_local(Duration::from_millis(200), move || {
             let Some(p) = w.upgrade() else { return glib::ControlFlow::Break };
+            if !crate::release_policy::keep_ticking(p.window.is_visible(), p.playing.get()) {
+                // (a last time: what stopped it — the pause — shows when the window comes back)
+                p.tick();
+                p.ticking.set(false);
+                return glib::ControlFlow::Break;
+            }
             p.tick();
             glib::ControlFlow::Continue
         });
@@ -874,6 +906,7 @@ impl VideoPlayer {
         pb.set_state(gst::State::Playing).map_err(|e| e.to_string())?;
         *self.pipeline.borrow_mut() = Some(pb);
         self.playing.set(true);
+        self.ensure_ticking();
         self.rate.set(1.0);
         self.speed_label("1×");
         self.update_play();
@@ -927,6 +960,9 @@ impl VideoPlayer {
         let now = !self.playing.get();
         let _ = pb.set_state(if now { gst::State::Playing } else { gst::State::Paused });
         self.playing.set(now);
+        if now {
+            self.ensure_ticking();
+        }
         self.update_play();
         self.wake();
         if debug() {

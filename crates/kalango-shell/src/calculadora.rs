@@ -101,6 +101,8 @@ fn key_class(k: &str) -> &'static str {
 impl Calculadora {
     pub fn new(app: &gtk::Application, shell: &Rc<Shell>) -> Rc<Calculadora> {
         let window = gtk::ApplicationWindow::builder().application(app).title(tr("Calculator")).default_width(460).default_height(612).build();
+        // (its app id as its name: the state written by `kalango-shell estado` finds it by it)
+        window.set_widget_name("os.kalango.Calculadora");
         window.add_css_class("calc-janela");
         // the title bar: the app, its name, the menu and the window's buttons
         let bar = caixa(Orientation::Horizontal, 10, "calc-barra");
@@ -369,6 +371,9 @@ impl Calculadora {
         c.window.connect_realize(move |j| app_id(j));
         c.window.connect_map(move |j| app_id(j));
         c.window.set_hide_on_close(true);
+        // (closed for a while, the window lets go of its surface and renderer and keeps its widgets: see
+        // superficies::release_resources_when_hidden)
+        crate::superficies::release_resources_when_hidden(&c.window, || true);
         for (id, b) in tab_buttons {
             let w = Rc::downgrade(&c);
             b.connect_toggled(move |b| {

@@ -638,6 +638,8 @@ pub struct Conversa {
     posicoes: RefCell<Vec<(String, glib::WeakRef<gtk::Button>)>>,
     /// others that follow what the agent does in this conversation (the Files window marks the files it touches)
     ouvintes: RefCell<Vec<Ouvinte>>,
+    /// listeners that last while they answer true (a window's: gone with it)
+    ouvintes_enquanto: RefCell<Vec<Box<dyn Fn(&Value) -> bool>>>,
     /// the pages read for this request (the answer's "Fontes"), and where a page opens: the agent's browser in the
     /// side bar (with the person in control, when it asks for a login)
     fontes: RefCell<Vec<(String, String)>>,
@@ -926,7 +928,7 @@ impl Conversa {
             raiz, vazio, intro, lista, rolagem, texto, placeholder, enviar, enviar_icone, microfone, voz_estado,
             recording: RefCell::default(), modelo, hora,
             engine: RefCell::default(), turn: RefCell::default(), busy: Cell::new(false), web: Cell::new(true), turns: Cell::new(0),
-            last_message: Cell::new(0), on_busy: RefCell::default(), current: RefCell::default(), tokens: Cell::new(0), paused: Cell::new(false), id: RefCell::new(novo_id()), replaying: Cell::new(false), desligadas: RefCell::default(), replay_tempo: Cell::new((0, 0)), pedidos: RefCell::default(), ao_pedir: RefCell::default(), visivel: RefCell::default(), posicoes: RefCell::default(), ouvintes: RefCell::default(), fontes: RefCell::default(), on_page: RefCell::default(), cabecalho,
+            last_message: Cell::new(0), on_busy: RefCell::default(), current: RefCell::default(), tokens: Cell::new(0), paused: Cell::new(false), id: RefCell::new(novo_id()), replaying: Cell::new(false), desligadas: RefCell::default(), replay_tempo: Cell::new((0, 0)), pedidos: RefCell::default(), ao_pedir: RefCell::default(), visivel: RefCell::default(), posicoes: RefCell::default(), ouvintes: RefCell::default(), ouvintes_enquanto: RefCell::default(), fontes: RefCell::default(), on_page: RefCell::default(), cabecalho,
             agent: RefCell::default(), turn_agent: RefCell::default(), last_send: RefCell::default(), retry_input: RefCell::default(), agent_row, agent_chip, input_form, input_error, picker: RefCell::default(), mention_mode: Cell::new(false),
             side: Cell::new(false), head_tile, head_name, head_chip, suggest: RefCell::default(),
             on_agent: RefCell::default(), on_picked_other: RefCell::default(), client_ref: RefCell::default(), run_id: RefCell::default(), remote_approvals: RefCell::default(), remote_denied: RefCell::default(),
@@ -2347,6 +2349,11 @@ impl Conversa {
         self.ouvintes.borrow_mut().push(Box::new(f));
     }
 
+    /// Told of each event while `f` answers true (a window that is let go leaves with it).
+    pub fn ao_evento_enquanto(&self, f: impl Fn(&Value) -> bool + 'static) {
+        self.ouvintes_enquanto.borrow_mut().push(Box::new(f));
+    }
+
     pub fn set_visivel(&self, f: impl Fn() -> bool + 'static) {
         *self.visivel.borrow_mut() = Some(Box::new(f));
     }
@@ -2585,6 +2592,12 @@ impl Conversa {
             for f in self.ouvintes.borrow().iter() {
                 f(v);
             }
+            // (taken out while they run: one may add another)
+            let mut vivos = std::mem::take(&mut *self.ouvintes_enquanto.borrow_mut());
+            vivos.retain(|f| f(v));
+            let mut agora = self.ouvintes_enquanto.borrow_mut();
+            vivos.append(&mut agora);
+            *agora = vivos;
         }
         match kind {
             // a kept conversation: an ask already answered is only said

@@ -142,7 +142,7 @@ pub fn da_janela<'a>(app_id: &str, todos: &'a [App]) -> Option<&'a App> {
 /// Imagem do app no tamanho pedido.
 pub fn imagem(app: &App, tamanho: i32) -> gtk::Image {
     let img = match app.icone_kalango.map(|k| pasta_icones().join(format!("{k}.svg"))).filter(|p| p.is_file()) {
-        Some(p) => gtk::Image::from_file(p),
+        Some(p) => icon_from_file(&p, tamanho),
         None => match app.info.icon() {
             Some(i) => gtk::Image::from_gicon(&i),
             None => gtk::Image::from_icon_name("application-x-executable"),
@@ -154,9 +154,151 @@ pub fn imagem(app: &App, tamanho: i32) -> gtk::Image {
 
 /// One of KalangoOS's own app icons, by name ("agentes", "arquivos"…).
 pub fn imagem_kalango(nome: &str, tamanho: i32) -> gtk::Image {
-    let img = gtk::Image::from_file(pasta_icones().join(format!("{nome}.svg")));
+    let img = icon_from_file(&pasta_icones().join(format!("{nome}.svg")), tamanho);
     img.set_pixel_size(tamanho);
     img
+}
+
+/// The most textures kept drawn (every app's icon at the few sizes the shell shows them is far fewer).
+const ICON_CACHE_MAX: usize = 512;
+
+thread_local! {
+    /// Icons already drawn, by file and size in pixels: the dock, the grid, Alt+Tab and the menus make the same icon
+    /// over and over (the dock each time an app opens or closes).
+    static ICON_CACHE: std::cell::RefCell<Lru<(PathBuf, i32), gtk::gdk::Texture>> = std::cell::RefCell::new(Lru::new(ICON_CACHE_MAX));
+}
+
+/// A cache of at most `max` entries that, full, lets go of the one used longest ago.
+pub(crate) struct Lru<K, V> {
+    max: usize,
+    tick: u64,
+    map: std::collections::HashMap<K, (V, u64)>,
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V: Clone> Lru<K, V> {
+    pub(crate) fn new(max: usize) -> Self {
+        Lru { max: max.max(1), tick: 0, map: std::collections::HashMap::new() }
+    }
+
+    pub(crate) fn get(&mut self, k: &K) -> Option<V> {
+        self.tick += 1;
+        let t = self.tick;
+        self.map.get_mut(k).map(|e| {
+            e.1 = t;
+            e.0.clone()
+        })
+    }
+
+    pub(crate) fn insert(&mut self, k: K, v: V) {
+        self.tick += 1;
+        if !self.map.contains_key(&k) && self.map.len() >= self.max {
+            if let Some(old) = self.map.iter().min_by_key(|(_, e)| e.1).map(|(k, _)| k.clone()) {
+                self.map.remove(&old);
+            }
+        }
+        self.map.insert(k, (v, self.tick));
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
+/// The screens' biggest scale (an icon drawn for it is sharp on all of them).
+fn screen_scale() -> f64 {
+    gtk::gdk::Display::default()
+        .map(|d| d.monitors().iter::<gtk::gdk::Monitor>().filter_map(Result::ok).map(|m| m.scale()).fold(1.0, f64::max))
+        .unwrap_or(1.0)
+}
+
+/// The pixels an icon of `size` is drawn with at `scale` (a whole number, at least 1).
+pub(crate) fn icon_pixels(size: i32, scale: f64) -> i32 {
+    ((f64::from(size.max(1)) * scale.max(1.0)).ceil() as i32).max(1)
+}
+
+/// An icon file drawn at the size it shows (×the screen's scale), shared by every image of it: loaded whole, the
+/// 512 px SVGs took 1 MB each in memory and as much again on the GPU, for a 48 px icon. When a screen's scale changes or
+/// a screen comes or goes, every icon on show is drawn again for the new scale (as the SVG loaded whole always was).
+fn icon_from_file(path: &std::path::Path, size: i32) -> gtk::Image {
+    let px = icon_pixels(size, screen_scale());
+    let Some(t) = baked_icon(path, px) else { return gtk::Image::from_file(path) };
+    let img = gtk::Image::from_paintable(Some(&t));
+    watch_screen_scales();
+    LIVE_ICONS.with(|l| {
+        let mut l = l.borrow_mut();
+        // (the images gone, dropped from time to time)
+        if l.len() >= 256 && l.len().is_power_of_two() {
+            l.retain(|(w, ..)| w.upgrade().is_some());
+        }
+        l.push((img.downgrade(), path.to_path_buf(), size, std::cell::Cell::new(px)));
+    });
+    img
+}
+
+/// The icon file drawn at `px`, from the cache or drawn now.
+fn baked_icon(path: &std::path::Path, px: i32) -> Option<gtk::gdk::Texture> {
+    let key = (path.to_path_buf(), px);
+    if let Some(t) = ICON_CACHE.with(|c| c.borrow_mut().get(&key)) {
+        return Some(t);
+    }
+    let pb = gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(path, px, px, true).ok()?;
+    let t = gtk::gdk::Texture::for_pixbuf(&pb);
+    ICON_CACHE.with(|c| c.borrow_mut().insert(key, t.clone()));
+    Some(t)
+}
+
+type LiveIcon = (gtk::glib::WeakRef<gtk::Image>, PathBuf, i32, std::cell::Cell<i32>);
+
+thread_local! {
+    /// The icons drawn from files, to draw again when the scale changes.
+    static LIVE_ICONS: std::cell::RefCell<Vec<LiveIcon>> = const { std::cell::RefCell::new(Vec::new()) };
+    static WATCHING_SCALES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Once: every screen's scale, and screens coming and going, redraw the icons on show.
+fn watch_screen_scales() {
+    if WATCHING_SCALES.with(|w| w.replace(true)) {
+        return;
+    }
+    let Some(d) = gtk::gdk::Display::default() else { return };
+    let monitors = d.monitors();
+    let hook = |m: &gtk::gdk::Monitor| {
+        m.connect_scale_notify(|_| redraw_icons_for_scale());
+    };
+    monitors.iter::<gtk::gdk::Monitor>().filter_map(Result::ok).for_each(|m| hook(&m));
+    monitors.connect_items_changed(move |list, pos, _removed, added| {
+        for i in pos..pos + added {
+            if let Some(m) = list.item(i).and_downcast::<gtk::gdk::Monitor>() {
+                hook(&m);
+            }
+        }
+        redraw_icons_for_scale();
+    });
+}
+
+/// The icons on show drawn again for the screens' scale now (only those whose pixel size changed).
+fn redraw_icons_for_scale() {
+    redraw_icons_at(screen_scale());
+}
+
+pub(crate) fn redraw_icons_at(scale: f64) {
+    let live: Vec<(gtk::Image, PathBuf, i32, i32)> = LIVE_ICONS.with(|l| {
+        let mut l = l.borrow_mut();
+        l.retain(|(w, ..)| w.upgrade().is_some());
+        l.iter()
+            .filter_map(|(w, p, size, cur)| {
+                let px = icon_pixels(*size, scale);
+                (px != cur.replace(px)).then(|| w.upgrade().map(|i| (i, p.clone(), *size, px))).flatten()
+            })
+            .collect()
+    });
+    for (img, path, size, px) in live {
+        if let Some(t) = baked_icon(&path, px) {
+            img.set_paintable(Some(&t));
+            img.set_pixel_size(size);
+        }
+    }
 }
 
 pub fn abrir(app: &App) -> Result<(), String> {
@@ -339,5 +481,31 @@ mod service_tests {
         assert!(super::servico_do_sistema("org.kde.kdeconnect.app"));
         assert!(super::servico_do_sistema("kcm_kdeconnect"));
         assert!(!super::servico_do_sistema("org.kde.kdenlive"));
+    }
+}
+
+#[cfg(test)]
+mod icon_tests {
+    #[test]
+    fn icon_pixels_follow_the_scale() {
+        assert_eq!(super::icon_pixels(48, 1.0), 48);
+        assert_eq!(super::icon_pixels(48, 1.25), 60);
+        assert_eq!(super::icon_pixels(24, 2.0), 48);
+        assert_eq!(super::icon_pixels(0, 0.5), 1);
+    }
+
+    #[test]
+    fn the_cache_lets_go_of_the_one_used_longest_ago() {
+        let mut c = super::Lru::new(2);
+        c.insert("a", 1);
+        c.insert("b", 2);
+        assert_eq!(c.get(&"a"), Some(1)); // "a" used now: "b" is the oldest
+        c.insert("c", 3);
+        assert_eq!(c.len(), 2);
+        assert_eq!(c.get(&"b"), None);
+        assert_eq!(c.get(&"a"), Some(1));
+        assert_eq!(c.get(&"c"), Some(3));
+        c.insert("c", 4); // the same key again replaces, nothing is let go
+        assert_eq!((c.len(), c.get(&"a"), c.get(&"c")), (2, Some(1), Some(4)));
     }
 }

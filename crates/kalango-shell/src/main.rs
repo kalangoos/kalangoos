@@ -164,6 +164,9 @@ mod disk_answer;
 mod table_block;
 mod terminal_block;
 mod markdown;
+mod mem_debug;
+mod window_state;
+mod release_policy;
 mod math_block;
 mod media_block;
 mod mem_answer;
@@ -397,6 +400,10 @@ impl Shell {
         self.notificacoes().notify_local(app, title, body);
     }
     fn executar(self: &Rc<Self>, app: &gtk::Application, args: &[String]) {
+        // (the window tests: when the command came, to time a window opened again until its first frame)
+        if std::env::var_os("KALANGO_MEDIR_JANELAS").is_some() && args.first().is_some_and(|a| a != "estado" && a != "memoria") {
+            eprintln!("debug medir: comando {} t={}", args.join(" "), glib::monotonic_time());
+        }
         match args.first().map(String::as_str) {
             Some("comando") => self.comando().alternar(),
             Some("apps") => self.grade().alternar(),
@@ -631,6 +638,18 @@ impl Shell {
                     primeiro_uso::abrir(&app);
                 }
             }
+            // what the shell holds in memory (finding leaks): "memoria [N]" logs RSS, heap and the N biggest GObject
+            // types (with GOBJECT_DEBUG=instance-count); "memoria aparar" first gives the heap's free pages back
+            Some("memoria") => {
+                if args.get(1).map(String::as_str) == Some("aparar") {
+                    mem_debug::trim();
+                }
+                let top = args.iter().skip(1).find_map(|a| a.parse().ok()).unwrap_or(25);
+                eprintln!("debug memoria: {}", mem_debug::report(top));
+            }
+            // what an app window holds, to compare a close and reopen with before (sessao/testar-janelas.sh): see
+            // window_state
+            Some("estado") => window_state::command(&args[1..]),
             Some("sair") => app.quit(),
             Some(o) => eprintln!("kalango-shell: comando desconhecido: {o}"),
             None => {}

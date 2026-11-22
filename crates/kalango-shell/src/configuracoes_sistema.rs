@@ -725,12 +725,12 @@ impl SystemPage {
         page.frame.ao_trocar_aba(move |id| if let Some(p) = w.upgrade() { p.show_tab(id) });
         // the clock ticks while the tab shows
         let w = Rc::downgrade(&page);
-        glib::timeout_add_seconds_local(1, move || {
-            let Some(p) = w.upgrade() else { return glib::ControlFlow::Break };
+        crate::superficies::every_while_mapped(&page.clock, std::time::Duration::from_secs(1), move || {
+            let Some(p) = w.upgrade() else { return false };
             if p.tab.borrow().as_str() == "data" && p.clock.is_mapped() {
                 p.tick();
             }
-            glib::ControlFlow::Continue
+            true
         });
         page
     }

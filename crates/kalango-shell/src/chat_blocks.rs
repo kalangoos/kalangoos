@@ -1348,9 +1348,13 @@ impl StepsList {
             }
         };
         // (niri's windows and workspaces changed: a workspace shown, a window minimized or restored; the listener
-        // lives as long as the shell, and only wakes a list that still exists)
+        // leaves with the list)
         if let Some(sh) = crate::shell_atual() {
-            sh.estado.ouvir(wake.clone());
+            let (w, k) = (Rc::downgrade(self), wake.clone());
+            sh.estado.ouvir_enquanto(move || {
+                k();
+                w.strong_count() > 0
+            });
         }
         let k = wake.clone();
         window.connect_suspended_notify(move |_| k());
