@@ -544,6 +544,19 @@ button.passo-linha:hover { background: alpha(@k_realce, 0.03); }
 .botao-enviar.parar { background: @k_coral; }
 
 .conversa-nota { font-size: 12px; color: @k_muted; }
+/* "Conversa compactada" (design 21 · Central · conversa compactada) */
+.compactada-linha { background: @k_border; min-height: 1px; }
+.compactada-marca { border: 1px solid @k_border; border-radius: 4px; padding: 4px 10px; }
+.compactada-texto { font-size: 12px; color: @k_muted; }
+.compactada-ponto { font-size: 12px; color: @k_dim; }
+button.compactada-ver { all: unset; font-size: 12px; font-weight: 600; color: @k_accent; padding: 0; }
+button.compactada-ver:hover { text-decoration: underline; }
+.compactada-cartao { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 14px; }
+.compactada-titulo { font-size: 13px; font-weight: 600; color: @k_text; }
+.compactada-quando { font-size: 12px; color: @k_dim; }
+.compactada-resumo { font-size: 14px; color: @k_text; }
+.compactada-divisor { background: @k_border; min-height: 1px; }
+.compactada-nota { font-size: 12px; color: @k_dim; }
 .cartao-parado, .cartao-erro { background: @k_surface; border-radius: 6px; padding: 14px; }
 .cartao-parado { border: 1px solid alpha(@k_coral, 0.35); }
 .cartao-erro { border: 1px solid @k_border; }

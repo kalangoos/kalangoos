@@ -70,6 +70,15 @@ fn mil(n: u64) -> String {
     if n >= 1000 { format!("{}k", (n + 500) / 1000) } else { n.to_string() }
 }
 
+/// "3,1k", "12,3k", "184k": one decimal below 100 thousand (the Uso card's "3,1k de 12,3k tokens").
+fn mil_decimal(n: u64) -> String {
+    if !(1_000..100_000).contains(&n) {
+        return mil(n);
+    }
+    let d = (n + 50) / 100;
+    if d.is_multiple_of(10) { format!("{}k", d / 10) } else { format!("{},{}k", d / 10, d % 10) }
+}
+
 /// The window controls (minimize, maximize, close) for this page's own header rows.
 fn controles() -> gtk::Box {
     let b = caixa(Orientation::Horizontal, 8, "");
@@ -186,6 +195,9 @@ pub struct Conversas {
     arquivos: gtk::Box,
     tokens_v: gtk::Label,
     tokens_barra: gtk::LevelBar,
+    /// the exchanges the model gets whole, and those in the summary (the engine's "contexto" events)
+    janela_v: gtk::Label,
+    resumidas_v: gtk::Label,
     modelo_v: gtk::Label,
     marca: Cell<(u64, u64)>,
     /// the Canvas tab (the latest diagram: its source, a change to ask, how it looks, export)
@@ -659,10 +671,13 @@ impl Conversas {
             uso.append(&l);
             v
         };
-        let tokens_v = linha_uso(tr("This conversation"));
+        // what the model got in the last request, of the budget (design 21 · Central · conversa compactada)
+        let tokens_v = linha_uso(tr("Sent to the model"));
         let tokens_barra = gtk::LevelBar::for_interval(0.0, 1.0);
         tokens_barra.add_css_class("conversas-barra");
         uso.append(&tokens_barra);
+        let janela_v = linha_uso(tr("In the window"));
+        let resumidas_v = linha_uso(tr("Summarized"));
         let modelo_v = linha_uso(tr("Model"));
         modelo_v.add_css_class("teal");
         let custo = linha_uso(tr("Cost"));
@@ -706,7 +721,7 @@ impl Conversas {
             faixa: Cell::new(Faixa::de(largura_janela)), largura: Cell::new(largura_janela), na_pagina: Cell::new(false), painel_aberto: Cell::new(Faixa::de(largura_janela) == Faixa::Larga), arrumando: Cell::new(false),
             folhas: RefCell::default(), veu, casa_lateral: RefCell::default(), casa_painel: RefCell::default(), faixa_abas, faixa_botoes: botoes_faixa.clone(), controles_painel, abrir_lista_b, faisca, subtitulo, nomes_chips, ja_mostrou: Cell::new(false), busca, lista, rodape_tokens,
             titulo, chip_agente, fixar, apagar: apagar.clone(), painel_b: painel_b.clone(), vista, conv, controles_meio, saudacao, nova_texto, nova_grupos, sugestoes, painel, abas, painel_stack, contexto, ferramentas,
-            memoria, arquivos, tokens_v, tokens_barra, modelo_v, marca: Cell::new((0, 0)), canvas_box, html: crate::html_canvas::HtmlCanvas::new(), document: RefCell::default(), alteracoes_box, terminal_box, navegador, painel_base, largura_contexto: Cell::new(guardada("contexto")), largura_lista: Cell::new(guardada("lista")), canvas_width: Cell::new(guardada("canvas")), browser_width: Cell::new(guardada("navegador")), expanded: Cell::new(false), list_closed_before: Cell::new(false), expand_button: expandir.clone(), alca_contexto: RefCell::default(), alca_lista: RefCell::default(), uso: uso.clone(), repo: RefCell::default(), commit_feito: RefCell::default(), previa: RefCell::default(), preenchendo: Cell::new(false),
+            memoria, arquivos, tokens_v, tokens_barra, janela_v, resumidas_v, modelo_v, marca: Cell::new((0, 0)), canvas_box, html: crate::html_canvas::HtmlCanvas::new(), document: RefCell::default(), alteracoes_box, terminal_box, navegador, painel_base, largura_contexto: Cell::new(guardada("contexto")), largura_lista: Cell::new(guardada("lista")), canvas_width: Cell::new(guardada("canvas")), browser_width: Cell::new(guardada("navegador")), expanded: Cell::new(false), list_closed_before: Cell::new(false), expand_button: expandir.clone(), alca_contexto: RefCell::default(), alca_lista: RefCell::default(), uso: uso.clone(), repo: RefCell::default(), commit_feito: RefCell::default(), previa: RefCell::default(), preenchendo: Cell::new(false),
             start_chips, start_agent: RefCell::default(), start_picker: RefCell::default(), nova_form, nova_ph: ph.clone(), chip_agente_box, chip_tile, ao_executar: RefCell::default(), nova_erro,
         });
         // the edges of the context and the side bar (the agents center puts the side bar's beside it)
@@ -2779,13 +2794,41 @@ impl Conversas {
             self.terminal_render();
         }
         // tokens and the model
-        let tokens = ev.iter().rev().find(|e| e["tipo"] == "uso").and_then(|e| e["tokens"].as_u64()).unwrap_or(0);
-        self.tokens_v.set_text(&trf("{n} tokens", &[("n", mil(tokens))]));
-        self.tokens_barra.set_value((tokens as f64 / 262_144.0).min(1.0));
+        let (sent, budget, kept, summarized) = uso_do_contexto(&ev);
+        self.tokens_v.set_text(&if budget > 0 {
+            trf("{sent} of {budget} tokens", &[("sent", mil_decimal(sent)), ("budget", mil_decimal(budget))])
+        } else {
+            trf("{n} tokens", &[("n", mil(sent))])
+        });
+        self.tokens_barra.set_value(if budget > 0 { (sent as f64 / budget as f64).min(1.0) } else { (sent as f64 / 262_144.0).min(1.0) });
+        self.janela_v.set_text(&match kept {
+            Some(0) => tr("only the current request").to_string(),
+            Some(n) => trf("{n} exchanges and the current request", &[("n", n.to_string())]),
+            None => "—".to_string(),
+        });
+        self.resumidas_v.set_text(&match summarized {
+            Some(n) => trf("{n} exchanges", &[("n", n.to_string())]),
+            None => "—".to_string(),
+        });
         self.modelo_v.set_text(&format!("{} · {}", conversa::guess_model(), tr("local")));
         if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
             eprintln!("debug central: conversa {id} ({} eventos, {} no contexto, {} lembranças)", ev.len(), itens.len(), mems.len());
         }
+    }
+}
+
+/// The Uso card's numbers from a conversation's events: the tokens the model got in the last request and the budget
+/// (the engine's "contexto"; a conversation from before it has only "uso", with no budget), how many exchanges went
+/// whole and how many are in the summary.
+pub(crate) fn uso_do_contexto(ev: &[serde_json::Value]) -> (u64, u64, Option<u64>, Option<u64>) {
+    match ev.iter().rposition(|e| e["tipo"] == "contexto") {
+        Some(k) => {
+            let c = &ev[k];
+            // (the "contexto" event is written before a summary; a "compactada" after it is the newer count)
+            let summarized = ev[k..].iter().rev().find(|e| e["tipo"] == "compactada").and_then(|e| e["resumidas"].as_u64()).or_else(|| c["trocas_resumidas"].as_u64());
+            (c["enviados"].as_u64().unwrap_or(0), c["orcamento"].as_u64().unwrap_or(0), c["trocas_mantidas"].as_u64(), summarized)
+        }
+        None => (ev.iter().rev().find(|e| e["tipo"] == "uso").and_then(|e| e["tokens"].as_u64()).unwrap_or(0), 0, None, None),
     }
 }
 
@@ -2891,6 +2934,24 @@ fn agent_prefs_start_on_last() -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_uso_card_shows_what_the_model_got() {
+        let ev = vec![
+            serde_json::json!({"tipo": "uso", "tokens": 9_000}),
+            serde_json::json!({"tipo": "contexto", "enviados": 3_100, "orcamento": 12_288, "trocas_mantidas": 6, "trocas_resumidas": 18}),
+            serde_json::json!({"tipo": "uso", "tokens": 3_400}),
+        ];
+        assert_eq!(super::uso_do_contexto(&ev), (3_100, 12_288, Some(6), Some(18)));
+        // a conversation from before the engine said it: its tokens, no budget
+        assert_eq!(super::uso_do_contexto(&ev[..1]), (9_000, 0, None, None));
+        // a summary written after the request's "contexto" (the engine summarizes after the answer): the card counts it
+        let mut later = ev.clone();
+        later.push(serde_json::json!({"tipo": "compactada", "trocas": 5, "resumidas": 23}));
+        assert_eq!(super::uso_do_contexto(&later), (3_100, 12_288, Some(6), Some(23)));
+        assert_eq!((super::mil_decimal(3_100), super::mil_decimal(12_288), super::mil_decimal(4_000), super::mil_decimal(184_000)), ("3,1k".into(), "12,3k".into(), "4k".into(), "184k".into()));
+    }
+
     use super::first_sentences;
 
     #[test]

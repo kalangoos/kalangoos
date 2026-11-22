@@ -44,6 +44,18 @@ pub struct AgentPrefs {
     /// each step shows what the tool got and gave back
     #[serde(rename = "detalhes_tecnicos")]
     pub technical_details: bool,
+    /// the conversation's memory (the engine's context.rs, docs/CONTEXTO.md): the last exchanges always sent whole
+    #[serde(rename = "trocas_mantidas")]
+    pub keep_exchanges: u32,
+    /// past this many exchanges since the last summary, the older ones are summarized (0: only when the window fills)
+    #[serde(rename = "resumir_a_cada")]
+    pub compact_every: u32,
+    /// the prompt's quality budget, in tokens (no control: kept as written in the file)
+    #[serde(rename = "contexto_max_tokens")]
+    pub context_max_tokens: u32,
+    /// keys this version does not know (a newer engine's) stay in the file when the shell saves it
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for AgentPrefs {
@@ -61,11 +73,18 @@ impl Default for AgentPrefs {
             steps_per_request: 24,
             keep_days: 0,
             technical_details: false,
+            keep_exchanges: 6,
+            compact_every: 40,
+            context_max_tokens: 12_288,
+            other: serde_json::Map::new(),
         }
     }
 }
 
 pub const MIN_STEPS: u32 = 4;
+/// "Lembrar as últimas trocas inteiras" and "Resumir conversas longas a cada" (the engine's ranges).
+pub const KEEP_RANGE: (u32, u32) = (1, 30);
+pub const COMPACT_RANGE: (u32, u32) = (0, 60);
 pub const MAX_STEPS: u32 = 48;
 
 pub fn path() -> PathBuf {
@@ -89,6 +108,8 @@ pub fn update(f: impl FnOnce(&mut AgentPrefs)) {
     let mut p = load();
     f(&mut p);
     p.steps_per_request = p.steps_per_request.clamp(MIN_STEPS, MAX_STEPS);
+    p.keep_exchanges = p.keep_exchanges.clamp(KEEP_RANGE.0, KEEP_RANGE.1);
+    p.compact_every = p.compact_every.clamp(COMPACT_RANGE.0, COMPACT_RANGE.1);
     if let Err(e) = save(&p) {
         eprintln!("kalango-shell: {}: {e}", path().display());
     }
@@ -198,5 +219,17 @@ mod tests {
         assert!(p.respect_dnd && p.suggestions && !p.steps_open);
         let back = serde_json::to_value(&p).unwrap();
         assert_eq!(back["passos_por_pedido"], 24);
+        assert_eq!((back["trocas_mantidas"].as_u64(), back["resumir_a_cada"].as_u64(), back["contexto_max_tokens"].as_u64()), (Some(6), Some(40), Some(12_288)));
+    }
+
+    #[test]
+    fn the_conversations_memory_survives_a_save_of_another_setting() {
+        // (the engine reads these keys from the same file: a save of the answers' length must not drop them)
+        let p: AgentPrefs = serde_json::from_str(r#"{"respostas": "curtas", "trocas_mantidas": 9, "resumir_a_cada": 0, "contexto_max_tokens": 20000, "chave_futura": [1]}"#).unwrap();
+        let mut q = p.clone();
+        q.answers = "detalhadas".into();
+        let back = serde_json::to_value(&q).unwrap();
+        assert_eq!((back["trocas_mantidas"].as_u64(), back["resumir_a_cada"].as_u64(), back["contexto_max_tokens"].as_u64()), (Some(9), Some(0), Some(20_000)));
+        assert_eq!(back["chave_futura"], serde_json::json!([1]));
     }
 }

@@ -135,6 +135,10 @@ pub struct Reply {
     pub cut: bool,
     /// tokens of this exchange (the conversation so far plus the reply), as llama-server counts them
     pub tokens: u64,
+    /// of them, the prompt (what was sent)
+    pub prompt_tokens: u64,
+    /// of the prompt, what the server evaluated (the rest came from its prompt cache)
+    pub evaluated: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +150,7 @@ pub struct ToolCall {
     pub raw_arguments: String,
 }
 
+#[derive(Clone)]
 pub struct Model {
     endpoint: Endpoint,
     pub name: String,
@@ -200,10 +205,14 @@ fn find_model(file: &str) -> Option<PathBuf> {
 
 /// Minimal HTTP/1.1 over a Unix socket (one request per connection).
 fn unix_request(path: &Path, method: &str, target: &str, body: &str, timeout: Duration) -> Result<(u16, String), String> {
-    use std::io::{Read, Write};
     let mut s = std::os::unix::net::UnixStream::connect(path).map_err(|e| e.to_string())?;
     s.set_read_timeout(Some(timeout)).ok();
-    write!(s, "{method} {target} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+    http_exchange(&mut s, "localhost", method, target, body)
+}
+
+/// One HTTP/1.1 request and its whole answer over a connected stream.
+fn http_exchange<S: std::io::Read + std::io::Write>(s: &mut S, host: &str, method: &str, target: &str, body: &str) -> Result<(u16, String), String> {
+    write!(s, "{method} {target} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
         .map_err(|e| e.to_string())?;
     let mut raw = Vec::new();
     s.read_to_end(&mut raw).map_err(|e| e.to_string())?;
@@ -230,6 +239,79 @@ fn unix_request(path: &Path, method: &str, target: &str, body: &str, timeout: Du
     }
     Ok((status, String::from_utf8_lossy(&data).to_string()))
 }
+
+/// A connection to the model server that another thread can close (to stop a request in flight).
+enum Conn {
+    Unix(std::os::unix::net::UnixStream),
+    Tcp(std::net::TcpStream),
+}
+
+impl Conn {
+    fn shutdown(&self) {
+        let _ = match self {
+            Conn::Unix(s) => s.shutdown(std::net::Shutdown::Both),
+            Conn::Tcp(s) => s.shutdown(std::net::Shutdown::Both),
+        };
+    }
+}
+
+/// Stops a request to the model that runs in another thread: closing the connection makes llama-server drop the
+/// request and free its slot (it has one), so the person's next request is not queued behind it.
+#[derive(Clone, Default)]
+pub struct Cancel {
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    conn: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<Conn>>>>,
+}
+
+impl Cancel {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(c) = self.conn.lock().unwrap().take() {
+            c.shutdown();
+        }
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// `post` that `cancel` can stop, with a hard `timeout` on the wait for the answer.
+fn post_cancellable(endpoint: &Endpoint, target: &str, body: &Value, timeout: Duration, cancel: &Cancel) -> Result<Value, String> {
+    let (conn, host) = match endpoint {
+        Endpoint::Unix(p) => (Conn::Unix(std::os::unix::net::UnixStream::connect(p).map_err(|e| e.to_string())?), "localhost".to_string()),
+        Endpoint::Http(u) => {
+            let host = u.trim_start_matches("http://").trim_end_matches('/').to_string();
+            (Conn::Tcp(std::net::TcpStream::connect(&host).map_err(|e| e.to_string())?), host)
+        }
+    };
+    let (mut reader, writer): (Box<dyn ReadWrite>, Conn) = match &conn {
+        Conn::Unix(s) => {
+            s.set_read_timeout(Some(timeout)).ok();
+            (Box::new(s.try_clone().map_err(|e| e.to_string())?), Conn::Unix(s.try_clone().map_err(|e| e.to_string())?))
+        }
+        Conn::Tcp(s) => {
+            s.set_read_timeout(Some(timeout)).ok();
+            (Box::new(s.try_clone().map_err(|e| e.to_string())?), Conn::Tcp(s.try_clone().map_err(|e| e.to_string())?))
+        }
+    };
+    *cancel.conn.lock().unwrap() = Some(std::sync::Arc::new(writer));
+    if cancel.is_cancelled() {
+        return Err("cancelled".into());
+    }
+    let r = http_exchange(&mut reader, &host, "POST", target, &body.to_string());
+    cancel.conn.lock().unwrap().take();
+    if cancel.is_cancelled() {
+        return Err("cancelled".into());
+    }
+    let (status, text) = r?;
+    if status != 200 {
+        return Err(format!("{status}: {text}"));
+    }
+    serde_json::from_str(&text).map_err(|e| e.to_string())
+}
+
+trait ReadWrite: std::io::Read + std::io::Write {}
+impl<T: std::io::Read + std::io::Write> ReadWrite for T {}
 
 fn data_dir() -> PathBuf {
     std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|p| p.is_absolute())
@@ -471,8 +553,61 @@ impl Model {
         }).collect();
         let cut = v["choices"][0]["finish_reason"] == "length";
         let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0);
-        Ok(Reply { content: msg["content"].as_str().unwrap_or("").trim().to_string(), tool_calls, cut, tokens })
+        let prompt_tokens = v["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
+        let evaluated = v["timings"]["prompt_n"].as_u64().unwrap_or(prompt_tokens);
+        Ok(Reply { content: msg["content"].as_str().unwrap_or("").trim().to_string(), tool_calls, cut, tokens, prompt_tokens, evaluated })
     }
+
+    /// How many tokens the model counts in `text` (llama-server's /tokenize; None when it does not answer).
+    pub fn count_tokens(&self, text: &str) -> Option<usize> {
+        let v = post(&self.endpoint, "/tokenize", &json!({"content": text}), Duration::from_secs(30)).ok()?;
+        v["tokens"].as_array().map(Vec::len)
+    }
+
+    /// The server's context, in tokens (its /props; 0 when it does not say).
+    pub fn context_size(&self) -> usize {
+        let text = match &self.endpoint {
+            Endpoint::Unix(p) => unix_request(p, "GET", "/props", "", Duration::from_secs(5)).ok().filter(|(c, _)| *c == 200).map(|(_, t)| t),
+            Endpoint::Http(u) => ureq::get(&format!("{u}/props")).timeout(Duration::from_secs(5)).call().ok().and_then(|r| r.into_string().ok()),
+        };
+        text.and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v["default_generation_settings"]["n_ctx"].as_u64().or(v["n_ctx"].as_u64()))
+            .unwrap_or(0) as usize
+    }
+
+    /// A list of short lines from `messages` (the conversation's summary), without tools or reasoning, at most
+    /// `max_tokens`: the answer is held to {"fatos": [..]} by llama.cpp's grammar, so no prose about the task (the
+    /// 1.7B model wrote "We need to rewrite the summary…" into a free-text summary). A list cut by the limit keeps
+    /// its complete lines.
+    /// The same, stopped at once by `cancel` (the person sent a request) and never waiting longer than `timeout` for
+    /// the model.
+    pub fn complete_list_cancellable(&self, messages: &[Value], max_items: usize, max_tokens: u32, timeout: Duration, cancel: &Cancel) -> Result<Vec<String>, String> {
+        let schema = json!({"type": "object", "properties": {"fatos": {"type": "array", "items": {"type": "string"}, "maxItems": max_items}}, "required": ["fatos"]});
+        let body = json!({
+            "messages": messages,
+            "temperature": 0.2, "top_p": 0.95,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_schema", "json_schema": {"name": "resumo", "schema": schema}},
+            "chat_template_kwargs": {"enable_thinking": false},
+        });
+        let v = post_cancellable(&self.endpoint, "/v1/chat/completions", &body, timeout, cancel)?;
+        registrar_uso(&self.name, &v);
+        Ok(list_items(v["choices"][0]["message"]["content"].as_str().unwrap_or("")))
+    }
+}
+
+/// The longest a summary call may take: past it the call fails and the older exchanges just stay as they are.
+pub const SUMMARY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The items of {"fatos": ["a", "b", …]}, also from an answer the length limit cut (its complete strings).
+pub fn list_items(text: &str) -> Vec<String> {
+    if let Some(a) = serde_json::from_str::<Value>(text).ok().and_then(|v| v["fatos"].as_array().cloned()) {
+        return a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
+    }
+    // (cut: close the array after the last complete string)
+    let Some(k) = text.rfind("\",") else { return Vec::new() };
+    serde_json::from_str::<Value>(&format!("{}\"]}}", &text[..k])).ok().and_then(|v| v["fatos"].as_array().cloned())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default()
 }
 
 /// The voice and vision models are used now and then; their servers end after this long without use (each engine
@@ -635,6 +770,13 @@ pub fn tool_name(api: &str) -> String {
 #[cfg(test)]
 mod context_tests {
     use super::{text_context, CONTEXT};
+
+    #[test]
+    fn a_summary_list_is_read_even_when_cut() {
+        assert_eq!(super::list_items(r#"{"fatos": ["a", "b"]}"#), vec!["a", "b"]);
+        assert_eq!(super::list_items(r#"{"fatos": ["mora em Natal", "armário 4817", "gosta de caf"#), vec!["mora em Natal", "armário 4817"]);
+        assert!(super::list_items("We need to rewrite the summary").is_empty());
+    }
 
     #[test]
     fn the_context_fits_the_memory() {
