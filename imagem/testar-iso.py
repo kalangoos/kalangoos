@@ -133,7 +133,7 @@ def main():
         # (numa linha só: o comando ganha o "; echo" do fim, que um heredoc não aceitaria)
         b64 = base64.b64encode(open(plan, "rb").read()).decode()
         c.run(f"echo {b64} | base64 -d > /tmp/plano.json")
-        out, code = c.run("sudo env KALANGO_INSTALADOR_REAL=1 /usr/libexec/kalango/kalango-instalador --instalar /tmp/plano.json", 1800, stdin=password)
+        out, code = c.run("sudo env KALANGO_INSTALADOR_REAL=1 /usr/libexec/kalango/kalango-instalador --instalar /tmp/plano.json", 1800, stdin=password + "\n")  # (the engine reads a second line: the models server token, empty here)
         steps = [l for l in out.splitlines() if l.startswith("{")]
         print("      " + "\n      ".join(l[:160] for l in steps if '"estado":"feito"' in l.replace(" ", "") or "erro" in l or "fim" in l or "modo" in l))
         good &= check(code == 0 and '"fim":true' in out.replace(" ", ""), "o motor instalou no disco da VM", out[-1500:])

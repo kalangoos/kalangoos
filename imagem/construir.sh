@@ -116,7 +116,13 @@ chmod 755 "$C/usr/lib/kalango/llama-server"
 # o modelo de texto (LFM3 1.7B): o agente funciona sem internet desde o primeiro uso. Voz e visão: Central de Apps
 MODELOS=${KALANGO_MODELOS:-$HOME/.local/share/kalango/modelos}
 d usr/share/kalango/modelos
-[ -f "$MODELOS/LFM3-1.7B-Q4_K_M.gguf" ] && cp "$MODELOS/LFM3-1.7B-Q4_K_M.gguf" "$C/usr/share/kalango/modelos/"
+# (KALANGO_IMAGEM_TODOS_MODELOS=1, só para uma ISO de teste local: leva todos os .gguf da pasta — texto, voz, visão, Omni,
+# d1 e os mmproj —, uns 8 GB a mais. A ISO publicada fica só com o de texto)
+if [ "${KALANGO_IMAGEM_TODOS_MODELOS:-0}" = 1 ]; then
+  for f in "$MODELOS"/*.gguf; do [ -f "$f" ] && cp "$f" "$C/usr/share/kalango/modelos/"; done
+else
+  [ -f "$MODELOS/LFM3-1.7B-Q4_K_M.gguf" ] && cp "$MODELOS/LFM3-1.7B-Q4_K_M.gguf" "$C/usr/share/kalango/modelos/"
+fi
 # ---- os apps nativos que têm repositório próprio (kalangoos/kalango-remote e kalangoos/kalango-audio), compilados ao
 # lado deste repositório (KALANGO_REMOTE_DIR / KALANGO_AUDIO_DIR mudam onde); KALANGO_IMAGEM_SEM_APPS=1 monta sem eles
 REMOTO=${KALANGO_REMOTE_DIR:-$ROOT/../kalango-remote}
@@ -411,7 +417,14 @@ CFG
   # (o casper confere a ISO no boot por esta lista: sem ela, o casper-md5check falha e o resumo do dia aponta)
   (cd "$I" && find . -type f ! -name md5sum.txt -print0 | sort -z | xargs -0 md5sum > md5sum.txt)
   rm -f "$OUT/kalangoos.iso"
-  grub-mkrescue -o "$OUT/kalangoos.iso" "$I" -- -volid KALANGOOS 2>&1 | grep -v '^xorriso : UPDATE' || true
+  # (com todos os modelos o squashfs passa de 4 GiB, o limite de um arquivo no ISO 9660: -iso-level 3 grava o
+  # arquivo em vários trechos, o que o Linux monta normalmente)
+  GRANDE=$W/xorriso-grande; rm -rf "$GRANDE"
+  if [ "${KALANGO_IMAGEM_TODOS_MODELOS:-0}" = 1 ]; then
+    mkdir -p "$GRANDE"
+    printf '#!/bin/sh\ncase "$*" in *-help*) ;; -as*) a=$1; b=$2; shift 2; exec /usr/bin/xorriso -as "$b" -iso-level 3 "$@";; esac\nexec /usr/bin/xorriso "$@"\n' > "$GRANDE/xorriso"; chmod 755 "$GRANDE/xorriso"
+  fi
+  PATH="$GRANDE:$PATH" grub-mkrescue -o "$OUT/kalangoos.iso" "$I" -- -volid KALANGOOS 2>&1 | grep -v '^xorriso : UPDATE' || true
   [ -s "$OUT/kalangoos.iso" ] || { echo "a ISO não foi gerada"; exit 1; }
   rm -rf "$I"
   {
