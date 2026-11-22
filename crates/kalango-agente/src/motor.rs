@@ -288,12 +288,21 @@ fn warm_up_d1() {
     }
 }
 
+/// Whether a call's arguments are checked against what the agent read (a value that only external content had stops the
+/// task): everything above the "usuario" level, a connector's call that changes something, typing on the screen and
+/// proposing a connection to another computer (the computer's name and address must be the person's words).
+pub(crate) fn needs_taint_check(name: &str, level: &str, from_connector: bool, read_only: bool) -> bool {
+    defesa::above_user_level(level) || (from_connector && !read_only) || matches!(name, "tela.digitar" | "tela.teclas" | crate::remote::TOOL)
+}
+
 /// Whether the conversation asks the person before a call: when its permission says "ask", except the actions
 /// kalangod asks on the system approval screen itself — acting on the screen (the window and minutes), changing a
 /// file that runs at login and changing anything outside the folders agents work in (with the diff and never
-/// "always": the conversation's card has an "always"). The person is asked once either way.
+/// "always": the conversation's card has an "always") — and connecting to another computer (the plan panel of Kalango
+/// Remote asks). The person is asked once either way.
 fn conversation_asks(perm: Perm, tool: &str, kalangod_asks_startup: bool) -> bool {
-    perm == Perm::Ask && !(tool.starts_with("tela.") && tool != "tela.ver") && !kalangod_asks_startup
+    // (connecting to another computer: Kalango Remote's plan panel is the question, with the steps and the limits)
+    perm == Perm::Ask && !(tool.starts_with("tela.") && tool != "tela.ver") && tool != crate::remote::TOOL && !kalangod_asks_startup
 }
 
 /// Whether kalangod is asked if it will ask the person itself before this call (`kalango/inicio`): any tool that
@@ -745,23 +754,39 @@ impl Agent {
         let mut offered: Vec<Tool> = select_tools(&self.tools, &self.person_text, self.allow_web).into_iter()
             .filter(|t| !self.desligada(t)).cloned().collect();
         let lower = request.to_lowercase();
-        if memory.as_ref().is_some_and(|m| m.ajustes.ligada) && MEMORY_WORDS.iter().any(|w| lower.contains(w)) {
+        // connecting to another computer: the agent may propose it; the person decides on Kalango Remote's plan panel.
+        // What is to be done over there cannot be done from here, so the request is the connection alone: of the
+        // tools the request brought in only the ones that read (a file or a page it points to) stay, and the memory,
+        // calculator, plan and question tools of the other notes below are not offered (a small model proposes the
+        // connection better with nothing else to pick, and no note names a tool that is not there).
+        let mut remote_only = false;
+        if crate::remote::wanted(&lower) {
+            let t = crate::remote::tool();
+            if permissoes::get(&t) != Perm::Never && !self.desligada(&t) {
+                let nota = trf("To connect to another computer call {tool} now, with the computer's name as the person said it (\"notebook da mãe\" is a name: do not ask for another); it shows them a plan and only a click of theirs connects. Never connect any other way, never invent an address, and say plainly if they decline.", &[("tool", api_name(crate::remote::TOOL))]);
+                self.messages[0]["content"] = json!(format!("{}\n\n{nota}", self.messages[0]["content"].as_str().unwrap_or("")));
+                offered.retain(|t| t.read_only && matches!(t.name.split('.').next(), Some("arquivos" | "web")));
+                offered.push(t);
+                remote_only = true;
+            }
+        }
+        if !remote_only && memory.as_ref().is_some_and(|m| m.ajustes.ligada) && MEMORY_WORDS.iter().any(|w| lower.contains(w)) {
             offered.extend(memory_tools());
         }
         // deleting or removing: guessing wrong costs most, so the agent may ask which one
-        if DESTRUCTIVE_WORDS.iter().any(|w| lower.contains(w)) {
+        if !remote_only && DESTRUCTIVE_WORDS.iter().any(|w| lower.contains(w)) {
             offered.push(question_tool());
         }
         // a calculation: worked out exactly by the calculator (said in the instructions too: a small model believes its own
         // arithmetic)
-        if crate::calc::wanted(&lower) {
+        if !remote_only && crate::calc::wanted(&lower) {
             offered.push(calc_tool());
             let nota = trf("This request has a calculation: work it out with {tool}, never in your head, and give the result it returns.", &[("tool", api_name("calculadora.calcular"))]);
             self.messages[0]["content"] = json!(format!("{}\n\n{nota}", self.messages[0]["content"].as_str().unwrap_or("")));
         }
         // several steps: the agent may show its plan and strike the steps as it goes (said in the instructions too: a
         // small model follows them better than a tool's description)
-        if multi_step(&lower) {
+        if !remote_only && multi_step(&lower) {
             offered.push(plan_tool());
             let nota = trf("This request has several steps: before the first action, call {tool} with them (2 to 6, a few words each).", &[("tool", api_name("agente.plano"))]);
             self.messages[0]["content"] = json!(format!("{}\n\n{nota}", self.messages[0]["content"].as_str().unwrap_or("")));
@@ -1022,8 +1047,12 @@ impl Agent {
                     tainted = if network { defesa::tainted_web_call(&call.arguments, &trusted, &local, &web) } else { defesa::tainted_urls_in_args(&call.arguments, &trusted, &local, &web) };
                 }
                 if tainted.is_none() && !tool.name.starts_with("web.")
-                    && (defesa::above_user_level(&tool.level) || (de_conector && !tool.read_only) || matches!(name.as_str(), "tela.digitar" | "tela.teclas")) {
+                    && needs_taint_check(&name, &tool.level, de_conector, tool.read_only) {
                     tainted = defesa::tainted_argument(&call.arguments, &trusted, &self.external);
+                }
+                // (the connection's address or name rewritten out of what a page or file said: spaces, dashes, case)
+                if tainted.is_none() && name == crate::remote::TOOL {
+                    tainted = crate::remote::squashed_taint(&call.arguments, &trusted, &self.external);
                 }
                 {
                     if let Some(value) = tainted {
@@ -1115,6 +1144,10 @@ impl Agent {
                             Ok(t) => (true, t, String::new()),
                             Err(t) => (false, t, String::new()),
                         }
+                    }
+                    None if name == crate::remote::TOOL => {
+                        let (ok, text) = crate::remote::propose(&call.arguments, &|s| on_event(Event::Status(s)));
+                        (ok, text, String::new())
                     }
                     None => match self.kalangod.call(&name, &call.arguments) {
                         Ok((t, s)) => (true, t, s),

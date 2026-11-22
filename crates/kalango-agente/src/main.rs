@@ -19,6 +19,7 @@ mod notices;
 mod paste_as;
 mod now;
 mod calc;
+mod remote;
 mod grounding;
 mod search_query;
 mod motor;
