@@ -117,7 +117,7 @@ chmod 755 "$C/usr/lib/kalango/llama-server"
 MODELOS=${KALANGO_MODELOS:-$HOME/.local/share/kalango/modelos}
 d usr/share/kalango/modelos
 # (KALANGO_IMAGEM_TODOS_MODELOS=1, só para uma ISO de teste local: leva todos os .gguf da pasta — texto, voz, visão, Omni,
-# d1 e os mmproj —, uns 8 GB a mais. A ISO publicada fica só com o de texto)
+# d1 e os mmproj —, uns 8 GB a mais. A ISO publicada pela CI fica sem modelo nenhum: KALANGO_MODELOS=/nenhum; sem essa variável, só o de texto)
 if [ "${KALANGO_IMAGEM_TODOS_MODELOS:-0}" = 1 ]; then
   for f in "$MODELOS"/*.gguf; do [ -f "$f" ] && cp "$f" "$C/usr/share/kalango/modelos/"; done
 else

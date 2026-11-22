@@ -12,7 +12,10 @@
 
 | Recurso | Origem | Licença |
 |---|---|---|
-| Ubuntu, kernel Linux e pacotes da base | Canonical / comunidade | As de cada pacote |
+| Ubuntu, kernel Linux e pacotes da base | Canonical / comunidade | As de cada pacote; o kernel é GPL-2.0 |
+| Kalango Remote (na ISO; repositório próprio, derivado do RustDesk) | Projeto KalangoOS sobre o RustDesk | AGPL-3.0 (arquivo `LICENCE` do repositório) |
+| Kalango Audio (na ISO; repositório próprio) | Projeto KalangoOS | GPL-3.0-or-later (README e `Cargo.toml` do repositório) |
+| llama.cpp (motor dos modelos locais, na ISO) | ggml-org | MIT |
 | Compositor base (niri ou cosmic-comp) | Projetos de código aberto | GPL-3.0 |
 | Inter, Roboto, Ubuntu, JetBrains Mono | Google Fonts / autores | SIL OFL 1.1 / Ubuntu Font Licence |
 | Ícones simbólicos da prova de conceito | Adwaita | CC BY-SA 3.0 (substituir na fase 3) |

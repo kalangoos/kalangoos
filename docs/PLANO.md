@@ -3,7 +3,7 @@
 > **O plano detalhado, com checkbox de cada tarefa, está no OpenSpec:** `openspec/changes/fase-*/tasks.md`
 > (e na página gerada `docs/especificacao/`). Este arquivo é o resumo.
 
-Atualizado em 18 de novembro de 2026. Este documento lista o que falta para o KalangoOS deixar de ser um design e
+Atualizado em 18 de novembro de 2026; o estado da versão 0.1.0 (22 de novembro de 2026) está em [LANCAMENTO.md](LANCAMENTO.md). Este documento lista o que falta para o KalangoOS deixar de ser um design e
 virar um sistema instalável, na ordem em que faz sentido atacar.
 
 Tamanho de cada item: **P** (dias), **M** (semanas), **G** (meses). São ordens de grandeza para uma pessoa
@@ -28,9 +28,10 @@ Desde então já existem: o niri com os patches do KalangoOS, o shell inteiro (b
 área de trabalho, Arquivos, Configurações, Central de agentes), o `kalangod` e o `kalango-agente` com o LFM3 local, a
 tela de entrada (greetd) e o bloqueio, tudo testado na sessão (`sessao/testar.sh`) e numa VM com o kernel 7.3.4.
 
-O que **não** existe: uma imagem instalável (disco ou ISO) e o login ligado nessa imagem. O instalador
-(`crates/kalango-instalador`) e o primeiro uso (`kalango-shell primeiro-uso`) já existem e passam na sessão, com o
-motor do instalador simulado; falta gravar de verdade num disco virtual e ligar por ele.
+**Atualização (0.1.0, 22/11/2026):** a imagem instalável existe. A ISO (`imagem/construir.sh`) é montada e testada
+numa VM pela esteira de lançamento: sessão ao vivo com o instalador, instalação num disco virtual vazio e o primeiro
+boot do sistema instalado, com a tela de entrada. O que **ainda não existe**: validação em hardware real (a matriz
+NVIDIA, AMD e Intel), atualizações com restauração e a ISO com o modelo local (licenças em revisão).
 
 ---
 
@@ -174,7 +175,7 @@ pela Linha do tempo.
 - [ ] Atualizações com ponto de restauração e a tela de recuperação.
 - [ ] Central de Apps: catálogo de apps (Flatpak), agentes e modelos, com permissões antes de instalar.
 - [ ] Usuários, convidado, criptografia de disco (LUKS com TPM), impressão digital.
-- [ ] Geração da imagem ISO e teste automático de instalação em máquina virtual.
+- [x] Geração da imagem ISO e teste automático de instalação em máquina virtual (`imagem/`, esteira de lançamento; 0.1.0).
 
 **Pronto quando:** a ISO instala em um computador vazio e em dual boot, e atualiza sem perder dados.
 
@@ -258,6 +259,9 @@ libadwaita 1.6 ou mais novo. O patch 0005 do niri torna opcional o encaixe ao ar
 ---
 
 ## 6. Próximos passos, em ordem (combinado em 17 de novembro de 2026)
+
+> **Estado em 22/11/2026:** os passos 0 a 4 abaixo foram cumpridos na ISO da 0.1.0 (testada numa VM); o 5 (AG-UI) segue
+> planejado. O texto original dos passos fica como registro.
 
 Passos pequenos, um de cada vez. Um passo só termina quando **liga do zero numa VM**, tem **teste automático** e as
 **capturas batem com o FigCraft**. Os dois temas seguem o mesmo padrão; o claro usa as cores e as fontes da referência
