@@ -17,10 +17,10 @@ a marca do projeto e **não** entram na licença do código.
 | Caminho | Origem | Licença | Observação |
 |---|---|---|---|
 | `assets/brand/**` (logo principal, símbolo, ícone, horizontal, nome, versões de uma cor e do tema claro, conceitos, `svg/`, `1024/`, `icones/`) | Gerado por IA (Higgsfield, GPT Image) e vetorizado | Marca do projeto (`LICENSE-brand.txt`) | Mascote "calango" |
-| `assets/icons/kalango/**` (19 ícones dos apps do sistema, PNG e SVG) | Gerado por IA (Higgsfield, GPT Image) no estilo do logo, vetorizado | A definir | |
+| `assets/icons/kalango/**` (19 ícones dos apps do sistema, PNG e SVG) | Gerado por IA (Higgsfield, GPT Image) no estilo do logo, vetorizado | Gerado por IA; licença a definir | |
 | `crates/kalango-shell/assets/*.png`, `crates/kalango-instalador/assets/*.png` (logo, logo do tema claro, símbolo) | Cópias reduzidas da marca acima | Marca do projeto | |
-| `wallpapers/sdrustos-16x9-4k.png`, `wallpapers/sdrustos-16x9-4k-claro.png` | Papel de parede do KalangoOS, gerado por IA | A definir | |
-| `crates/kalango-shell/assets/loja-destaque.png` | Ilustração da Central de Apps, gerada por IA | A definir | |
+| `wallpapers/sdrustos-16x9-4k.png`, `wallpapers/sdrustos-16x9-4k-claro.png` | Papel de parede do KalangoOS, gerado por IA (Higgsfield, GPT Image) | Gerado por IA; licença a definir | |
+| `crates/kalango-shell/assets/loja-destaque.png` | Ilustração da Central de Apps, gerada por IA (Higgsfield, GPT Image) | Gerado por IA; licença a definir | |
 | `.github/assets/**` (cabeçalho do README e prévia social; o avatar, o banner e as prévias dos outros repositórios ficam no repositório `.github` da organização) | Composição feita no FigCraft (página "GitHub · artes" do Design System) com a marca acima, formas planas e textos | Marca do projeto | Nenhuma imagem nova gerada por IA |
 
 ## Recursos próprios
@@ -33,7 +33,7 @@ a marca do projeto e **não** entram na licença do código.
 | `docs/pagina/img/**` | Capturas e exportações do Design System e da sessão de teste | A definir |
 | `crates/kalangod/tests/fixtures/*.pdf` | Arquivo de teste gerado pelo projeto | A definir |
 | `assets/sounds/kalango/**` | Sons do sistema compostos pelo projeto no LMMS só com sintetizadores (ZynAddSubFX, TripleOscillator, OpulenZ, BitInvader, Organic), sem samples de terceiros | CC0-1.0 |
-| `site/public/**` (capturas da sessão de teste, ícones dos apps, marca reduzida, papéis de parede, imagem de compartilhamento) | Capturas e cópias reduzidas dos recursos acima, feitas para o site | Marca do projeto, nos logos; o resto, como os originais |
+| `site/public/**` (capturas da sessão de teste, ícones dos apps, marca reduzida, papéis de parede, imagem de compartilhamento) | Capturas e cópias reduzidas dos recursos acima, feitas para o site. A marca, os ícones dos apps e os papéis de parede são gerados por IA (Higgsfield, GPT Image); as capturas são da sessão do próprio KalangoOS, com dados de teste | Marca do projeto, nos logos (`LICENSE-brand.txt`); ícones e papéis de parede: a definir, como os originais; capturas: como o código (GPL-3.0-or-later) |
 
 ## Dados de terceiros
 
@@ -72,14 +72,19 @@ as licenças junto.
 
 ## Fontes
 
-Nenhum arquivo de fonte está neste repositório. A sessão e a imagem usam os pacotes do sistema.
+Nenhum arquivo de fonte está neste repositório. A sessão e a imagem usam os pacotes do sistema. O site
+(`site/`) serve as fontes ele mesmo, sem pedir nada a terceiros: o `npm ci` baixa os pacotes `@fontsource/inter`,
+`@fontsource/jetbrains-mono`, `@fontsource/jost`, `@fontsource/roboto` e `@fontsource/ubuntu` (subconjunto latino,
+WOFF2), que o build copia para o `dist/`; as versões ficam no `site/package-lock.json`.
 
 | Família | Uso | Licença |
 |---|---|---|
-| Inter | Texto da interface | OFL-1.1 |
+| Inter | Texto da interface; também no site | OFL-1.1 |
 | URW Gothic (`fonts-urw-base35`) | Títulos | AGPL-3.0 com exceção para fontes |
-| JetBrains Mono | Código e números | OFL-1.1 |
-| Roboto, Ubuntu | Tema claro (referência do Design System) | Apache-2.0 / OFL-1.1; Ubuntu Font Licence 1.0 |
+| JetBrains Mono | Código e números; também no site | OFL-1.1 |
+| Jost (`@fontsource/jost`) | Títulos do site no tema escuro, no lugar do URW Gothic (sem licença para a web) | OFL-1.1 |
+| Roboto | Tema claro (referência do Design System); também no site (`@fontsource/roboto`) | OFL-1.1 |
+| Ubuntu | Títulos do tema claro; também no site (`@fontsource/ubuntu`) | Ubuntu Font Licence 1.0 (`Ubuntu-font-1.0`) |
 
 ## Dependências em Rust
 
