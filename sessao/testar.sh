@@ -2176,10 +2176,16 @@ clique_inst senha2
 xdotool type --window "$W" --delay 40 "Lua-cheia-2026"
 sleep 0.5
 clique_inst continuar
+for _ in $(seq 20); do grep -q "debug instalador: passo 4" "$INST" && break; sleep 0.3; done
+[ -n "${KALANGO_TESTE_CAPTURA:-}" ] && "$N" msg action screenshot-screen --path "${KALANGO_TESTE_CAPTURA%.png}-instalador-modelos.png" >/dev/null
+ok "Instalador: depois da conta vem a etapa Modelos de IA (4 de 5), com a escolha padrão" 'grep -q "debug instalador: passo 4" "$INST"'
+clique_inst continuar
 clique_inst continuar
 for _ in $(seq 60); do grep -q 'debug instalador: motor {"fim":true}' "$INST" && break; sleep 0.5; done
 ok "Instalador: ao lado do Ubuntu, o motor encolhe a partição dele no mesmo lugar e faz a do KalangoOS (simulado, até o fim)" \
-  'grep -q "debug instalador: passo 4" "$INST" && grep -q "comando resize2fs /dev/nvme0n1p2" "$INST" && grep -q "comando sgdisk -d2 -n2:1050624:+" "$INST" && grep -q "comando sgdisk -n0:0:0 -t0:8300 -c0:KalangoOS /dev/nvme0n1" "$INST" && grep -q "debug instalador: motor {\"fim\":true}" "$INST"'
+  'grep -q "debug instalador: passo 5" "$INST" && grep -q "comando resize2fs /dev/nvme0n1p2" "$INST" && grep -q "comando sgdisk -d2 -n2:1050624:+" "$INST" && grep -q "comando sgdisk -n0:0:0 -t0:8300 -c0:KalangoOS /dev/nvme0n1" "$INST" && grep -q "debug instalador: motor {\"fim\":true}" "$INST"'
+ok "Instalador: a fonte dos modelos (padrão, texto, voz e visão) é gravada em /etc/kalango/modelos.toml, sem token" \
+  'grep -q "escrever /target/etc/kalango/modelos.toml" "$INST" && grep -q "fonte = .*padrao" "$INST" && grep -q "lfm3-audio-2b" "$INST" && grep -q "\"fonte\": \"padrao\"" "$OUT/instalador/plano-instalacao.json"'
 ok "Instalador: a conta vem do nome (ana), e a senha nunca fica no plano em disco" \
   'grep -q "comando chroot /target useradd .* ana" "$INST" && grep -q "\"user\": \"ana\"" "$OUT/instalador/plano-instalacao.json" && ! grep -q "Lua-cheia" "$OUT/instalador/plano-instalacao.json"'
 clique_inst continuar

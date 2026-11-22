@@ -49,7 +49,8 @@ SENHA="teste-$(date +%s)"
 cat > "$D/plano.json" <<PLANO
 {"disk": "/dev/vda", "disk_title": "Disco virtual", "mode": "Erase", "size": 0, "encrypt": false,
  "locale": "pt_BR.UTF-8", "keyboard": "br", "name": "Ana Teste", "user": "ana", "hostname": "teste-kalango",
- "autologin": true, "fingerprint_later": false, "avatar": null}
+ "autologin": true, "fingerprint_later": false, "avatar": null,
+ "models": {"fonte": "padrao", "escolhidos": ["lfm3-1.7b", "lfm3-audio-2b", "lfm3-vl-2b"], "rede_local_confirmada": false}}
 PLANO
 python3 -I imagem/testar-iso.py "$D/serial.sock" instalar "$D/plano.json" "$SENHA"
 esperar_desligar

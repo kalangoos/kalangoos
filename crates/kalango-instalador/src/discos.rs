@@ -161,6 +161,11 @@ pub struct Plan {
     pub autologin: bool,
     pub fingerprint_later: bool,
     pub avatar: Option<String>,
+    /// where the AI models come from, recorded in the installed system (the access token is not here)
+    pub models: kalango_modelos::config::Config,
+    /// the private server's access token (read from the engine's stdin, never written to the plan file)
+    #[serde(skip)]
+    pub models_token: String,
 }
 
 /// A user name as the system takes it (lower case, letters, digits, - and _, starting with a letter).
