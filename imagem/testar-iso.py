@@ -76,6 +76,17 @@ class Console:
         return body.strip(), int(code.split()[0])
 
 
+def system_modes(c):
+    """The system's folders are 755 and nothing under /usr, /etc or /boot is writable by a group or by everyone: a
+    trusted program kalangod checks (the approval screen, the shell) is refused in a group-writable folder, and such a
+    folder lets more than root change the system."""
+    out, _ = c.run("stat -c '%a %U:%G %n' /usr /usr/bin /usr/lib /usr/libexec /usr/libexec/kalango /etc; "
+                   "echo ---; find /usr /etc /boot -xdev ! -type l -perm /022 ! -perm -1000 2>/dev/null | head -5", 300)
+    modes, _, loose = out.partition("---")
+    ok = all(l.split()[:2] == ["755", "root:root"] for l in modes.strip().splitlines()) and not loose.strip()
+    return check(ok, "as pastas do sistema são 755 de root e nada nelas é gravável por grupo ou por outros", out)
+
+
 def check(ok, what, details=""):
     print(("ok    " if ok else "FALHOU ") + what)
     if not ok and details:
@@ -114,6 +125,7 @@ def main():
         # (a placa com fio da VM ligada pelo NetworkManager: com a regra do Ubuntu sem netplan, ela ficava sem gerência)
         net, _ = c.run("nmcli -t -f TYPE,STATE device | grep ^ethernet")
         good &= check("ethernet:connected" in net, "a rede com fio conecta sozinha", net)
+        good &= system_modes(c)
     elif mode == "instalar":
         plan = sys.argv[3]
         password = sys.argv[4]
@@ -190,6 +202,7 @@ def main():
         good &= check("os.kalango.Remote.desktop" in apps and "os.kalango.Audio.desktop" in apps and apps.strip().endswith("0"),
                       "o Kalango Remote e o Kalango Audio estão no sistema, sem biblioteca faltando", apps)
         # (a / do root e 755: senão o systemd-tmpfiles recusa caminhos e qualquer conta mexe na raiz)
+        good &= system_modes(c)
         top, _ = c.run("stat -c '%U:%G %a' /")
         good &= check(top.strip() == "root:root 755", "a raiz / é do root, com 755", top)
         root, _ = c.run("findmnt -no FSTYPE,SOURCE /")
