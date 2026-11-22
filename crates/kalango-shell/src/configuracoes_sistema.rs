@@ -2123,8 +2123,29 @@ fn avatar(a: &Account, px: i32) -> gtk::Widget {
 fn locale_name(l: &str) -> String {
     let code = l.split('.').next().unwrap_or(l);
     let (lang, region) = code.split_once('_').unwrap_or((code, ""));
-    let langs = [("pt", "Português"), ("en", "English"), ("es", "Español"), ("fr", "Français"), ("de", "Deutsch"), ("it", "Italiano"), ("ja", "日本語"), ("zh", "中文"), ("ru", "Русский"), ("C", "C")];
-    let regions = [("BR", "Brasil"), ("PT", "Portugal"), ("US", "US"), ("GB", "UK"), ("ES", "España"), ("MX", "México"), ("AR", "Argentina"), ("FR", "France"), ("DE", "Deutschland")];
+    // Display names for locales from `locale -a` (not the UI catalog list — see kalango_i18n::has_ui_catalog).
+    let langs = [
+        ("pt", "Português"), ("en", "English"), ("es", "Español"), ("fr", "Français"), ("de", "Deutsch"),
+        ("it", "Italiano"), ("ja", "日本語"), ("zh", "中文"), ("ru", "Русский"), ("ar", "العربية"),
+        ("hi", "हिन्दी"), ("ko", "한국어"), ("nl", "Nederlands"), ("pl", "Polski"), ("tr", "Türkçe"),
+        ("uk", "Українська"), ("vi", "Tiếng Việt"), ("th", "ไทย"), ("id", "Bahasa Indonesia"),
+        ("sv", "Svenska"), ("nb", "Norsk"), ("nn", "Norsk"), ("no", "Norsk"), ("fi", "Suomi"),
+        ("da", "Dansk"), ("cs", "Čeština"), ("el", "Ελληνικά"), ("he", "עברית"), ("fa", "فارسی"),
+        ("bn", "বাংলা"), ("ro", "Română"), ("hu", "Magyar"), ("sk", "Slovenčina"), ("hr", "Hrvatski"),
+        ("ca", "Català"), ("gl", "Galego"), ("eu", "Euskara"), ("C", "C"),
+    ];
+    let regions = [
+        ("BR", "Brasil"), ("PT", "Portugal"), ("US", "US"), ("GB", "UK"), ("ES", "España"),
+        ("MX", "México"), ("AR", "Argentina"), ("FR", "France"), ("DE", "Deutschland"), ("IT", "Italia"),
+        ("JP", "日本"), ("CN", "中国"), ("TW", "台灣"), ("KR", "한국"), ("RU", "Россия"),
+        ("IN", "India"), ("SA", "السعودية"), ("AE", "UAE"), ("NL", "Nederland"), ("PL", "Polska"),
+        ("TR", "Türkiye"), ("UA", "Україна"), ("VN", "Việt Nam"), ("TH", "ไทย"), ("ID", "Indonesia"),
+        ("SE", "Sverige"), ("NO", "Norge"), ("FI", "Suomi"), ("DK", "Danmark"), ("CZ", "Česko"),
+        ("GR", "Ελλάδα"), ("IL", "ישראל"), ("IR", "ایران"), ("BD", "বাংলাদেশ"), ("RO", "România"),
+        ("HU", "Magyarország"), ("SK", "Slovensko"), ("HR", "Hrvatska"), ("CA", "Canada"),
+        ("AU", "Australia"), ("NZ", "New Zealand"), ("ZA", "South Africa"), ("CH", "Schweiz"),
+        ("AT", "Österreich"), ("BE", "België"), ("CL", "Chile"), ("CO", "Colombia"), ("PE", "Perú"),
+    ];
     let ln = langs.iter().find(|(c, _)| *c == lang).map(|(_, n)| n.to_string()).unwrap_or_else(|| lang.to_string());
     match regions.iter().find(|(c, _)| *c == region).map(|(_, n)| n.to_string()).or_else(|| (!region.is_empty()).then(|| region.to_string())) {
         Some(r) => format!("{ln} ({r})"),
@@ -2182,6 +2203,8 @@ mod tests {
         assert_eq!(human(2_400_000_000), "2,4 GB");
         assert_eq!(locale_name("pt_BR.UTF-8"), "Português (Brasil)");
         assert_eq!(locale_name("en_US.UTF-8"), "English (US)");
+        assert_eq!(locale_name("ja_JP.UTF-8"), "日本語 (日本)");
+        assert_eq!(locale_name("ar_SA.UTF-8"), "العربية (السعودية)");
     }
 
     #[test]

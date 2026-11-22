@@ -217,7 +217,7 @@ libadwaita 1.6 ou mais novo. O patch 0005 do niri torna opcional o encaixe ao ar
 ### Fase 6 · Qualidade e lançamento (contínuo)
 
 - [ ] Acessibilidade: leitor de tela (AT-SPI), alto contraste, texto grande, navegação só por teclado, "reduzir animações".
-- [ ] Idiomas: hoje todo o texto está em português do Brasil; preparar tradução e formatos regionais.
+- [x] Idiomas: motor `kalango-i18n` com fallback EN, override `KALANGO_UI_LANG`, catálogo pt_BR; estratégia global em `docs/I18N.md` (issue #49). Catálogos novos e Weblate hospedado ainda abertos.
 - [ ] Metas de desempenho medidas: tempo de inicialização, memória em repouso, quadros por segundo.
 - [ ] Segurança: modelo de ameaças, revisão do isolamento dos agentes, atualizações assinadas.
 - [ ] Testes de interface automatizados e de regressão visual contra o design.
