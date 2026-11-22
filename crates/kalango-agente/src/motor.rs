@@ -890,17 +890,21 @@ impl Agent {
                 // (what the person wrote, and the date and time the system gives: "2026" in a search came from there
                 // even when a log read on this computer also has it)
                 let trusted = format!("{}\n{}", self.person_text, now_note());
-                let tainted = if tool.name.starts_with("web.") {
-                    // (to the web: links that pages showed may be followed; local data may not leave)
+                // (to the network, by a web tool, a connector or a command line with an address: links that pages showed may be
+                // followed; local data may not leave, not even glued, split or encoded inside the address)
+                let network = tool.name.starts_with("web.") || de_conector;
+                let url_in_args = !network && defesa::above_user_level(&tool.level) && call.arguments.to_string().contains("://");
+                let mut tainted = None;
+                if network || url_in_args {
                     let (web, local): (Vec<(&String, &bool)>, Vec<(&String, &bool)>) = self.external.iter().zip(&self.external_web).partition(|(_, w)| **w);
                     let local: Vec<String> = local.into_iter().map(|(t, _)| t.clone()).collect();
                     let web: Vec<String> = web.into_iter().map(|(t, _)| t.clone()).collect();
-                    defesa::tainted_web_call(&call.arguments, &trusted, &local, &web)
-                } else if defesa::above_user_level(&tool.level) || (de_conector && !tool.read_only) || matches!(name.as_str(), "tela.digitar" | "tela.teclas") {
-                    defesa::tainted_argument(&call.arguments, &trusted, &self.external)
-                } else {
-                    None
-                };
+                    tainted = if network { defesa::tainted_web_call(&call.arguments, &trusted, &local, &web) } else { defesa::tainted_urls_in_args(&call.arguments, &trusted, &local, &web) };
+                }
+                if tainted.is_none() && !tool.name.starts_with("web.")
+                    && (defesa::above_user_level(&tool.level) || (de_conector && !tool.read_only) || matches!(name.as_str(), "tela.digitar" | "tela.teclas")) {
+                    tainted = defesa::tainted_argument(&call.arguments, &trusted, &self.external);
+                }
                 {
                     if let Some(value) = tainted {
                         return self.stop(on_event, trf("the action {tool} would use “{value}”, which came from content read by the agent and not from you", &[("tool", name.clone()), ("value", value.clone())]), value, name);
