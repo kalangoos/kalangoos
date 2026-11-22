@@ -15,7 +15,7 @@ trabalhando com apoio de IA, não prazos.
 
 | Frente | O que existe | Onde |
 |---|---|---|
-| Design | 24 páginas, cerca de 200 telas, componentes com estados, variáveis de cor (escuro e claro), estilos de texto, molas | `design/KalangoOS-DesignSystem.figcraft` |
+| Design | 24 páginas, cerca de 200 telas, componentes com estados, variáveis de cor (escuro e claro), estilos de texto, molas | [`kalangoos/design`](https://github.com/kalangoos/design) (`KalangoOS-DesignSystem.figcraft`) |
 | Tokens em código | Cores (dois modos), movimento e medidas exportados | `design/tokens/` |
 | Marca | Logo em PNG e SVG, 19 ícones de app em PNG e SVG | `assets/brand/`, `assets/icons/kalango/` |
 | Prova de conceito | Barra superior e barra lateral do sistema em Rust + GTK4 sobre Wayland, com mola e troca de tema | `poc/` |
