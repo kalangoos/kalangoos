@@ -79,10 +79,18 @@ fn remove_stale_recordings(dir: &std::path::Path) {
     }
 }
 
+/// The file of a new recording: unique in this process (a counter before the pid, which stays the last part of the
+/// name for `remove_stale_recordings`). A window closed while listening discards its recording in the background
+/// for up to two seconds; reopened and listening again at once, the new one must not be the file that discard deletes.
+fn recording_path(dir: &std::path::Path, tag: &str) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    dir.join(format!("voz-{tag}-{n}-{}.wav", std::process::id()))
+}
+
 pub fn start(tag: &str) -> Result<Recording, String> {
     remove_stale_recordings(&private_dir());
-    let path = private_dir().join(format!("voz-{tag}-{}.wav", std::process::id()));
-    let _ = std::fs::remove_file(&path);
+    let path = recording_path(&private_dir(), tag);
     let mut cmd = match std::env::var_os("KALANGO_GRAVADOR") {
         Some(p) => Command::new(p),
         None => {
@@ -97,6 +105,11 @@ pub fn start(tag: &str) -> Result<Recording, String> {
 }
 
 impl Recording {
+    #[cfg(test)]
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// How loud the last tenth of a second was (0 – 1), from the end of the file being written (16 kHz, 16 bits).
     pub fn level(&self) -> f32 {
         use std::io::{Read, Seek, SeekFrom};
@@ -185,5 +198,22 @@ mod tests {
         super::remove_stale_recordings(&d);
         assert!(mine.exists() && other.exists() && !dead.exists());
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn every_recording_has_its_own_file_and_the_pid_stays_last() {
+        let d = std::path::Path::new("/nada");
+        let (a, b) = (super::recording_path(d, "ajuda"), super::recording_path(d, "ajuda"));
+        assert_ne!(a, b, "two recordings of the same process never share a file");
+        let stem = a.file_name().unwrap().to_string_lossy().trim_end_matches(".wav").to_string();
+        assert_eq!(stem.rsplit('-').next().unwrap(), std::process::id().to_string(), "{stem}");
+        // a leftover of a dead process, in the new name, is still cleaned up
+        let dir = std::env::temp_dir().join(format!("kalango-voz-teste-nome-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dead = dir.join("voz-ajuda-3-2147483646.wav");
+        std::fs::write(&dead, b"x").unwrap();
+        super::remove_stale_recordings(&dir);
+        assert!(!dead.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

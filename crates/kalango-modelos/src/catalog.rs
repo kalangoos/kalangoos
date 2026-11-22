@@ -112,5 +112,28 @@ mod tests {
             assert!(c.iter().any(|m| m.id == *id), "{id}");
         }
         assert!(c.iter().all(|m| m.arquivos.iter().all(|f| f.bytes > 0 && f.url.starts_with("https://"))));
+        let mut ids: Vec<&str> = c.iter().map(|m| m.id.as_str()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), c.len(), "no id twice");
+    }
+
+    /// d1-Omni-2B (the decision model that also hears) is in the catalog for the person to install, but is not one of the
+    /// five the installer offers. Sizes and sums are the ones of the files in the model's repository (the Hugging Face
+    /// LFS pointers), the same repository pattern as d1-2B.
+    #[test]
+    fn d1_omni_is_installable_from_the_catalog_but_is_not_a_slot() {
+        let c = parse_catalog(include_str!("../../../sessao/dist/share/kalango/loja/modelos.json")).unwrap();
+        let m = c.iter().find(|m| m.id == "d1-omni-2b").expect("d1-omni-2b is in the catalog");
+        assert_eq!(m.tipo, "decisao");
+        assert!(m.verifiable());
+        let files: Vec<(&str, u64, &str)> = m.arquivos.iter().map(|f| (f.nome.as_str(), f.bytes, f.sha256.as_str())).collect();
+        assert_eq!(files, vec![
+            ("d1-Omni-2B-Q8_0.gguf", 1_846_241_184, "aedf1a7c341b4281979423dbc39e9c3d3ad1da8834156c8e75af5399ca3b0861"),
+            ("mmproj-d1-Omni-2B-Q8_0.gguf", 326_104_096, "31778160ac0ec70f9b59f296aa1c8e70cbd1eb7e3a3ff873d695aaa4c7b8d674"),
+        ]);
+        assert!(m.arquivos.iter().all(|f| f.url == format!("https://huggingface.co/LiquidAI/d1-Omni-2B-GGUF/resolve/main/{}", f.nome)));
+        assert_eq!(m.main_file().map(|f| f.nome.as_str()), Some("d1-Omni-2B-Q8_0.gguf"));
+        assert!(!SLOTS.iter().any(|(_, id)| *id == "d1-omni-2b"), "the installer still offers five models");
     }
 }

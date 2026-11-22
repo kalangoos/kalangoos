@@ -1556,7 +1556,9 @@ mod release_tests {
     /// Needs a display of its own (it maps a window): KALANGO_TESTE_GTK=1 with DISPLAY on a virtual one —
     /// `Xvfb :119 & KALANGO_TESTE_GTK=1 DISPLAY=:119 GDK_BACKEND=x11 WAYLAND_DISPLAY= cargo test release_tests`, or in
     /// CI `KALANGO_TESTE_GTK=1 GDK_BACKEND=x11 xvfb-run -a cargo test -p kalango-shell release_tests` (one test: GTK
-    /// lives on the one thread that started it).
+    /// lives on the one thread that started it, gtk4 `rt.rs`: this test and `help_app::tests::closing_the_window_stops_the_listening`
+    /// cannot share one process, so one filter per run:
+    /// `KALANGO_TESTE_GTK=1 xvfb-run -a cargo test -p kalango-shell --bin kalango-shell -- --test-threads=1 release_tests`).
     #[test]
     fn a_closed_window_lets_go_of_its_surface_and_keeps_its_widgets() {
         if std::env::var_os("KALANGO_TESTE_GTK").is_none() || gtk::init().is_err() {

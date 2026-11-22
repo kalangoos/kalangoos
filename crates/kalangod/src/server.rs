@@ -348,8 +348,8 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
                 Err(e) => err(id, -32005, &e),
             }
         }
-        // whether a call would be asked on the approval screen for changing a file that runs at login: the agents'
-        // engine then does not ask in the conversation too (the same question twice, there with an "always")
+        // whether a call would be asked on the approval screen for changing a file that runs at login or anything
+        // outside the folders agents work in: the agents' engine then does not ask in the conversation too (the same question twice, there with an "always")
         "kalango/inicio" => {
             let name = params.get("ferramenta").and_then(Value::as_str).unwrap_or("");
             let a = params.get("argumentos").cloned().unwrap_or(json!({}));

@@ -12,7 +12,7 @@ use gtk::prelude::*;
 use gtk::{cairo, gdk, gio, glib, Align, Orientation};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use kalango_i18n::{tr, trf};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
@@ -108,6 +108,9 @@ pub struct HelpApp {
     current: RefCell<Option<(String, Option<String>)>>,
     overlay: RefCell<Option<gtk::Window>>,
     recording: Rc<RefCell<Option<crate::voz::Recording>>>,
+    /// Bumped every time the window is hidden: what a dictation started before that is no longer wanted (a
+    /// transcription that arrives after the window was closed must not fill the entry nor ask the agent on reopening).
+    generation: Rc<Cell<u64>>,
     shell: Weak<Shell>,
 }
 
@@ -360,7 +363,7 @@ impl HelpApp {
         window.set_child(Some(&root));
         let a = Rc::new(HelpApp {
             window, entry, answer, answer_text, show_me, open_page, do_it, topics: RefCell::default(), current: RefCell::default(),
-            overlay: RefCell::default(), recording: Rc::default(), shell: Rc::downgrade(shell),
+            overlay: RefCell::default(), recording: Rc::default(), generation: Rc::default(), shell: Rc::downgrade(shell),
         });
         a.wire(&send, &mic, &start_buttons, &common_buttons, &manual_b, &comm_b, community, &report);
         a
@@ -406,8 +409,22 @@ impl HelpApp {
                     b.remove_css_class("gravando");
                     a.say(tr("Writing down what you said…"), None);
                     let w2 = Rc::downgrade(&a);
+                    let started_in = a.generation.get();
                     crate::lateral::em_segundo_plano(move || crate::voz::finish(r), move |t: Result<String, String>| {
                         let Some(a) = w2.upgrade() else { return };
+                        // the window was closed while it was being written down: the result is dropped
+                        if !dictation_is_current(&a.generation, started_in) {
+                            if debug() {
+                                eprintln!("debug ajuda: transcrição descartada (a janela foi fechada)");
+                            }
+                            // (its "Writing down what you said…" must not stay on the card after reopening)
+                            if clear_status(&a.answer, &a.answer_text, tr("Writing down what you said…")) {
+                                a.show_me.set_visible(false);
+                                a.open_page.set_visible(false);
+                                *a.current.borrow_mut() = None;
+                            }
+                            return;
+                        }
                         match t.map(|t| t.trim().to_string()) {
                             Ok(t) if !t.is_empty() => {
                                 if debug() {
@@ -426,7 +443,7 @@ impl HelpApp {
         // closed while listening: the listening stops and the recording is thrown away (the window is only hidden, and
         // before this the recorder went on behind it, with the microphone open)
         let w = Rc::downgrade(self);
-        stop_listening_when_closed(&self.window, &self.recording, mic, move |text| {
+        stop_listening_when_closed(&self.window, &self.recording, &self.generation, mic, move |text| {
             if let Some(a) = w.upgrade() {
                 a.say(text, None);
             }
@@ -731,15 +748,34 @@ fn ask_agent(cmd: &str, input: &serde_json::Value) -> Result<serde_json::Value, 
     serde_json::from_slice::<serde_json::Value>(&o.stdout).map_err(|_| String::from_utf8_lossy(&o.stderr).trim().lines().last().unwrap_or("").to_string())
 }
 
+/// Hides the answer card when it still shows `status` (a transient line of a dictation that is no longer wanted);
+/// anything else it shows is left alone. Whether it was cleared.
+fn clear_status(answer: &gtk::Box, text: &gtk::Label, status: &str) -> bool {
+    if text.text() != status {
+        return false;
+    }
+    text.set_text("");
+    answer.set_visible(false);
+    true
+}
+
+/// Whether a dictation that began when the window was in generation `started_in` is still wanted: the window has not
+/// been hidden since.
+fn dictation_is_current(generation: &Cell<u64>, started_in: u64) -> bool {
+    generation.get() == started_in
+}
+
 /// A window that closes while the microphone listens: the recording stops and is discarded (off the UI thread), the
-/// microphone's button goes back to normal and `said` tells the person why. Nothing happens when it is not listening.
-fn stop_listening_when_closed(window: &impl IsA<gtk::Widget>, recording: &Rc<RefCell<Option<crate::voz::Recording>>>, mic: &gtk::Button,
-    said: impl Fn(&str) + 'static) {
-    let (rec, mic) = (Rc::downgrade(recording), mic.downgrade());
+/// microphone's button goes back to normal and `said` tells the person why. Nothing is said when it is not
+/// listening. Hiding always bumps `generation`, so a transcription still being written down is dropped when it arrives.
+fn stop_listening_when_closed(window: &impl IsA<gtk::Widget>, recording: &Rc<RefCell<Option<crate::voz::Recording>>>, generation: &Rc<Cell<u64>>,
+    mic: &gtk::Button, said: impl Fn(&str) + 'static) {
+    let (rec, mic, generation) = (Rc::downgrade(recording), mic.downgrade(), generation.clone());
     window.connect_visible_notify(move |win| {
         if win.is_visible() {
             return;
         }
+        generation.set(generation.get() + 1);
         let Some(r) = rec.upgrade().and_then(|r| r.borrow_mut().take()) else { return };
         if let Some(m) = mic.upgrade() {
             m.remove_css_class("gravando");
@@ -756,7 +792,11 @@ fn stop_listening_when_closed(window: &impl IsA<gtk::Widget>, recording: &Rc<Ref
 mod tests {
     use super::*;
 
-    /// Needs a display of its own (KALANGO_TESTE_GTK=1, as `release_tests` in superficies.rs). Closing the window
+    /// Needs a display of its own (KALANGO_TESTE_GTK=1, as `release_tests` in superficies.rs). GTK may only be used
+    /// from the thread that started it (gtk4 `rt.rs`), so this test and `superficies::release_tests` cannot share one
+    /// process: run each on its own, one filter per run:
+    /// `KALANGO_TESTE_GTK=1 xvfb-run -a cargo test -p kalango-shell --bin kalango-shell -- --test-threads=1 closing_the_window_stops_the_listening`.
+    /// Closing the window
     /// while the recorder runs stops it, resets the button and says why; closing it when not listening does nothing.
     #[test]
     fn closing_the_window_stops_the_listening() {
@@ -787,15 +827,20 @@ mod tests {
         let win = gtk::Window::new();
         let mic = gtk::Button::new();
         let recording: Rc<RefCell<Option<crate::voz::Recording>>> = Rc::default();
+        let generation: Rc<Cell<u64>> = Rc::default();
         let said = Rc::new(RefCell::new(Vec::<String>::new()));
         let s = said.clone();
-        stop_listening_when_closed(&win, &recording, &mic, move |t| s.borrow_mut().push(t.to_string()));
+        stop_listening_when_closed(&win, &recording, &generation, &mic, move |t| s.borrow_mut().push(t.to_string()));
         // not listening: closing says nothing
         win.set_visible(true);
         run(50);
         win.set_visible(false);
         run(50);
         assert!(said.borrow().is_empty(), "nothing said when it was not listening");
+        // (but the window was hidden: a dictation under way from before is no longer wanted)
+        assert_eq!(generation.get(), 1);
+        assert!(!dictation_is_current(&generation, 0), "a transcription that began before the close is dropped");
+        assert!(dictation_is_current(&generation, 1), "one that began after it is kept");
         // listening: closing stops it
         win.set_visible(true);
         *recording.borrow_mut() = Some(crate::voz::start("teste").expect("the stand-in recorder starts"));
@@ -808,6 +853,31 @@ mod tests {
         assert!(!mic.has_css_class("gravando"), "the button is reset");
         assert_eq!(*said.borrow(), vec![tr("Listening stopped: the window was closed.").to_string()]);
         assert!(!recorder_runs(), "the recorder is stopped: the microphone is not open behind the closed window");
+        assert_eq!(generation.get(), 2);
+        // a dropped transcription takes its own "Writing down…" line off the card, and only that line
+        let (card, label) = (gtk::Box::new(gtk::Orientation::Vertical, 0), gtk::Label::new(Some(tr("Writing down what you said…"))));
+        card.set_visible(true);
+        assert!(clear_status(&card, &label, tr("Writing down what you said…")));
+        assert!(!card.is_visible() && label.text().is_empty());
+        label.set_text("Uma resposta de verdade");
+        card.set_visible(true);
+        assert!(!clear_status(&card, &label, tr("Writing down what you said…")) && card.is_visible(), "an answer is kept");
+        // closed while listening and reopened at once, listening again before the first one's discard has finished: the
+        // new recording is its own file, and the discard does not take it away
+        win.set_visible(true);
+        *recording.borrow_mut() = Some(crate::voz::start("teste").expect("the stand-in recorder starts"));
+        let first = recording.borrow().as_ref().unwrap().path().to_path_buf();
+        run(200);
+        win.set_visible(false);
+        win.set_visible(true);
+        *recording.borrow_mut() = Some(crate::voz::start("teste").expect("the stand-in recorder starts"));
+        let second = recording.borrow().as_ref().unwrap().path().to_path_buf();
+        assert_ne!(first, second, "each recording has its own file");
+        run(1500);
+        assert!(second.exists(), "the discard of the first recording did not delete the new one");
+        assert!(!first.exists(), "the first one was discarded");
+        let r = recording.borrow_mut().take().unwrap();
+        crate::voz::discard(r);
         win.destroy();
         let _ = std::fs::remove_dir_all(&dir);
     }
