@@ -196,6 +196,10 @@ pub const KALANGO_PROTECTED: &[&str] = &[
     "~/.config/kalango-remote",
     "~/.local/share/kalango/fluxos",
     "~/.local/share/kalango/virtualdesk",
+    // VirtualDesk itself, with the "internet only" guard of the sandbox copies inside, and where an older one kept
+    // the guard as a separate library: an agent that could swap either would open the copies' network
+    "~/.local/bin/kalango-virtualdesk",
+    "~/.local/lib/kalango-virtualdesk",
     "~/.local/share/kalango/conversas",
     "~/.local/share/kalango/modelos",
     "~/.local/share/kalango/cofre.json",

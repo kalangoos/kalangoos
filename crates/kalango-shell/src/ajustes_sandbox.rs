@@ -25,11 +25,13 @@ pub struct Machine {
     pub cpus: u64,
     pub memory_mb: u64,
     pub disk_gb: f64,
-    /// "nat" or "nenhuma"
+    /// "nat", "internet" or "nenhuma" (VirtualDesk's three network modes)
     pub network: String,
     pub folders: usize,
     /// the snapshot a copy starts from, with memory (ready without booting); None: it boots cold
     pub memory_snapshot: Option<String>,
+    /// what VirtualDesk says about it: Some(Some(template)) a sandbox copy, Some(None) not one, None not said
+    pub copy_of: Option<Option<String>>,
 }
 
 impl Machine {
@@ -50,12 +52,18 @@ impl Machine {
             network: m["rede"].as_str().unwrap_or("").to_string(),
             folders: m["pastas"].as_array().map(Vec::len).unwrap_or(0),
             memory_snapshot: snap,
+            // VirtualDesk says which machines are sandbox copies (and of which template); an older one did not
+            copy_of: m.get("copia_de").map(|v| v.as_str().map(String::from)),
         })
     }
 
-    /// A sandbox's disposable copy (vm.clonar names them "sandbox-…"), not a template.
+    /// A sandbox's disposable copy, not a template: as VirtualDesk says ("copia_de"); from an older VirtualDesk that
+    /// does not say, by the name vm.clonar gives them ("sandbox-…").
     pub fn is_copy(&self) -> bool {
-        self.id.starts_with("sandbox-")
+        match &self.copy_of {
+            Some(of) => of.is_some(),
+            None => self.id.starts_with("sandbox-"),
+        }
     }
 
     pub fn is_on(&self) -> bool {
@@ -448,7 +456,8 @@ impl SandboxTab {
                 info(&self.s_info, tr("State"), &state_word(&m.state), if m.is_on() { "teal" } else { "" });
                 info(&self.s_defaults, tr("Processors and memory"), &format!("{} · {}", m.cpus, gb_text(m.memory_mb as f64 / 1024.0)), "");
                 info(&self.s_defaults, tr("Network"), tr("chosen by who uses it"), "");
-                info(&self.s_defaults, tr("Shared folders"), &if m.folders == 0 { tr("none").to_string() } else { trf("{n} of the template's", &[("n", m.folders.to_string())]) }, "");
+                // a copy never takes the template's folders (VirtualDesk's vm.clonar leaves them out)
+                info(&self.s_defaults, tr("Shared folders"), tr("none"), "");
                 info(&self.s_defaults, tr("Used by"), &self.users.borrow().get(&m.id).map(|u| u.join(", ")).unwrap_or_else(|| tr("nobody").to_string()), "");
             }
             None => {
@@ -532,6 +541,16 @@ mod tests {
         assert_eq!(virtualdesk_program(), Some(bin));
         std::env::remove_var("KALANGO_VIRTUALDESK");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copies_are_told_by_virtualdesk_not_by_their_names() {
+        let copy = Machine::from_json(&json!({"id": "caixa-nat", "copia_de": "modelo-alpine"})).unwrap();
+        let mine = Machine::from_json(&json!({"id": "sandbox-da-ana", "copia_de": null})).unwrap();
+        let old = Machine::from_json(&json!({"id": "sandbox-1a2b"})).unwrap();
+        assert!(copy.is_copy(), "named by an agent, still a copy");
+        assert!(!mine.is_copy(), "the person's own machine, whatever its name");
+        assert!(old.is_copy(), "an older VirtualDesk: by the name");
     }
 
     #[test]

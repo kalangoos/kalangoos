@@ -2642,7 +2642,7 @@ fn sandbox_settings(page: &Rc<FlowPage>, n: &NodeDoc, _inside: usize) {
     let i = ui_icon("info", "#8E8F99", 14);
     i.set_valign(Align::Start);
     info.append(&i);
-    let l = rotulo(tr("Drag blocks into the dashed area. Blocks outside do not see the machine; only the declared outputs pass."), "fluxo-chave-sub");
+    let l = rotulo(tr("Drag blocks into the dashed area. Blocks outside do not see the machine; only the declared outputs pass. Each file that goes in or comes back asks you every time — an approval on your own machines does not count for a copy — unless you chose “never” for sandbox copies in VirtualDesk › Settings › What the agents can do (copy files)."), "fluxo-chave-sub");
     l.set_xalign(0.0);
     l.set_wrap(true);
     l.set_hexpand(true);

@@ -158,6 +158,19 @@ fn rebind(sys: &Path, addr: &str, driver: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The checks of `gpu.vfio_reservar` that need no answer from the person: a valid address, a GPU there, and one that
+/// may go to a machine (`refuse`). Run before asking, and again when it runs.
+pub fn precheck(a: &Value) -> Result<(), String> {
+    let addr = valid_addr(s(a, "endereco")?)?.to_string();
+    let sys = Path::new("/sys");
+    let all = cards(sys);
+    let card = all.iter().find(|x| x.addr == addr).ok_or_else(|| trf("there is no GPU at {a}", &[("a", addr.clone())]))?;
+    match refuse(&all, card, iommu_on(sys)) {
+        Some(why) => Err(why),
+        None => Ok(()),
+    }
+}
+
 fn reservar(c: &Ctx, a: &Value) -> Result<Out, String> {
     let addr = valid_addr(s(a, "endereco")?)?.to_string();
     let sys = Path::new("/sys");

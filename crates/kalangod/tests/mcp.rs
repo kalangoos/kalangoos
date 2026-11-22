@@ -1037,8 +1037,8 @@ fn virtual_machines_cannot_reach_startup_files_unasked() {
     let d = start_startup_env(&[("KALANGO_VIRTUALDESK", vd.to_str().unwrap())]);
     let mut c = Client::new(&d.sock);
     std::fs::create_dir_all(d.area.join(".config/autostart")).unwrap();
-    for (tool, args) in [("vm.pastas", json!({"maquina": "ana", "caminho": "~/.config/autostart", "acao": "adicionar"})),
-                         ("vm.copiar_arquivo", json!({"maquina": "ana", "sentido": "da_maquina", "de": "/tmp/x", "para": "~/.bashrc"}))] {
+    for (tool, args) in [("vm.pastas", json!({"id": "ana", "caminho": "~/.config/autostart", "acao": "compartilhar"})),
+                         ("vm.copiar_arquivo", json!({"id": "ana", "sentido": "da_maquina", "de": "/tmp/x", "para": "~/.bashrc"}))] {
         let h = answer_startup(d.sock.clone(), "negar");
         let r = c.call(tool, args);
         let (req, _) = h.join().unwrap();
@@ -1050,7 +1050,7 @@ fn virtual_machines_cannot_reach_startup_files_unasked() {
     // an ordinary folder goes ahead (VirtualDesk asks nothing in this stand-in)
     // (a folder agents work in: outside them, sharing asks too)
     std::fs::create_dir_all(d.area.join("Documentos/Projetos")).unwrap();
-    let r = c.call("vm.pastas", json!({"maquina": "ana", "caminho": "~/Documentos/Projetos", "acao": "adicionar"}));
+    let r = c.call("vm.pastas", json!({"id": "ana", "caminho": "~/Documentos/Projetos", "acao": "compartilhar"}));
     assert_eq!(r["isError"], false, "{r}");
 }
 
@@ -1233,6 +1233,227 @@ print(json.dumps({{"valor": {{"para": args.get("para")}}, "resumo": "copiado"}})
     let r = c.call("vm.copiar_arquivo", json!({"id": "ana", "sentido": "da_maquina", "de": "/tmp/x", "para": d.area.join("Documentos/d/x.desktop")}));
     assert_eq!(r["isError"], true, "{r}");
     assert!(!d.area.join(".config/autostart/x.desktop").exists(), "nothing lands in autostart");
+}
+
+/// The `vm.*` tools against a real Kalango VirtualDesk and a real QEMU (runs only with
+/// `KALANGO_TESTE_VIRTUALDESK=<kalango-virtualdesk>` and `KALANGO_TESTE_VIRTUALDESK_MODELO=<a library folder>` holding
+/// one template machine with a snapshot with memory and qemu-guest-agent running in it; the library is copied, never
+/// used in place). A sandbox copy: asked for the first time, then "internet only" — this computer is out of reach from
+/// inside it — and what the agent does in it does not ask, except opening its network wider or sharing a folder.
+#[test]
+fn virtualdesk_sandbox_copy_through_kalangod() {
+    let (Ok(vd), Ok(modelo)) = (std::env::var("KALANGO_TESTE_VIRTUALDESK"), std::env::var("KALANGO_TESTE_VIRTUALDESK_MODELO")) else {
+        eprintln!("sem KALANGO_TESTE_VIRTUALDESK e KALANGO_TESTE_VIRTUALDESK_MODELO: pulado");
+        return;
+    };
+    let lib = tempfile::tempdir().unwrap();
+    let maquinas = lib.path().join("maquinas");
+    assert!(Command::new("cp").args(["-r", "--reflink=auto", &modelo]).arg(&maquinas).status().unwrap().success());
+    let template = std::fs::read_dir(&maquinas).unwrap().flatten().next().unwrap().file_name().to_string_lossy().to_string();
+    let (cfg, cache) = (lib.path().join("config"), lib.path().join("cache"));
+    // the network this computer is on, as nmcli would say (a stand-in)
+    let nmcli = lib.path().join("nmcli");
+    std::fs::write(&nmcli, "#!/bin/sh\necho 'Celular de Ana'\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&nmcli, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let env = [
+        ("KALANGO_NMCLI", nmcli.to_str().unwrap()),
+        ("KALANGO_VIRTUALDESK", vd.as_str()),
+        ("KALANGO_VIRTUALDESK_DIR", maquinas.to_str().unwrap()),
+        // (VirtualDesk's choices for the agents: the test's own folder, never the person's ~/.config/kalango)
+        ("KALANGO_VIRTUALDESK_TEST_HOME", cfg.to_str().unwrap()),
+        ("XDG_CACHE_HOME", cache.to_str().unwrap()),
+        // the watcher of networks kept off the agents, often (the server's default is 5 s)
+        ("KALANGOD_VIGIA_REDE_MS", "300"),
+    ];
+    let d = start_full_env(true, "", |c| c, &env);
+    let mut c = Client::new(&d.sock);
+    // a server on every address of this computer: the copy must not reach it
+    let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = server.local_addr().unwrap().port();
+
+    let l = c.call("vm.listar", json!({}));
+    assert_eq!(l["isError"], false, "{l}");
+    // the first copy for this program asks
+    let h = approve_next(d.sock.clone());
+    let made = c.call("vm.clonar", json!({"id": template}));
+    assert!(h.join().unwrap().contains("aprovado"), "vm.clonar asks the first time");
+    assert_eq!(made["isError"], false, "{made}");
+    assert_eq!(made["structuredContent"]["rede"], "internet", "{made}");
+    let id = made["structuredContent"]["id"].as_str().unwrap().to_string();
+
+    // inside it, nothing asks: this computer (10.0.2.2 and its own address) is out of reach
+    let probe = format!("for u in http://10.0.2.2:{port}/ http://192.168.0.1/; do timeout 8 wget -q -T 6 -O /dev/null $u 2>&1; done; true");
+    let r = c.call("vm.executar", json!({"id": id, "comando": probe}));
+    assert_eq!(r["isError"], false, "{r}");
+    let out = r["structuredContent"]["saida"].as_str().unwrap_or("").to_string() + r["structuredContent"]["erros"].as_str().unwrap_or("");
+    assert_eq!(out.matches("Network unreachable").count(), 2, "{out}");
+
+    // opening its network wider, or sharing a folder of the person's, asks again
+    let h = approve_next(d.sock.clone());
+    let wide = c.call("vm.ajustes", json!({"id": id, "rede": "casa"}));
+    assert!(h.join().unwrap().contains("aprovado"), "opening the network asks: {wide}");
+    assert_eq!(wide["isError"], false, "{wide}");
+    let h = approve_next(d.sock.clone());
+    let share = c.call("vm.pastas", json!({"id": id, "acao": "compartilhar", "caminho": d.area}));
+    assert!(h.join().unwrap().contains("aprovado"), "sharing a folder asks: {share}");
+
+    // turning it off and deleting it at the end do not
+    let off = c.call("vm.desligar", json!({"id": id, "forcar": true}));
+    assert_eq!(off["isError"], false, "{off}");
+    let del = c.call("vm.apagar", json!({"id": id}));
+    assert_eq!(del["isError"], false, "{del}");
+
+    // the template is not marked as a template for sandboxes: copying it asks every time (denied here)
+    let h = deny_next(d.sock.clone());
+    let again = c.call("vm.clonar", json!({"id": template}));
+    assert!(h.join().unwrap().contains("negado"), "a machine that is not a template asks every time: {again}");
+    // the person marks it as a template (Settings › General): copying it no longer asks after the first time
+    let mj = maquinas.join(&template).join("machine.json");
+    let mut m: Value = serde_json::from_str(&std::fs::read_to_string(&mj).unwrap()).unwrap();
+    m["template"] = json!(true);
+    std::fs::write(&mj, m.to_string()).unwrap();
+
+    // a copy with the home network asks every time, even though this program's first copy was approved (denied
+    // here: nothing is made)
+    for rede in ["casa", "nat"] {
+        let h = deny_next(d.sock.clone());
+        let wide = c.call("vm.clonar", json!({"id": template, "rede": rede}));
+        assert!(h.join().unwrap().contains("negado"), "vm.clonar {rede} asks again");
+        assert_eq!(wide["isError"], true, "{wide}");
+    }
+    let l = c.call("vm.listar", json!({}));
+    assert_eq!(l["structuredContent"]["maquinas"].as_array().unwrap().len(), 1, "only the template: {l}");
+
+    // a copy with network, paused, when this computer joins a network the person keeps the agents off: the watcher
+    // turns it off and says so in the timeline
+    // (the first copy of a template asks once: the copies of a machine that was not a template asked every time, and a
+    // call that asked "every time" never counts as this program's first time)
+    let h = approve_next(d.sock.clone());
+    let made = c.call("vm.clonar", json!({"id": template}));
+    assert!(h.join().unwrap().contains("aprovado"), "the first copy of the template asks: {made}");
+    assert_eq!(made["isError"], false, "{made}");
+    let a = made["structuredContent"]["id"].as_str().unwrap().to_string();
+    assert_eq!(c.call("vm.pausar", json!({"id": a}))["isError"], false);
+    c.rpc("kalango/redes_agentes", json!({"rede": "Celular de Ana", "permitir": false}));
+    let state = |c: &mut Client| {
+        let l = c.call("vm.listar", json!({}));
+        l["structuredContent"]["maquinas"].as_array().unwrap().iter().find(|m| m["id"] == a.as_str()).map(|m| m["estado"].as_str().unwrap_or("").to_string()).unwrap_or_default()
+    };
+    for _ in 0..40 {
+        if state(&mut c) == "desligada" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert_eq!(state(&mut c), "desligada", "the copy was turned off when the network became one kept off the agents");
+    let tl = c.call("linha_do_tempo.listar", json!({}));
+    assert!(tl.to_string().contains("rede sem agentes") && tl.to_string().contains(&a), "in the timeline: {tl}");
+    // and nothing starts it again while there: turning on, continuing, a command, going back to a snapshot with memory
+    for (tool, args) in [
+        ("vm.ligar", json!({"id": a})),
+        ("vm.continuar", json!({"id": a})),
+        ("vm.executar", json!({"id": a, "comando": "true"})),
+        ("vm.snapshot", json!({"id": a, "acao": "voltar", "tag": "s1"})),
+    ] {
+        let r = c.call(tool, args.clone());
+        assert_eq!(r["isError"], true, "{tool}: {r}");
+        assert!(r["content"][0]["text"].as_str().unwrap().contains("Celular de Ana"), "{tool}: {r}");
+    }
+    assert_eq!(state(&mut c), "desligada");
+    // a program outside the agents' slice that is not kalangod (a connector that got out, a script) cannot change a
+    // machine from the command line: no proof from kalangod, no change — whatever key names the machine
+    for (tool, args) in [("vm.ajustes", json!({"maquina": a, "microfone": true, "rede": "nat"})), ("vm.ligar", json!({"id": a}))] {
+        let o = Command::new(&vd).args(["ferramenta", tool, &args.to_string()]).envs(env.iter().copied()).stdin(std::process::Stdio::null()).output().unwrap();
+        let out = String::from_utf8_lossy(&o.stdout).to_string();
+        assert!(out.contains("kalangod") && out.contains("erro"), "{tool}: {out}");
+        // nor with a made-up proof
+        let mut ch = Command::new(&vd).args(["ferramenta", tool, &args.to_string()]).envs(env.iter().copied()).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        {
+            use std::io::Write;
+            writeln!(ch.stdin.take().unwrap(), "prova {}", "ab".repeat(16)).unwrap();
+        }
+        let out = String::from_utf8_lossy(&ch.wait_with_output().unwrap().stdout).to_string();
+        assert!(out.contains("erro"), "{tool} with a made-up proof: {out}");
+    }
+    assert_eq!(state(&mut c), "desligada");
+    // kalangod itself refuses a machine named by an undeclared key (only "id" is declared)
+    let r = c.call("vm.ajustes", json!({"maquina": a, "microfone": true}));
+    assert_eq!(r["isError"], true, "{r}");
+    let why = r["content"][0]["text"].as_str().unwrap();
+    assert!(why.contains("'id'") || why.contains("maquina"), "{r}");
+    // and with the declared key too, an undeclared one is refused
+    let r = c.call("vm.ajustes", json!({"id": a, "maquina": a, "microfone": true}));
+    assert!(r["content"][0]["text"].as_str().unwrap().contains("maquina"), "{r}");
+    // a copy never takes another machine's name; and a machine named like another's id is never mistaken for it:
+    // the template (NAT) cannot be started by naming it, even with a machine without network called like its id
+    let named = c.call("vm.clonar", json!({"id": template, "nome": template, "rede": "nenhuma"}));
+    assert_eq!(named["isError"], true, "{named}");
+    let other = maquinas.join("outra");
+    std::fs::create_dir_all(&other).unwrap();
+    let mut o: Value = serde_json::from_str(&std::fs::read_to_string(&mj).unwrap()).unwrap();
+    o["id"] = json!("outra");
+    o["name"] = json!(template);
+    o["network"] = json!("none");
+    o["template"] = json!(false);
+    o["last_run"] = json!(u64::MAX / 2);
+    std::fs::write(other.join("machine.json"), o.to_string()).unwrap();
+    // (refused before anyone is asked: the network check comes before the approval)
+    let wrong = c.call("vm.ligar", json!({"id": template}));
+    assert_eq!(wrong["isError"], true, "the template has network: {wrong}");
+    let p = c.rpc("kalango/pendentes", json!({}));
+    assert!(p["result"].as_array().unwrap().is_empty(), "nobody was asked: {p}");
+    assert!(wrong["content"][0]["text"].as_str().unwrap().contains("Celular de Ana"), "{wrong}");
+    std::fs::remove_dir_all(&other).unwrap();
+    c.call("vm.apagar", json!({"id": a}));
+
+    // on a network the person keeps the agents off, a copy with network is refused (before anyone is asked); a copy
+    // without network is fine
+    let off = c.call("vm.clonar", json!({"id": template}));
+    assert_eq!(off["isError"], true, "{off}");
+    assert!(off["content"][0]["text"].as_str().unwrap().contains("Celular de Ana"), "{off}");
+    let p = c.rpc("kalango/pendentes", json!({}));
+    assert!(p["result"].as_array().unwrap().is_empty(), "nobody was asked: {p}");
+    let none = c.call("vm.clonar", json!({"id": template, "rede": "nenhuma"}));
+    assert_eq!(none["isError"], false, "{none}");
+    let nid = none["structuredContent"]["id"].as_str().unwrap().to_string();
+    let r = c.call("vm.executar", json!({"id": nid, "comando": "true"}));
+    assert_eq!(r["isError"], false, "a copy without network may run: {r}");
+    c.call("vm.desligar", json!({"id": nid, "forcar": true}));
+    c.call("vm.apagar", json!({"id": nid}));
+    c.rpc("kalango/redes_agentes", json!({"rede": "Celular de Ana", "permitir": true}));
+
+    // a copy whose sockets are somewhere else (another runtime folder: vm.listar does not see it running) is still
+    // found by the watcher, in /proc, and turned off when the network becomes one kept off the agents
+    let run = tempfile::Builder::new().prefix("kvdr").tempdir_in("/tmp").unwrap();
+    std::fs::set_permissions(run.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    // (made through a second kalangod whose VirtualDesk calls use that other runtime folder)
+    let mut env2: Vec<(&str, &str)> = env.iter().copied().filter(|(k, _)| *k != "KALANGOD_VIGIA_REDE_MS").collect();
+    let run_s = run.path().to_str().unwrap().to_string();
+    env2.push(("XDG_RUNTIME_DIR", &run_s));
+    let d2 = start_full_env(true, "", |c| c, &env2);
+    let mut c2 = Client::new(&d2.sock);
+    let made = c2.call("vm.clonar", json!({"id": template}));
+    let b = made["structuredContent"]["id"].as_str().unwrap_or_else(|| panic!("{made}")).to_string();
+    let running = |id: &str| {
+        std::fs::read_dir("/proc").unwrap().flatten().any(|e| {
+            std::fs::read(e.path().join("cmdline")).is_ok_and(|c| String::from_utf8_lossy(&c).contains(&format!("process=kvd-{id}")))
+        })
+    };
+    assert!(running(&b), "the copy runs");
+    let seen = c.call("vm.listar", json!({})).to_string();
+    assert!(!seen.contains("\"rodando\""), "kalangod's own runtime folder does not see it running: {seen}");
+    c.rpc("kalango/redes_agentes", json!({"rede": "Celular de Ana", "permitir": false}));
+    for _ in 0..40 {
+        if !running(&b) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert!(!running(&b), "the watcher found it in /proc and turned it off");
+    c.rpc("kalango/redes_agentes", json!({"rede": "Celular de Ana", "permitir": true}));
+    c2.call("vm.apagar", json!({"id": b}));
+    drop(server);
 }
 
 /// The allowlist (allowlist.rs), with the round-4 critic's cases: a command writes in the work folders, the project
@@ -1724,4 +1945,98 @@ fn a_grants_cache_goes_with_the_grant() {
     assert_eq!(r["result"]["caches_removidos"], 1, "{r}");
     assert!(!site.exists(), "the grant's cache went with it (read-only folders in it too)");
     assert!(docs.is_dir(), "the work folders' cache stays");
+}
+
+/// An agent running Kalango VirtualDesk itself (`tarefas.executar`, inside the agents' slice), around kalangod and
+/// without any of kalangod's variables: it can read the list, and nothing else — not start a machine, not change its
+/// network or its microphone, not open the window. (Needs the user's systemd for the slice, and
+/// KALANGO_TESTE_VIRTUALDESK / KALANGO_TESTE_VIRTUALDESK_MODELO as the test above.)
+#[test]
+fn an_agent_running_virtualdesk_itself_can_only_read() {
+    let (Ok(vd), Ok(modelo)) = (std::env::var("KALANGO_TESTE_VIRTUALDESK"), std::env::var("KALANGO_TESTE_VIRTUALDESK_MODELO")) else {
+        eprintln!("sem KALANGO_TESTE_VIRTUALDESK e KALANGO_TESTE_VIRTUALDESK_MODELO: pulado");
+        return;
+    };
+    if !has_user_systemd() {
+        eprintln!("sem systemd do usuário: teste pulado");
+        return;
+    }
+    let d = start_with(false, "");
+    // the machines inside the task's area (where an agent can reach); a copy of the template made by the person
+    let maquinas = d.area.join("maquinas");
+    assert!(Command::new("cp").args(["-r", "--reflink=auto", &modelo]).arg(&maquinas).status().unwrap().success());
+    let template = std::fs::read_dir(&maquinas).unwrap().flatten().next().unwrap().file_name().to_string_lossy().to_string();
+    let mj = maquinas.join(&template).join("machine.json");
+    let before = std::fs::read_to_string(&mj).unwrap();
+    // the program where an agent's command can run it (its own area), as a copy in ~/.local/bin would be
+    let vd_here = d.area.join("kalango-virtualdesk");
+    std::fs::copy(&vd, &vd_here).unwrap();
+    let vd = vd_here.display().to_string();
+    let mut c = Client::new(&d.sock);
+    let run = |c: &mut Client, args: &str| {
+        let cmd = format!("env KALANGO_VIRTUALDESK_DIR={} XDG_RUNTIME_DIR=/tmp/x {vd} {args}", maquinas.display());
+        let r = c.call("tarefas.executar", json!({"programa": "sh", "argumentos": ["-c", cmd], "pasta": d.area}));
+        r["structuredContent"]["saida"].as_str().unwrap_or("").to_string() + r["structuredContent"]["erros"].as_str().unwrap_or("")
+    };
+    let l = run(&mut c, "ferramenta vm.listar '{}'");
+    assert!(l.contains(&template), "reading the list is fine: {l}");
+    for args in [
+        format!("ferramenta vm.ligar '{{\"id\":\"{template}\"}}'"),
+        format!("ferramenta vm.ajustes '{{\"id\":\"{template}\",\"rede\":\"nat\",\"microfone\":true}}'"),
+        format!("ferramenta vm.snapshot '{{\"id\":\"{template}\",\"acao\":\"voltar\",\"tag\":\"s1\"}}'"),
+        format!("ferramenta vm.clonar '{{\"id\":\"{template}\",\"rede\":\"nat\"}}'"),
+        "--testar-rede /tmp/kvd-x /dev/null".to_string(),
+        String::new(),
+    ] {
+        let out = run(&mut c, &args);
+        assert!(out.contains("kalangod"), "refused, pointing to kalangod's tools: {args}: {out}");
+    }
+    assert_eq!(std::fs::read_to_string(&mj).unwrap(), before, "the machine did not change");
+    assert!(!std::fs::read_dir("/proc").unwrap().flatten().any(|e| {
+        std::fs::read(e.path().join("cmdline")).is_ok_and(|c| String::from_utf8_lossy(&c).contains(&format!("process=kvd-{template}")))
+    }), "nothing started");
+    assert_eq!(std::fs::read_dir(&maquinas).unwrap().count(), 1, "no copy made");
+
+    // and the networks kept off the agents are the person's to change, not an agent's
+    c.rpc("kalango/redes_agentes", json!({"rede": "Celular de Ana", "permitir": false}));
+    let py = format!(
+        "import json,socket;s=socket.socket(socket.AF_UNIX);s.connect('{}');f=s.makefile('rw');f.write(json.dumps({{'jsonrpc':'2.0','id':1,'method':'kalango/redes_agentes','params':{{'rede':'Celular de Ana','permitir':True}}}})+'\\n');f.flush();print(f.readline())",
+        d.sock.display()
+    );
+    let r = c.call("tarefas.executar", json!({"programa": "python3", "argumentos": ["-c", py], "pasta": d.area}));
+    let out = r["structuredContent"].to_string();
+    let l = c.rpc("kalango/redes_agentes", json!({}));
+    assert_eq!(l["result"]["sem_agentes"], json!(["Celular de Ana"]), "an agent could not allow it: {out}");
+}
+
+/// Denies the next pending request from another process.
+fn deny_next(sock: PathBuf) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        for _ in 0..400 {
+            let mut c = Client::new(&sock);
+            let p = c.rpc("kalango/pendentes", json!({}));
+            if let Some(id) = p["result"].as_array().and_then(|a| a.first()).and_then(|x| x["id"].as_u64()) {
+                let out = Command::new(BIN).args(["negar", &id.to_string()]).env("KALANGOD_SOCKET", &sock).output().unwrap();
+                return String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        "nenhum pedido".into()
+    })
+}
+
+/// A GPU that can never go to a machine is refused at once, without asking the person (asking and then refusing
+/// would waste their answer).
+#[test]
+fn an_impossible_gpu_reservation_does_not_ask() {
+    let d = start();
+    let mut c = Client::new(&d.sock);
+    for addr in ["0000:ff:1f.7", "nao-e-endereco"] {
+        let t0 = std::time::Instant::now();
+        let r = c.call("gpu.vfio_reservar", json!({"endereco": addr}));
+        assert_eq!(r["isError"], true, "{r}");
+        assert!(t0.elapsed() < Duration::from_secs(5), "refused without waiting for an answer");
+        let p = c.rpc("kalango/pendentes", json!({}));
+        assert!(p["result"].as_array().unwrap().is_empty(), "nobody was asked: {p}");
+    }
 }
