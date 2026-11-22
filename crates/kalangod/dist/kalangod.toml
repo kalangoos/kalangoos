@@ -6,6 +6,7 @@ state_dir = "/var/lib/kalango"
 # a plataforma de agentes, as máquinas do VirtualDesk, as conversas, os modelos, a memória e o uso do orçamento
 protected_paths = ["~/.ssh", "~/.gnupg", "~/.local/share/keyrings",
   "~/.config/kalango", "~/.config/kalango-remote", "~/.local/share/kalango/fluxos", "~/.local/share/kalango/virtualdesk",
+  "~/.local/bin/kalango-virtualdesk", "~/.local/lib/kalango-virtualdesk",
   "~/.local/share/kalango/conversas", "~/.local/share/kalango/modelos", "~/.local/share/kalango/cofre.json",
   "~/.local/share/kalango/memoria.json", "~/.local/share/kalango/memoria.bin", "~/.local/state/kalango",
   "/etc/shadow", "/etc/gshadow"]

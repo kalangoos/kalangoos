@@ -36,6 +36,8 @@ pub fn serve(cfg: Config) -> std::io::Result<()> {
     // qualquer usuário local pode conectar: quem ele é vem do kernel, não do que ele diz
     std::fs::set_permissions(&cfg.socket, std::fs::Permissions::from_mode(0o666))?;
     // a pasta de estado guarda a linha do tempo e cópias do /etc (com /etc/shadow): só o kalangod lê
+    let _ = crate::tools::maquinas::OWN_SOCKET.set(cfg.socket.clone());
+    let _ = crate::tools::maquinas::TEST_SESSION.set(cfg.home.is_some());
     std::fs::create_dir_all(&cfg.state_dir)?;
     std::fs::set_permissions(&cfg.state_dir, std::fs::Permissions::from_mode(0o700))?;
     let remote_control = crate::remote_control::RemoteControl::new(cfg.controle_remoto.clone(), cfg.controle_remoto_sempre.clone());
@@ -52,6 +54,15 @@ pub fn serve(cfg: Config) -> std::io::Result<()> {
         eprintln!("kalangod: {}", kalango_i18n::trf("eBPF guard {e}", &[("e", e.to_string())]));
     }
     eprintln!("kalangod: {}", kalango_i18n::trf("listening on {socket} (root: {root}, dry run: {dry_run})", &[("socket", state.cfg.socket.display().to_string()), ("root", nix::unistd::geteuid().is_root().to_string()), ("dry_run", state.cfg.dry_run.to_string())]));
+    // a network the person keeps the agents off, joined while sandbox copies run: they are turned off
+    {
+        let st = state.clone();
+        let every = std::env::var("KALANGOD_VIGIA_REDE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(2000);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(every));
+            crate::tools::maquinas::stop_copies_on_blocked_networks(&st.cfg.state_dir, &st.timeline);
+        });
+    }
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };
         let st = state.clone();
@@ -300,14 +311,23 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
         }
         // the networks where this person's agents may not use the internet (Settings › Network); with "rede" and
         // "permitir", one is allowed or kept off first
+        // VirtualDesk checking that a call of a vm.* tool is really kalangod's (the one-time proof it got)
+        "kalango/prova_vm" => {
+            let p = params.get("prova").and_then(Value::as_str).unwrap_or("");
+            let t = params.get("ferramenta").and_then(Value::as_str).unwrap_or("");
+            ok(id, json!({"ok": crate::tools::maquinas::redeem_proof(p, peer.uid, t)}))
+        }
         "kalango/redes_agentes" => {
             let r = match params.get("rede").and_then(Value::as_str) {
+                // the person's choice: an agent (or anything in the agents' slice) cannot change it
+                Some(_) if peer.cgroup.contains("/kalango-agentes.slice") => Err(kalango_i18n::tr("agents cannot change this").to_string()),
                 Some(rede) => crate::redes::definir(&st.cfg.state_dir, peer.uid, rede, params.get("permitir").and_then(Value::as_bool).unwrap_or(true)),
                 None => Ok(crate::redes::lista(&st.cfg.state_dir, peer.uid)),
             };
             match r {
-                Ok(l) => ok(id, json!({"sem_agentes": l})),
-                Err(e) => err(id, -32602, &e),
+                // and which of them this computer is on now (VirtualDesk asks before starting a machine for an agent)
+                Ok(l) => ok(id, json!({"sem_agentes": l, "bloqueada_agora": crate::redes::bloqueada(&st.cfg.state_dir, peer.uid)})),
+                Err(e) => err(id, -32003, &e),
             }
         }
         // the processor's energy counter (RAPL, readable by root only) for the power history of Settings › Power: read
@@ -513,6 +533,17 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
     if tool.level > rule.max_level {
         log(st, peer, rule, name, tool.level, args, "negado", kalango_i18n::tr("above the allowed level"), None, None);
         return Err(kalango_i18n::trf("denied: '{name}' needs level {needed} and this caller goes up to {max}", &[("name", name.to_string()), ("needed", tool.level.name().to_string()), ("max", rule.max_level.name().to_string())]));
+    }
+    // the arguments are the tool's declared ones, of the declared types (a second name for a machine, an undeclared key,
+    // would slip past the checks written for the declared ones)
+    if let Err(e) = tools::check_args(&(tool.schema)(), args) {
+        log(st, peer, rule, name, tool.level, args, "negado", &e, None, None);
+        return Err(e);
+    }
+    // what can never be done is refused before anyone is asked (asking the person, then refusing, wastes their answer)
+    if let Err(e) = tools::precheck(&st.cfg.state_dir, peer, name, args) {
+        log(st, peer, rule, name, tool.level, args, "negado", &e, None, None);
+        return Err(e);
     }
     let timeout = Duration::from_secs(st.cfg.approval_timeout_s);
     let approve = |level: &str, reason: String| -> Result<(), String> {
