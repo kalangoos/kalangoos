@@ -33,3 +33,14 @@ button:disabled { opacity: 0.45; }
 .diff-linha.menos { background: alpha(@k_coral, 0.12); }
 .diff-linha.menos label { color: @k_coral; }
 .diff-linha.intervalo label { color: @k_dim; }
+/* the d1's recommendation (design page 31): teal when it seems safe, coral when dangerous, grey with no opinion */
+.d1 { background: alpha(@k_dim, 0.12); border-radius: 4px; padding: 8px 10px; }
+.d1.seguro { background: alpha(@k_teal, 0.10); }
+.d1.perigoso { background: alpha(@k_coral, 0.10); }
+.d1-nome { color: @k_text2; font-size: 12px; font-weight: 600; }
+.d1-veredito, .d1-confianca { color: @k_muted; font-size: 12px; }
+.d1-veredito { font-weight: 600; }
+.d1.seguro .d1-veredito, .d1.seguro .d1-confianca { color: @k_teal; }
+.d1.perigoso .d1-veredito, .d1.perigoso .d1-confianca { color: @k_coral; }
+.d1-motivo { color: @k_muted; font-size: 12px; }
+.d1-decisao { color: @k_dim; font-size: 11px; }

@@ -32,6 +32,10 @@ pub struct Entry {
     /// ("automatico": the person lets these changes go ahead without asking, so the agents center tells them).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup: Option<Value>,
+    /// The action went ahead because the person's "Aprovar sozinho" let it through (design page 31): `{"confianca":
+    /// 94, "motivo": "trash"}` — the d1 said "safe" with that confidence, for that reason of its closed list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub d1: Option<Value>,
 }
 
 pub struct Timeline {

@@ -49,6 +49,7 @@ mod fences;
 mod latex_block;
 mod latex_pdf;
 mod fit_row;
+mod wrap_row;
 mod resize_handle;
 mod widths;
 mod central;

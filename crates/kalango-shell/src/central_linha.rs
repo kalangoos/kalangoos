@@ -69,6 +69,8 @@ pub struct Linha {
     // the chosen action
     titulo: gtk::Label,
     meta: gtk::Label,
+    /// "Recomendação do d1" (design page 31): shown for an action the d1 approved by itself
+    d1_caixa: gtk::Box,
     antes_depois: gtk::Box,
     porque: gtk::Label,
     permissoes: gtk::Box,
@@ -174,6 +176,10 @@ impl Linha {
         meta.set_xalign(0.0);
         meta.set_margin_top(6);
         painel.append(&meta);
+        let d1_caixa = caixa(Orientation::Horizontal, 8, "linha-d1");
+        d1_caixa.set_margin_top(14);
+        d1_caixa.set_visible(false);
+        painel.append(&d1_caixa);
         let antes_depois = caixa(Orientation::Horizontal, 12, "");
         antes_depois.set_homogeneous(true);
         antes_depois.set_margin_top(14);
@@ -213,7 +219,7 @@ impl Linha {
 
         let l = Rc::new(Linha {
             raiz, shell: Rc::downgrade(shell), filtros, filtro: Cell::new(0), numeros, lista, escala, escala_hora, escala_marcas, titulo, meta,
-            antes_depois, porque, permissoes, explica, desfazer, desfazer_tudo, registros: RefCell::default(), pendentes: RefCell::default(),
+            d1_caixa, antes_depois, porque, permissoes, explica, desfazer, desfazer_tudo, registros: RefCell::default(), pendentes: RefCell::default(),
             janelas: RefCell::default(), escolhido: Cell::new(0), busca: RefCell::default(), ocupado: Cell::new(false), preenchendo: Cell::new(false), miniaturas: RefCell::default(),
         });
         l.filtros[0].set_active(true);
@@ -409,6 +415,10 @@ impl Linha {
                 _ => resumo_args(&e["args"]),
             };
             let mut chips: Vec<(&str, &str)> = Vec::new();
+            let d1_chip = e["d1"]["confianca"].as_u64().map(|n| trf("approved by the d1 · {n} %", &[("n", n.to_string())]));
+            if let Some(c) = &d1_chip {
+                chips.push((c, "d1"));
+            }
             if e["startup"].is_object() {
                 chips.push((tr("startup file"), "inicio"));
             }
@@ -685,6 +695,46 @@ impl Linha {
         self.desfazer_tudo.set_sensitive(ha && !ocupado);
     }
 
+    /// The d1's recommendation in the detail (design page 31): "d1 seems safe · 94 %", why, and why it went ahead alone.
+    fn render_d1(&self, d1: Option<&Value>) {
+        while let Some(x) = self.d1_caixa.first_child() {
+            self.d1_caixa.remove(&x);
+        }
+        let Some(d) = d1 else {
+            self.d1_caixa.set_visible(false);
+            return;
+        };
+        let spark = ui_icon("spark", "#8ED2C3", 13);
+        spark.set_valign(Align::Start);
+        self.d1_caixa.append(&spark);
+        let col = caixa(Orientation::Vertical, 3, "");
+        col.set_hexpand(true);
+        let linha = caixa(Orientation::Horizontal, 6, "");
+        linha.append(&rotulo("d1", "linha-d1-nome"));
+        linha.append(&rotulo(tr("seems safe"), "linha-d1-veredito"));
+        if let Some(n) = d["confianca"].as_u64() {
+            linha.append(&rotulo(&format!("· {n} %"), "linha-d1-confianca"));
+        }
+        col.append(&linha);
+        // (the reason is one of the d1's closed list: nothing the model or the action wrote is shown)
+        if let Some(r) = d["motivo"].as_str().and_then(kalango_d1::Reason::from_key) {
+            let m = rotulo(tr(r.text()), "central-agente-sub");
+            m.set_xalign(0.0);
+            m.set_wrap(true);
+            m.set_max_width_chars(1);
+            col.append(&m);
+        }
+        if let Some(min) = d["minimo"].as_u64() {
+            let l = rotulo(&trf("approved by itself: confidence above {min} % (the minimum you chose)", &[("min", min.to_string())]), "central-agente-sub");
+            l.set_xalign(0.0);
+            l.set_wrap(true);
+            l.set_max_width_chars(1);
+            col.append(&l);
+        }
+        self.d1_caixa.append(&col);
+        self.d1_caixa.set_visible(true);
+    }
+
     fn detalhe(self: &Rc<Self>) {
         let e = self.registros.borrow().iter().find(|e| e["id"].as_u64() == Some(self.escolhido.get())).cloned();
         while let Some(x) = self.antes_depois.first_child() {
@@ -695,6 +745,7 @@ impl Linha {
         }
         let Some(e) = e else {
             self.titulo.set_text(tr("Nothing chosen"));
+            self.render_d1(None);
             self.meta.set_text("");
             self.porque.set_text("");
             self.explica.set_text("");
@@ -704,7 +755,12 @@ impl Linha {
         let t = e["time"].as_i64().unwrap_or(0);
         let (quem, _) = self.quem(&e);
         self.titulo.set_text(&titulo_de(&e));
-        if e["startup"].is_object() {
+        let d1 = e["d1"].as_object().is_some().then(|| e["d1"].clone());
+        self.render_d1(d1.as_ref());
+        if let Some(d) = &d1 {
+            let _ = d;
+            self.meta.set_text(&format!("{quem} · {} · {} · {}", hora(t), e["tool"].as_str().unwrap_or(""), tr("approved by the d1")));
+        } else if e["startup"].is_object() {
             self.meta.set_text(&format!("{quem} · {} · {} · {}", hora(t), e["tool"].as_str().unwrap_or(""), tr("file that runs at login")));
         } else {
             self.meta.set_text(&format!("{quem} · {} · {}", hora(t), trf("level {level}", &[("level", e["level"].as_str().unwrap_or("").to_string())])));
@@ -778,6 +834,7 @@ impl Linha {
             Some(false) if e["status"] == "ok" => format!("{porque} {}", tr("It changes a file that runs at login: you approved it on the system screen.")),
             _ => porque,
         };
+        let porque = if d1.is_some() { format!("{porque} {}", tr("Approval by the d1 was on (Permissions) and this is one of the low-risk actions it may approve.")) } else { porque };
         self.porque.set_text(&porque);
         // permissions used
         let startup_file = e["startup"]["arquivos"][0].as_str().map(str::to_string);
@@ -792,6 +849,9 @@ impl Linha {
             let pasta = std::path::Path::new(p).parent().map(|x| x.display().to_string()).unwrap_or_default();
             let home = glib::home_dir().display().to_string();
             chips.push((pasta.replacen(&home, "~", 1), "pasta"));
+        }
+        if let Some(n) = d1.as_ref().and_then(|d| d["confianca"].as_u64()) {
+            chips.push((trf("d1 · {n} %", &[("n", n.to_string())]), "cadeado"));
         }
         for (t, g) in chips {
             let c = caixa(Orientation::Horizontal, 6, "linha-permissao");

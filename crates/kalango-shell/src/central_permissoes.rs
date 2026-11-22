@@ -116,6 +116,13 @@ pub struct Permissoes {
     inicio_valor: gtk::Label,
     inicio_marcas: Vec<gtk::Image>,
     inicio_opcoes: Vec<gtk::Button>,
+    /// approval by the d1 (design page 31): the switch, the minimum confidence and what the switch says it does
+    d1_chave: gtk::Switch,
+    d1_sub: gtk::Label,
+    d1_confianca: gtk::Box,
+    d1_escala: gtk::Scale,
+    d1_valor: gtk::Label,
+    d1_espera: RefCell<Option<glib::SourceId>>,
     /// where agents' commands write (design page 32): the work folders and the project folders
     projetos: gtk::Box,
     perfil: RefCell<Value>,
@@ -264,6 +271,75 @@ impl Permissoes {
         ajuda.set_margin_top(12);
         ajuda.add_css_class("central-inicio-ajuda");
         corpo.append(&ajuda);
+        // ---- approval by the d1 (design page 31, "Aprovação com o d1"): off until the person turns it on
+        let titulo_d1 = rotulo(tr("APPROVAL BY THE d1"), "central-painel-secao");
+        titulo_d1.set_xalign(0.0);
+        titulo_d1.set_margin_top(22);
+        titulo_d1.set_margin_bottom(12);
+        corpo.append(&titulo_d1);
+        let cartao_d1 = caixa(Orientation::Vertical, 0, "central-cartao");
+        let linha_d1 = caixa(Orientation::Horizontal, 12, "central-pasta");
+        linha_d1.append(&ui_icon("raio", "#8E8F99", 16));
+        let col_d1 = caixa(Orientation::Vertical, 0, "");
+        col_d1.set_hexpand(true);
+        col_d1.set_valign(Align::Center);
+        let t_d1 = rotulo(tr("Approve by itself what is low risk"), "central-pasta-nome");
+        t_d1.set_xalign(0.0);
+        t_d1.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        t_d1.set_max_width_chars(1);
+        col_d1.append(&t_d1);
+        let d1_sub = rotulo("", "central-agente-sub");
+        d1_sub.set_xalign(0.0);
+        d1_sub.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        d1_sub.set_max_width_chars(1);
+        col_d1.append(&d1_sub);
+        linha_d1.append(&col_d1);
+        let d1_chave = gtk::Switch::new();
+        d1_chave.add_css_class("central-switch");
+        d1_chave.set_valign(Align::Center);
+        linha_d1.append(&d1_chave);
+        cartao_d1.append(&linha_d1);
+        let d1_confianca = caixa(Orientation::Horizontal, 12, "central-limite");
+        d1_confianca.append(&ui_icon("relogio", "#8E8F99", 16));
+        let n_d1 = rotulo(tr("Minimum confidence"), "central-limite-nome");
+        n_d1.set_xalign(0.0);
+        n_d1.set_hexpand(true);
+        n_d1.set_wrap(true);
+        n_d1.set_max_width_chars(1);
+        d1_confianca.append(&n_d1);
+        let d1_escala = gtk::Scale::with_range(Orientation::Horizontal, 50.0, 99.0, 1.0);
+        d1_escala.set_draw_value(false);
+        d1_escala.set_size_request(m.escala, -1);
+        d1_escala.add_css_class("central-escala");
+        d1_confianca.append(&d1_escala);
+        let d1_valor = rotulo("", "central-limite-valor");
+        d1_valor.set_size_request(40, -1);
+        d1_valor.set_xalign(1.0);
+        d1_confianca.append(&d1_valor);
+        cartao_d1.append(&d1_confianca);
+        corpo.append(&cartao_d1);
+        let ajuda_d1 = rotulo(tr("It may approve by itself: moving to the trash, creating a new file in your folders, renaming and moving inside your home folder. Everything goes to the timeline, with undo. If the d1 takes more than 1.5 s, or if you deny 3 times in a row, it goes back to asking."), "central-legenda");
+        ajuda_d1.set_xalign(0.0);
+        ajuda_d1.set_wrap(true);
+        ajuda_d1.set_max_width_chars(1);
+        ajuda_d1.set_hexpand(true);
+        ajuda_d1.set_margin_top(12);
+        ajuda_d1.add_css_class("central-inicio-ajuda");
+        corpo.append(&ajuda_d1);
+        // what it never approves: the chips wrap with the width
+        let nunca = caixa(Orientation::Horizontal, 0, "central-nunca-lista");
+        crate::wrap_row::WrapRow::apply(&nunca, 6, 6);
+        nunca.set_margin_top(12);
+        let tn = rotulo(tr("Never approves by itself:"), "central-nunca-titulo");
+        tn.set_margin_end(4);
+        nunca.append(&tn);
+        for t in [tr("high-risk actions"), tr("system and full access"), tr("what cannot be undone"), tr("files that run at login"), tr("screen control"),
+            tr("creating agents, flows and connectors"), tr("network and connectors"), tr("packages"), tr("a request coming from a page or file that was read")] {
+            let c = rotulo(t, "central-nunca-chip");
+            c.set_halign(Align::Start);
+            nunca.append(&c);
+        }
+        corpo.append(&nunca);
         // ---- where agents' commands write (design page 32)
         let titulo_pastas = rotulo(tr("COMMAND FOLDERS"), "central-painel-secao");
         titulo_pastas.set_xalign(0.0);
@@ -394,7 +470,7 @@ impl Permissoes {
 
         let p = Rc::new(Permissoes {
             raiz, medidas: m, shell: Rc::downgrade(shell), linhas, sugestao, sugestao_texto, sugestao_coluna: RefCell::default(), agente, pastas,
-            tokens, tokens_v, tokens_espera: RefCell::default(), horario, pausar_glifo, pausar_rotulo, inicio_valor, inicio_marcas, inicio_opcoes, projetos, perfil: RefCell::new(Value::Null),
+            tokens, tokens_v, tokens_espera: RefCell::default(), horario, pausar_glifo, pausar_rotulo, inicio_valor, inicio_marcas, inicio_opcoes, d1_chave, d1_sub, d1_confianca, d1_escala, d1_valor, d1_espera: RefCell::default(), projetos, perfil: RefCell::new(Value::Null),
             preenchendo: Cell::new(false),
         });
         for (i, b) in p.inicio_opcoes.iter().enumerate() {
@@ -407,6 +483,36 @@ impl Permissoes {
             });
         }
         crate::central::posicao_debug("arquivos de início", seletor.upcast_ref());
+        let w = Rc::downgrade(&p);
+        p.d1_chave.connect_state_set(move |_, on| {
+            if let Some(p) = w.upgrade() {
+                p.d1_dim(on);
+                if !p.preenchendo.get() {
+                    p.executar(vec!["aprovacao-d1".into(), if on { "ligar" } else { "desligar" }.into()]);
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        let w = Rc::downgrade(&p);
+        p.d1_escala.connect_value_changed(move |sc| {
+            let Some(p) = w.upgrade() else { return };
+            let n = sc.value().round() as u64;
+            p.d1_valor.set_text(&format!("{n} %"));
+            if p.preenchendo.get() {
+                return;
+            }
+            // saved when the slider rests
+            if let Some(id) = p.d1_espera.borrow_mut().take() {
+                id.remove();
+            }
+            let w = Rc::downgrade(&p);
+            *p.d1_espera.borrow_mut() = Some(glib::timeout_add_local_once(Duration::from_millis(450), move || {
+                if let Some(p) = w.upgrade() {
+                    p.d1_espera.borrow_mut().take();
+                    p.executar(vec!["aprovacao-d1".into(), "confianca".into(), n.to_string()]);
+                }
+            }));
+        });
         let w = Rc::downgrade(&p);
         adicionar_projeto.connect_clicked(move |_| {
             let Some(p) = w.upgrade() else { return };
@@ -621,6 +727,13 @@ impl Permissoes {
         });
     }
 
+    /// The minimum-confidence row is dimmed while the d1 is not allowed to approve (design: the off state).
+    fn d1_dim(&self, on: bool) {
+        self.d1_confianca.set_opacity(if on { 1.0 } else { 0.45 });
+        self.d1_escala.set_sensitive(on);
+        self.d1_sub.set_text(&if on { tr("the d1 judges each low-risk action").to_string() } else { tr("the d1 judges each low-risk action · off until you turn it on").to_string() });
+    }
+
     /// A change (a `kalango-agente` subcommand), then the page again.
     fn executar(self: &Rc<Self>, args: Vec<String>) {
         let w = Rc::downgrade(self);
@@ -809,6 +922,12 @@ impl Permissoes {
         }
         self.pausar_glifo.append(&ui_icon(if pausado { "tocar" } else { "pausa" }, "#E2E2E6", 14));
         self.pausar_rotulo.set_text(if pausado { tr("Resume agent") } else { tr("Pause agent") });
+        let d1_ligado = v["aprovacao_d1"]["ligada"].as_bool().unwrap_or(false);
+        let d1_confianca = v["aprovacao_d1"]["confianca"].as_u64().unwrap_or(90).clamp(50, 99);
+        self.d1_chave.set_active(d1_ligado);
+        self.d1_escala.set_value(d1_confianca as f64);
+        self.d1_valor.set_text(&format!("{d1_confianca} %"));
+        self.d1_dim(d1_ligado);
         let inicio = v["arquivos_de_inicio"].as_str().unwrap_or("perguntar");
         let i = INICIO.iter().position(|(x, _, _)| *x == inicio).unwrap_or(0);
         self.inicio_valor.set_text(tr(INICIO[i].1));

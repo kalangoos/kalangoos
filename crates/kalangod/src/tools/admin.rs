@@ -858,6 +858,7 @@ fn record_startup_changes(c: &Ctx, prog: &str, before: &std::collections::BTreeM
                 json!({"arquivos": [shown], "automatico": true, "comando": true, "resumo": crate::startup::diff_summary(&d),
                     "linhas": d.iter().map(|l| json!({"t": l.kind.to_string(), "l": l.text})).collect::<Vec<_>>()})
             }),
+            d1: None,
         });
     }
 }

@@ -3600,3 +3600,12 @@ button.mf-fonte { background: @k_field; border: 1px solid @k_border; border-radi
 button.mf-fonte:checked { background: alpha(@k_accent, 0.10); border-color: @k_accent; }
 entry.mf-campo { background: @k_field; border: 1px solid @k_border; border-radius: 4px; box-shadow: none; min-height: 34px; padding: 0 10px; color: @k_text; }
 entry.mf-campo:focus-within { border-color: @k_accent; }
+/* approval by the d1 (design page 31): what it never approves, as chips that wrap */
+.central-nunca-titulo { font-size: 12px; font-weight: 600; color: @k_text; }
+.central-nunca-chip { font-size: 11px; font-weight: 600; color: @k_dim; background: alpha(@k_dim, 0.14); border-radius: 4px; padding: 2px 8px; }
+/* an action the d1 approved by itself (design page 31) */
+.linha-chip.d1 { color: @k_accent_text; background: alpha(@k_accent, 0.16); }
+.linha-d1 { background: alpha(@k_teal, 0.10); border-radius: 4px; padding: 10px 12px; }
+.linha-d1-nome { font-size: 13px; font-weight: 600; color: @k_text2; }
+.linha-d1-veredito, .linha-d1-confianca { font-size: 13px; color: @k_teal; }
+.linha-d1-veredito { font-weight: 600; }

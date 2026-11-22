@@ -132,6 +132,8 @@ pub struct Settings {
     /// files that run at login (`arquivos_de_inicio`): "perguntar" or "livre". Read by kalangod, set only in the
     /// agents center; kept here as it is, so saving the other permissions never changes it
     pub startup_files: Option<String>,
+    /// "Aprovar sozinho" (Permissions › Approval by the d1): None while the person never touched it (off)
+    pub d1: Option<kalango_d1::Setting>,
 }
 
 /// An error with a code the shell understands (shown as the failure card of that kind): \u{1}code\u{1}message.
@@ -183,6 +185,7 @@ impl Settings {
         s.paused = v["pausado"].as_bool().unwrap_or(false);
         s.extra_hoje = v["extra_hoje"]["dia"].as_i64().zip(v["extra_hoje"]["tokens"].as_u64());
         s.startup_files = v["arquivos_de_inicio"].as_str().filter(|m| matches!(*m, "perguntar" | "livre")).map(str::to_string);
+        s.d1 = v.get("aprovacao_d1").map(|_| kalango_d1::Setting::parse(v));
         s.sites_bloqueados = v["sites_bloqueados"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect();
         s
     }
@@ -207,6 +210,9 @@ impl Settings {
         }
         if let Some(m) = &self.startup_files {
             v["arquivos_de_inicio"] = json!(m);
+        }
+        if let Some(d) = &self.d1 {
+            v["aprovacao_d1"] = d.to_json();
         }
         v
     }
@@ -243,6 +249,8 @@ impl Settings {
         self.tools.clear();
         // (files that run at login: asked again)
         self.startup_files = Some("perguntar".into());
+        // (and nothing is approved alone any more)
+        self.d1 = Some(kalango_d1::Setting { enabled: false, ..self.d1.unwrap_or_default() });
         let mut f = self.shown_folders();
         f.iter_mut().for_each(|f| f.on = false);
         self.folders = Some(f);
@@ -297,12 +305,78 @@ pub fn load() -> Settings {
     Settings::parse(&std::fs::read_to_string(path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({})))
 }
 
-pub fn save(s: &Settings) -> Result<(), String> {
-    let p = path();
+thread_local! {
+    /// the lock this thread holds between `load_for_update` and `save` (or `release`)
+    static HELD: std::cell::RefCell<Option<std::fs::File>> = const { std::cell::RefCell::new(None) };
+}
+
+extern "C" {
+    fn flock(fd: i32, op: i32) -> i32;
+}
+
+/// An exclusive lock on the settings (a file beside them), waiting for whoever has it: the engines and the settings
+/// screen change this file by reading it, changing a part and writing it all, and two of them at once would lose
+/// one's change (the person's "ligada", the denials counted, a permission set to "never").
+fn lock_at(p: &std::path::Path) -> Option<std::fs::File> {
+    use std::os::unix::io::AsRawFd;
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d).ok()?;
+    }
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(p.with_extension("json.lock")).ok()?;
+    // (LOCK_EX = 2)
+    (unsafe { flock(f.as_raw_fd(), 2) } == 0).then_some(f)
+}
+
+/// Writes the settings so that a reader sees the old file or the new one, never half of one: a temporary file in the
+/// same folder, then a rename.
+fn write_atomic(p: &std::path::Path, s: &Settings) -> Result<(), String> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&p, serde_json::to_string_pretty(&s.to_json()).unwrap_or_default()).map_err(|e| e.to_string())
+    let tmp = p.with_extension(format!("json.{}.{:?}.tmp", std::process::id(), std::thread::current().id()).replace(['(', ')'], ""));
+    std::fs::write(&tmp, serde_json::to_string_pretty(&s.to_json()).unwrap_or_default()).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, p).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })
+}
+
+/// The settings for a change: takes the lock, held until `save` (or `release`, when nothing is to be saved).
+pub fn load_for_update() -> Settings {
+    HELD.with(|h| {
+        if h.borrow().is_none() {
+            *h.borrow_mut() = lock_at(&path());
+        }
+    });
+    load()
+}
+
+/// Lets go of the lock without saving.
+pub fn release() {
+    HELD.with(|h| h.borrow_mut().take());
+}
+
+pub fn save(s: &Settings) -> Result<(), String> {
+    let p = path();
+    // (a save with no earlier `load_for_update` still takes the lock for the write)
+    HELD.with(|h| {
+        if h.borrow().is_none() {
+            *h.borrow_mut() = lock_at(&p);
+        }
+    });
+    let r = write_atomic(&p, s);
+    release();
+    r
+}
+
+/// Reads, changes and writes the settings under the lock at `p`: for the tests, and for anything that wants the whole
+/// change as one step.
+#[cfg(test)]
+fn update_at(p: &std::path::Path, change: impl FnOnce(&mut Settings)) -> Result<(), String> {
+    let _lock = lock_at(p);
+    let mut s = Settings::parse(&std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({})));
+    change(&mut s);
+    write_atomic(p, &s)
 }
 
 /// The permission in force for a tool.
@@ -312,7 +386,7 @@ pub fn get(tool: &Tool) -> Perm {
 
 /// Changes a tool's permission (from the conversation's "Always" or the settings).
 pub fn set(tool: &str, perm: Perm) -> Result<(), String> {
-    let mut s = load();
+    let mut s = load_for_update();
     s.tools.insert(tool.to_string(), perm);
     save(&s)
 }
@@ -438,6 +512,7 @@ pub fn profile(tools: &[Tool], protected: &[String]) -> Value {
         "protegidas": protected,
         "tokens_dia": s.tokens_per_day, "tokens_hoje": tokens_today(), "horario": s.hours, "pausado": s.paused,
         "arquivos_de_inicio": s.startup_files.as_deref().unwrap_or("perguntar"),
+        "aprovacao_d1": s.d1.unwrap_or_default().to_json(),
         "uso": u,
     })
 }
@@ -503,6 +578,61 @@ mod tests {
         assert_eq!(s.to_json()["arquivos_de_inicio"], "livre");
         assert!(Settings::parse(&json!({})).to_json().get("arquivos_de_inicio").is_none());
         assert_eq!(Settings::parse(&json!({"arquivos_de_inicio": "talvez"})).startup_files, None);
+    }
+
+    /// "Aprovar sozinho" is off until the person turns it on, survives a save, and "Revogar tudo" turns it off.
+    #[test]
+    fn approving_alone_is_off_by_default_and_survives_a_save() {
+        let s = Settings::parse(&json!({}));
+        assert_eq!(s.d1, None);
+        assert!(s.to_json().get("aprovacao_d1").is_none());
+        let mut s = Settings::parse(&json!({"aprovacao_d1": {"ligada": true, "confianca": 85}}));
+        assert_eq!(s.d1, Some(kalango_d1::Setting { enabled: true, min_confidence: 85, denials: 0 }));
+        s.tools.insert("arquivos.escrever".into(), Perm::Free);
+        assert_eq!(Settings::parse(&s.to_json()).d1, s.d1);
+        s.revoke_all(&[]);
+        assert_eq!(s.d1, Some(kalango_d1::Setting { enabled: false, min_confidence: 85, denials: 0 }));
+    }
+
+    /// Writers at once (two engines, the engine and the settings screen) lose none of each other's changes, and a
+    /// reader never sees half a file.
+    #[test]
+    fn concurrent_writers_lose_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("kalango/agente-permissoes.json");
+        let readers_ok = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let (p, ok, stop) = (p.clone(), readers_ok.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    if let Ok(t) = std::fs::read_to_string(&p) {
+                        if serde_json::from_str::<Value>(&t).is_err() {
+                            ok.store(false, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
+                }
+            })
+        };
+        let writers: Vec<_> = (0..8).map(|i| {
+            let p = p.clone();
+            std::thread::spawn(move || {
+                for j in 0..15 {
+                    update_at(&p, |s| {
+                        s.tools.insert(format!("ferramenta.{i}.{j}"), Perm::Never);
+                    }).unwrap();
+                }
+            })
+        }).collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        reader.join().unwrap();
+        assert!(readers_ok.load(std::sync::atomic::Ordering::SeqCst), "a reader saw a half-written file");
+        let s = Settings::parse(&serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap());
+        assert_eq!(s.tools.len(), 8 * 15, "every change survived");
+        assert!(std::fs::read_dir(p.parent().unwrap()).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")), "no temporary file left");
     }
 
     #[test]

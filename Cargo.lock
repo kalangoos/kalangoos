@@ -1153,6 +1153,7 @@ name = "kalango-agente"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "kalango-d1",
  "kalango-i18n",
  "libc",
  "ring",
@@ -1169,10 +1170,20 @@ version = "0.1.0"
 dependencies = [
  "gtk4",
  "gtk4-layer-shell",
+ "kalango-d1",
  "kalango-i18n",
  "kalango-movimento",
  "libc",
  "serde_json",
+]
+
+[[package]]
+name = "kalango-d1"
+version = "0.1.0"
+dependencies = [
+ "kalango-i18n",
+ "serde_json",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -1239,6 +1250,7 @@ dependencies = [
  "gstreamer-video",
  "gtk4",
  "gtk4-layer-shell",
+ "kalango-d1",
  "kalango-i18n",
  "kalango-modelos",
  "kalango-movimento",
@@ -1291,6 +1303,7 @@ dependencies = [
  "aya",
  "base64",
  "getrandom 0.2.17",
+ "kalango-d1",
  "kalango-i18n",
  "landlock",
  "libc",

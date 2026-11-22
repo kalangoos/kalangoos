@@ -527,6 +527,14 @@ impl Model {
         serde_json::from_str(text).map_err(|e| format!("{e}: {text}"))
     }
 
+    /// One pass of a decision model (d1): typed questions in, probabilities out, no text generated.
+    pub fn systemone(&self, body: &Value, timeout: Duration) -> Result<Value, String> {
+        self.mark_used();
+        let v = post(&self.endpoint, "/v1/systemone", body, timeout)?;
+        registrar_uso(&self.name, &v);
+        Ok(v)
+    }
+
     /// One chat completion with the tools offered.
     pub fn chat(&self, messages: &[Value], tools: &[Value]) -> Result<Reply, String> {
         let mut body = json!({

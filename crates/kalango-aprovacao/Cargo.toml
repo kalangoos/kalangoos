@@ -13,3 +13,4 @@ serde_json = "1"
 libc = "0.2"
 kalango-movimento = { path = "../kalango-movimento" }
 kalango-i18n = { path = "../kalango-i18n" }
+kalango-d1 = { path = "../kalango-d1" }

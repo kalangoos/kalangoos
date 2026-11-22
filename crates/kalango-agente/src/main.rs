@@ -23,6 +23,7 @@ mod grounding;
 mod search_query;
 mod motor;
 mod permissoes;
+mod recomendacao;
 mod resumo;
 
 use kalango_i18n::{tr, trf};
@@ -366,7 +367,7 @@ fn main() {
     }
     // back to the default (no setting of its own)
     if rest.first() == Some(&"permissao") && rest.get(2) == Some(&"padrao") {
-        let mut s = permissoes::load();
+        let mut s = permissoes::load_for_update();
         s.tools.remove(*rest.get(1).unwrap_or(&""));
         permissoes::save(&s).unwrap_or_else(|e| fail(e));
         return;
@@ -464,7 +465,7 @@ fn main() {
     if matches!(rest.first(), Some(&"coluna") | Some(&"revogar")) {
         let mut k = kalangod::Client::connect().unwrap_or_else(|e| fail(e));
         let tools = k.tools().unwrap_or_else(|e| fail(e));
-        let mut s = permissoes::load();
+        let mut s = permissoes::load_for_update();
         if rest[0] == "revogar" {
             s.revoke_all(&tools);
         } else {
@@ -480,7 +481,7 @@ fn main() {
         let (Some(path), Some(what)) = (rest.get(1), rest.get(2)) else {
             fail(tr("usage: kalango-agente pasta <folder> <adicionar|ativa|desativada|ler|mexer|remover>").to_string())
         };
-        let mut s = permissoes::load();
+        let mut s = permissoes::load_for_update();
         let mut f = s.shown_folders();
         match *what {
             "adicionar" if !f.iter().any(|x| x.path == *path) => f.push(permissoes::Folder { path: path.to_string(), on: true, write: true }),
@@ -502,7 +503,7 @@ fn main() {
         return;
     }
     if rest.first() == Some(&"limite") {
-        let mut s = permissoes::load();
+        let mut s = permissoes::load_for_update();
         match (rest.get(1).copied(), rest.get(2).copied()) {
             (Some("tokens"), Some(n)) if n.parse::<u64>().is_ok() => s.tokens_per_day = n.parse::<u64>().ok().filter(|n| *n > 0),
             (Some("horario"), Some(h)) if matches!(h, "sempre" | "dia" | "noite") => s.hours = h.to_string(),
@@ -518,7 +519,7 @@ fn main() {
         let Some(site) = rest.get(1).map(|x| x.trim().trim_start_matches("www.").to_lowercase()).filter(|x| !x.is_empty()) else {
             fail(tr("usage: kalango-agente bloquear-site HOST").to_string())
         };
-        let mut s = permissoes::load();
+        let mut s = permissoes::load_for_update();
         if !s.sites_bloqueados.contains(&site) {
             s.sites_bloqueados.push(site);
         }
@@ -531,13 +532,38 @@ fn main() {
         let Some(m) = rest.get(1).copied().filter(|m| matches!(*m, "perguntar" | "livre")) else {
             fail(tr("usage: kalango-agente inicio <perguntar|livre>").to_string())
         };
-        let mut s = permissoes::load();
+        let mut s = permissoes::load_for_update();
         s.startup_files = Some(m.to_string());
         permissoes::save(&s).unwrap_or_else(|e| fail(e));
         return;
     }
+    // Approval by the d1 (Agents › Permissions): `aprovacao-d1 <ligar|desligar>` and `aprovacao-d1 confianca <50-99>`.
+    // Off until the person turns it on; kept in the permissions file, which no agent reaches
+    if rest.first() == Some(&"aprovacao-d1") {
+        let mut s = permissoes::load_for_update();
+        let mut d = s.d1.unwrap_or_default();
+        match (rest.get(1).copied(), rest.get(2).and_then(|n| n.parse::<u8>().ok())) {
+            (Some("ligar"), _) => d.enabled = true,
+            (Some("desligar"), _) => d.enabled = false,
+            (Some("confianca"), Some(n)) if (50..=99).contains(&n) => d.min_confidence = n,
+            _ => fail(tr("usage: kalango-agente aprovacao-d1 <ligar|desligar|confianca 50-99>").to_string()),
+        }
+        s.d1 = Some(d);
+        permissoes::save(&s).unwrap_or_else(|e| fail(e));
+        return;
+    }
+    // The d1's recommendation for an approval: the action as JSON on stdin, the recommendation as JSON on stdout
+    // (the system approval screen asks through this; it starts the d1 when needed). Advisory: it approves nothing.
+    if rest.first() == Some(&"recomendar") {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut std::io::Read::take(std::io::stdin(), 64 * 1024), &mut text);
+        let action = kalango_d1::ActionInfo::from_json(&serde_json::from_str(&text).unwrap_or_default());
+        let rec = recomendacao::recommend(&action, std::time::Duration::from_secs(20), true);
+        println!("{}", rec.to_json());
+        return;
+    }
     if rest.first() == Some(&"pausar") {
-        let mut s = permissoes::load();
+        let mut s = permissoes::load_for_update();
         s.paused = rest.get(1) != Some(&"nao");
         permissoes::save(&s).unwrap_or_else(|e| fail(e));
         return;

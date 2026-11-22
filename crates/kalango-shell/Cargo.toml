@@ -21,6 +21,7 @@ kalango-modelos = { path = "../kalango-modelos" }
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 kalango-movimento = { path = "../kalango-movimento" }
 kalango-i18n = { path = "../kalango-i18n" }
+kalango-d1 = { path = "../kalango-d1" }
 # the compositor's idle notifications (ext-idle-notify-v1): the screens go dark, the computer suspends
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
