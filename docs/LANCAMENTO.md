@@ -30,10 +30,12 @@ versão. As notas estão em [NOTAS-0.1.0.md](NOTAS-0.1.0.md) e o histórico em [
 | Modelo local fora da ISO | As licenças dos modelos estão em revisão, então a ISO da esteira não leva modelo. O instalador (etapa "Modelos de IA") e a Central de Apps o baixam do catálogo público, de um servidor privado ou de uma pasta |
 | Acessibilidade | Sem certificação nem auditoria; leitor de tela e navegação completa por teclado ainda não foram validados |
 | Idioma | Interface e documentação em português do Brasil; o inglês é da fase 6 |
-| Kalango Remote | O modo privacidade, a verificação em duas etapas, a gravação de sessões e o compartilhamento por servidor próprio ainda não existem; o app ainda não foi testado entre dois computadores físicos nem numa sessão real do niri (só aninhada) |
+| Kalango Remote | Senha fixa, duas etapas, gravação, servidor próprio e modo de privacidade existem. Não foi testado entre dois computadores físicos nem numa sessão real do niri (só aninhada); o Mosh não foi testado; o caminho da tela de bloqueio e o quadro de transição sob a cobertura do modo de privacidade só são cobertos pelo código, não por um teste |
 | Kalango VirtualDesk e Kalango Fluxos | Repositórios próprios, fora da ISO da esteira; o `kalangod` e o shell já falam com eles, mas o serviço de fluxos é privado |
 | Atualizações e restauração | Ainda sem atualização com ponto de restauração nem tela de recuperação (fase 5) |
-| Marca e licenças da documentação e dos recursos gerados por IA | Registro da marca e revisão dos termos de uso do serviço de imagens pendentes ([LICENCAS.md](LICENCAS.md)) |
+| Licença da documentação | A CC BY-SA 4.0 proposta para a documentação ainda está por confirmar ([LICENCAS.md](LICENCAS.md)) |
+| Marca e recursos gerados por IA | Registro da marca e revisão dos termos de uso do serviço de imagens pendentes ([LICENCAS.md](LICENCAS.md)) |
+| Ideias do roteiro (fonte de áudio ao vivo para fluxos, gatilho de entrada pela internet por túnel da Cloudflare, Remote dentro dos fluxos) | Ainda não feitas ([ROADMAP.md](../ROADMAP.md#integrações-planejadas-ideias-sem-data)) |
 | Desempenho e segurança | Metas de desempenho e revisão de segurança externa são da fase 6; defesas e limites conhecidos em [SEGURANCA.md](SEGURANCA.md) |
 
 ## Canais

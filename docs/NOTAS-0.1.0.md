@@ -19,16 +19,37 @@ não instale num computador com dados que você não pode perder.
 - **`kalangod`**: o serviço que dá aos agentes acesso ao sistema, com aprovação numa tela que o agente não imita,
   desfazer, Linha do tempo e quatro níveis de poder (observar, usuário, sistema, total). Regras impostas pelo kernel
   (eBPF LSM, Landlock, seccomp e cgroups), lista branca de pastas para escrita, configuração do sistema fora do
-  alcance dos agentes e defesa contra dado local saindo no endereço da web.
+  alcance dos agentes e defesa contra dado local saindo no endereço da web (nos casos cobertos, com limites documentados).
 - **Agentes locais** com o LFM3 pelo llama.cpp, gestão de contexto da conversa (janela recente, resumo em segundo
   plano e busca na conversa) e agentes que operam a tela pela visão, sempre com aprovação.
-- **Fluxos**: editor de fluxo completo no shell; o modelo de decisão d1 responde nos blocos "Decidir".
-- **Kalango Remote** (compartilhar a tela, controlar outro computador, SSH e Mosh) e **Kalango Audio** (capturar,
-  tratar, rotear e gravar som) na imagem. O Remote ainda não foi testado entre dois computadores físicos nem numa
-  sessão real do niri (só aninhada).
-- **Kalango VirtualDesk**: o `kalangod` tem as ferramentas `vm.*` e o shell tem a tela em Ajustes › Sandbox; o app em
-  si não vai na ISO.
-- **Fonte dos modelos de IA** também em Ajustes e na Central de Apps.
+- **Aprovação com o d1**: a tela de aprovação mostra a recomendação do modelo de decisão d1 ("parece seguro" ou
+  "parece perigoso", a confiança e um motivo de uma lista fechada); quem decide continua sendo a pessoa. Em
+  Permissões há a opção, **desligada por padrão**, "Aprovar sozinho o que é de baixo risco": vale só para três
+  ações reversíveis na pasta da pessoa (mover para a lixeira, mover, criar um arquivo novo que não roda), só se o d1
+  disser que é seguro com pelo menos a confiança mínima, nunca depois de conteúdo lido de fora na conversa, no máximo 5
+  por pedido, e se desliga sozinha depois de 3 recusas. O `kalangod` confere tudo de novo, e instalar pacotes nunca
+  é "seguro" (kalangoos/kalangoos#42).
+- **Fluxos**: editor de fluxo completo no shell; o modelo d1 também responde nos blocos "Decidir".
+- **Kalango Remote** (compartilhar a tela, controlar outro computador, SSH e Mosh; o Mosh ainda sem teste) e **Kalango Audio** (capturar,
+  tratar, rotear e gravar som) na imagem. O Remote tem senha fixa e acesso sem supervisão com permissões limitadas
+  (sem arquivos, terminal, câmera, túnel, reinício, bloqueio de entrada nem modo de privacidade; o aviso lista o que
+  foi concedido), verificação em duas etapas (TOTP), gravação de sessões (Vídeos › Kalango Remote, 30 dias, com aviso
+  à pessoa gravada), servidor próprio compatível com o RustDesk, bloqueio global depois de tentativas erradas e o
+  painel do plano do agente (`kalango-remote agent-plan`) (kalangoos/kalango-remote#11 e #12).
+- **Modo de privacidade do Remote ("tela preta aqui")**: enquanto alguém controla com um acesso que ninguém aprovou
+  neste computador, a tela local fica coberta e quem controla vê a área de trabalho de verdade. Saídas de emergência:
+  Esc Esc, troca de terminal virtual, botão de ligar e bloqueio (patch 0012 do niri, kalangoos/niri#4, e
+  kalangoos/kalangoos#44).
+- **Agente e Remote**: a ferramenta `remoto.conectar` deixa o agente propor uma conexão a um dos computadores da
+  pessoa pelo painel do plano do Remote; só o clique de uma pessoa aprova (kalangoos/kalangoos#44).
+- **Kalango VirtualDesk**: o `kalangod` tem as ferramentas `vm.*` e o shell tem a tela em Ajustes › Sandbox (as ferramentas `vm.*`
+  fazem uma pergunta só, #40); o app em si não vai na ISO.
+- **Fonte dos modelos de IA** também em Ajustes e na Central de Apps; o d1-Omni-2B entrou no catálogo da Central de
+  Apps (#40).
+- **Segurança**: dado local colado, repartido ou codificado no endereço da web é barrado nos casos cobertos (#36); os
+  limites estão em [docs/SEGURANCA.md](https://github.com/kalangoos/kalangoos/blob/main/docs/SEGURANCA.md) (rot13, inverter, base32/58, XOR, ruído intercalado, segredo repartido
+  entre parâmetros ou rótulos de DNS, base64 em minúsculas num rótulo de DNS, corpo POST e fragmento não são cobertos). Também: `url` 2.5.9 contra o
+  RUSTSEC-2026-0592 (#37) e o ditado da Ajuda que para ao fechar a janela (#38).
 - **Memória do shell**: janelas de apps fechadas liberam a superfície gráfica depois de 60 s.
 
 A lista completa, com os números dos pull requests, está no [CHANGELOG.md](https://github.com/kalangoos/kalangoos/blob/main/CHANGELOG.md).
@@ -80,8 +101,13 @@ Baixe os arquivos da [página de versões](https://github.com/kalangoos/kalangoo
 
 ## Ainda não incluído na 0.1.0
 
-- Modo privacidade do Kalango Remote.
-- Aprovação automática pelo modelo d1: toda ação arriscada continua pedindo a aprovação da pessoa.
+- A ISO não leva modelo local (as licenças estão em revisão): ele é baixado depois.
+- O Kalango VirtualDesk e o Kalango Fluxos não vão na ISO.
+- Validação em hardware real e a matriz NVIDIA, AMD e Intel completa.
+- O Remote entre dois computadores físicos e numa sessão real do niri (sem ser aninhada).
+- Ideias do [roteiro](https://github.com/kalangoos/kalangoos/blob/main/ROADMAP.md#integrações-planejadas-ideias-sem-data): fonte de áudio ao vivo para fluxos, o gatilho de entrada pela internet por túnel da
+  Cloudflare ([ver](https://github.com/kalangoos/kalangoos/blob/main/ROADMAP.md#gatilho-de-entrada-pela-internet)) e o Remote dentro dos fluxos.
+- Licença CC BY-SA 4.0 da documentação, ainda a confirmar ([LICENCAS.md](https://github.com/kalangoos/kalangoos/blob/main/docs/LICENCAS.md)).
 
 ## Limitações conhecidas
 
@@ -91,9 +117,11 @@ Baixe os arquivos da [página de versões](https://github.com/kalangoos/kalangoo
 | Modelo local | As licenças dos modelos estão em revisão: a ISO não leva modelo, ele é baixado depois |
 | Acessibilidade | Sem certificação nem auditoria |
 | Idioma | Interface e documentação em português do Brasil; o inglês vem na fase 6 |
-| Kalango Remote | Ainda não há modo privacidade, verificação em duas etapas, gravação de sessões nem compartilhamento por servidor próprio; não foi testado entre dois computadores físicos nem numa sessão real do niri (só aninhada) |
+| Kalango Remote | Não foi testado entre dois computadores físicos nem numa sessão real do niri (só aninhada); o Mosh não foi testado (não está instalado onde testamos); o caminho da tela de bloqueio e o quadro de transição da tela sob a cobertura do modo de privacidade só são cobertos pelo código, não por um teste |
 | VirtualDesk e Fluxos | Fora da ISO; o serviço de fluxos está num repositório privado |
 | Atualizações | Sem atualização com ponto de restauração nem tela de recuperação |
+| Licença da documentação | A CC BY-SA 4.0 proposta para a documentação ainda está por confirmar ([LICENCAS.md](https://github.com/kalangoos/kalangoos/blob/main/docs/LICENCAS.md)) |
+| Ideias do roteiro (fonte de áudio ao vivo para fluxos, gatilho de entrada pela internet por túnel da Cloudflare, Remote dentro dos fluxos) | Ainda não feitas ([ROADMAP.md](https://github.com/kalangoos/kalangoos/blob/main/ROADMAP.md#integrações-planejadas-ideias-sem-data)) |
 | Segurança | Sem revisão externa; os limites da defesa de endereços estão em [docs/SEGURANCA.md](https://github.com/kalangoos/kalangoos/blob/main/docs/SEGURANCA.md) |
 
 Mais contexto em [LANCAMENTO.md](https://github.com/kalangoos/kalangoos/blob/main/docs/LANCAMENTO.md) e no [ROADMAP.md](https://github.com/kalangoos/kalangoos/blob/main/ROADMAP.md).
@@ -133,16 +161,36 @@ machines**: do not install it on a computer with data you cannot lose.
 - **`kalangod`**: the service that gives agents access to the system, with approval on a screen the agent cannot
   imitate, undo, a timeline and four power levels (observe, user, system, full). Kernel-enforced rules (eBPF LSM,
   Landlock, seccomp, cgroups), a folder allow-list for writes, system configuration out of agents' reach and a
-  defence against local data leaving in a web address.
+  defence against local data leaving in a web address (in the covered cases, with documented limits).
 - **Local agents** with LFM3 through llama.cpp, conversation context management (recent window, background summary,
   search in the conversation) and agents that operate the screen by vision, always with approval.
-- **Flows**: a full flow editor in the shell; the d1 decision model answers in "Decidir" blocks.
-- **Kalango Remote** (screen sharing, remote control, SSH and Mosh) and **Kalango Audio** (capture, process, route
-  and record sound) on the image. Remote has not been tested between two physical computers nor in a real niri
-  session (nested only).
-- **Kalango VirtualDesk**: `kalangod` has the `vm.*` tools and the shell has the Settings › Sandbox screen; the app
-  itself is not on the ISO.
-- **AI model source** also in Settings and in the app center.
+- **Approval with the d1**: the approval screen shows the d1 decision model's recommendation ("looks safe" or "looks
+  dangerous", its confidence and a reason from a closed list); the decision stays with the person. Permissions has an
+  option, **off by default**, "Approve low-risk actions on my own": it covers only three reversible file actions in
+  the person's folder (move to trash, move, create a new file that does not run), only if the d1 says safe with at
+  least the minimum confidence, never after content read from outside in the conversation, at most 5 per request, and it turns
+  itself off after 3 denials. `kalangod` re-checks everything, and installing packages is never "safe"
+  (kalangoos/kalangoos#42).
+- **Flows**: a full flow editor in the shell; the d1 model also answers in "Decidir" blocks.
+- **Kalango Remote** (screen sharing, remote control, SSH and Mosh; Mosh not yet tested) and **Kalango Audio** (capture, process, route
+  and record sound) on the image. Remote has a fixed password and unattended access with limited permissions (no
+  files, terminal, camera, tunnel, restart, input blocking or privacy mode; the banner lists what was granted),
+  two-step verification (TOTP), session recording (Videos › Kalango Remote, 30 days, with a notice to the recorded
+  person), its own RustDesk-compatible server, a global lockout after wrong attempts and the agent plan panel
+  (`kalango-remote agent-plan`) (kalangoos/kalango-remote#11 and #12).
+- **Remote privacy mode ("black screen here")**: while someone controls with access nobody approved on this
+  computer, the local screen is covered and the controller sees the real desktop. Emergency exits: Esc Esc, a
+  virtual-terminal switch, the power button and the lock (niri patch 0012, kalangoos/niri#4, and
+  kalangoos/kalangoos#44).
+- **Agent and Remote**: the `remoto.conectar` tool lets the agent propose a connection to one of the person's
+  computers through the Remote's plan panel; only a human click approves (kalangoos/kalangoos#44).
+- **Kalango VirtualDesk**: `kalangod` has the `vm.*` tools and the shell has the Settings › Sandbox screen (the `vm.*` tools
+  ask a single question, #40); the app itself is not on the ISO.
+- **AI model source** also in Settings and in the app center; d1-Omni-2B joined the app center catalog (#40).
+- **Security**: local data pasted, split or encoded into a web address is blocked in the covered cases (#36); the
+  limits are in [docs/SEGURANCA.md](https://github.com/kalangoos/kalangoos/blob/main/docs/SEGURANCA.md) (rot13, reversal, base32/58, XOR, interleaved noise, a secret split across
+  parameters or DNS labels, lowercase base64 in a DNS label, a POST body and the fragment are not covered). Also: `url` 2.5.9 against RUSTSEC-2026-0592
+  (#37) and the Help dictation that stops when its window closes (#38).
 - **Shell memory**: closed app windows release their graphics surface after 60 s.
 
 The full list, with pull request numbers, is in [CHANGELOG.md](https://github.com/kalangoos/kalangoos/blob/main/CHANGELOG.md).
@@ -166,8 +214,13 @@ installer's "AI models" step.
 
 ### Not included in 0.1.0
 
-- Kalango Remote privacy mode.
-- Automatic approval by the d1 model: every risky action still asks for the person's approval.
+- The ISO ships no local model (licences under review): it is downloaded afterwards.
+- Kalango VirtualDesk and Kalango Flows are not on the ISO.
+- Real-hardware validation and the complete NVIDIA, AMD and Intel matrix.
+- Remote between two physical computers and in a real (non-nested) niri session.
+- Ideas in the [roadmap](https://github.com/kalangoos/kalangoos/blob/main/ROADMAP.md#integrações-planejadas-ideias-sem-data): a live audio source for flows, an inbound internet trigger through a Cloudflare
+  tunnel ([see](https://github.com/kalangoos/kalangoos/blob/main/ROADMAP.md#gatilho-de-entrada-pela-internet)) and Remote inside flows.
+- The CC BY-SA 4.0 documentation licence is still to be confirmed ([LICENCAS.md](https://github.com/kalangoos/kalangoos/blob/main/docs/LICENCAS.md)).
 
 ### Known limitations
 
@@ -177,9 +230,11 @@ installer's "AI models" step.
 | Local model | Model licences are under review: the ISO ships no model, it is downloaded afterwards |
 | Accessibility | Not certified or audited |
 | Language | UI and docs in Brazilian Portuguese; English comes in phase 6 |
-| Kalango Remote | No privacy mode, two-step verification, session recording or sharing through an own server yet; not tested between two physical computers nor in a real niri session (nested only) |
+| Kalango Remote | Not tested between two physical computers nor in a real niri session (nested only); Mosh not tested (not installed where we tested); the lock-screen path and the screen-transition frame under the privacy cover are covered by code only, not by a test |
 | VirtualDesk and Flows | Not on the ISO; the flows service is in a private repository |
 | Updates | No update with a restore point and no recovery screen |
+| Documentation licence | The CC BY-SA 4.0 proposed for the documentation is still to be confirmed ([LICENCAS.md](https://github.com/kalangoos/kalangoos/blob/main/docs/LICENCAS.md)) |
+| Roadmap ideas (a live audio source for flows, an inbound internet trigger through a Cloudflare tunnel, Remote inside flows) | Not done yet ([ROADMAP.md](https://github.com/kalangoos/kalangoos/blob/main/ROADMAP.md#integrações-planejadas-ideias-sem-data)) |
 | Security | No external review; the limits of the web-address defence are in [docs/SEGURANCA.md](https://github.com/kalangoos/kalangoos/blob/main/docs/SEGURANCA.md) |
 
 ### Security reporting and licence
