@@ -1,6 +1,7 @@
 //! The agent loop: the person's request → the local model → tools through kalangod → answer.
 //! The defence (defesa.rs) runs on every tool result and on every call above the "usuario" level.
 
+use crate::context;
 use crate::defesa;
 use crate::memoria;
 use crate::permissoes::{self, Answer, Perm};
@@ -33,6 +34,12 @@ pub enum Event {
     Memory { items: Vec<String> },
     /// The task's plan (design "Chat · código"): its steps and how many are done; `ended` once the answer came.
     Plan { steps: Vec<String>, done: usize, ended: bool },
+    /// What one call of the model got (docs/CONTEXTO.md): the prompt's tokens, the budget and the model's context,
+    /// how many earlier exchanges went as they were and how many are in the summary.
+    Context { sent: u64, evaluated: u64, budget: u64, window: u64, kept: usize, summarized: usize },
+    /// Older exchanges were folded into the conversation's summary ("conversa compactada"): how many, the summary
+    /// now, the prompt before and after (tokens) and why ("a_cada": the setting; "orcamento": near the budget).
+    Compacted { exchanges: usize, total: usize, summary: String, before: u64, after: u64, reason: String, at: u64 },
 }
 
 impl Event {
@@ -50,6 +57,8 @@ impl Event {
             Event::Usage { tokens } => json!({"tipo": "uso", "tokens": tokens}),
             Event::Memory { items } => json!({"tipo": "memoria", "itens": items}),
             Event::Plan { steps, done, ended } => json!({"tipo": "plano", "passos": steps, "feitos": done, "fim": ended}),
+            Event::Context { sent, evaluated, budget, window, kept, summarized } => json!({"tipo": "contexto", "enviados": sent, "avaliados": evaluated, "orcamento": budget, "janela": window, "trocas_mantidas": kept, "trocas_resumidas": summarized}),
+            Event::Compacted { exchanges, total, summary, before, after, reason, at } => json!({"tipo": "compactada", "trocas": exchanges, "resumidas": total, "resumo": summary, "antes": before, "depois": after, "motivo": reason, "t": at}),
         }
     }
 }
@@ -322,6 +331,21 @@ pub fn turned_off_note(all: &[Tool]) -> String {
     format!("\n\n{}\n{}", tr("The person turned these actions off. Do not do them, not even by combining other actions (for example, copying a file and deleting the original instead of moving it). If the request needs one of them, say it is turned off and that it can be turned back on in the agent's permissions."), off.join("\n"))
 }
 
+/// Writes a file whole or not at all: a temporary file beside it, then a rename (a crash or a full disk never leaves
+/// half a conversation).
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
+/// The size of the tools' JSON as sent (characters).
+fn tools_chars(api_tools: &[Value]) -> usize {
+    api_tools.iter().map(|t| t.to_string().chars().count()).sum()
+}
+
 fn api_tool(t: &Tool) -> Value {
     json!({"type": "function", "function": {"name": api_name(&t.name), "description": t.description, "parameters": t.schema}})
 }
@@ -413,6 +437,27 @@ pub fn conversas_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share")).join("kalango/conversas")
 }
 
+/// One summary of the older exchanges, ready to run (in a thread of its own, cancellable).
+pub struct CompactionJob {
+    model: Model,
+    request: Vec<Value>,
+    previous: String,
+    upto: usize,
+    exchanges: usize,
+    reason: &'static str,
+    before: usize,
+    /// the state it was made for
+    covered: usize,
+    archive_len: usize,
+}
+
+impl CompactionJob {
+    /// The model call: bounded in tokens and in time, and stopped at once by `cancel`.
+    pub fn run(&self, cancel: &crate::modelo::Cancel) -> Result<Vec<String>, String> {
+        self.model.complete_list_cancellable(&self.request, context::SUMMARY_LINES, context::SUMMARY_MAX_TOKENS, crate::modelo::SUMMARY_TIMEOUT, cancel)
+    }
+}
+
 pub struct Agent {
     kalangod: Client,
     model: Model,
@@ -466,6 +511,16 @@ pub struct Agent {
     plan_done: usize,
     /// the agent's name, when it has one (an installed agent); else "Assistant"
     pub nome: Option<String>,
+    /// the conversation's rolling summary and what it covers (contexto.json), and the model's context in tokens
+    context: context::State,
+    n_ctx: usize,
+    /// this request may search what is outside the window (it points back at the conversation)
+    search: bool,
+    /// the largest prompt of this request, as the model counted it (a summary is due after the answer when it nears
+    /// the budget)
+    largest_prompt: usize,
+    /// the engine's note for the end of the prompt (the clock)
+    tail_note: String,
 }
 
 impl Agent {
@@ -485,9 +540,11 @@ impl Agent {
         // a model that does not start is said as such (the shell offers to start it again)
         let model = Model::ensure(&|s| on_event(Event::Status(s.to_string()))).map_err(|e| permissoes::com_codigo("modelo", e))?;
         let base_prompt = system_prompt(&kalangod.instructions);
+        let n_ctx = model.context_size();
         let messages = vec![json!({"role": "system", "content": base_prompt})];
         Ok(Agent { kalangod, model, tools, messages, person_text: String::new(), external: Vec::new(), external_web: Vec::new(), allow_web: true, next_ask: 0, base_prompt, moves: Default::default(), external_at_request: 0,
-            conectores: crate::conectores::abrir_todos(), conectores_assinatura: crate::conectores::assinatura(), desligadas: Vec::new(), conversa: None, autonomia: None, escopo: Escopo::default(), simular: false, buscas_seguidas: 0, resultados_busca: Vec::new(), fontes: String::new(), conferida: false, buscas: 0, consultas: Vec::new(), lidas: 0, plan: Vec::new(), plan_done: 0, nome: None })
+            conectores: crate::conectores::abrir_todos(), conectores_assinatura: crate::conectores::assinatura(), desligadas: Vec::new(), conversa: None, autonomia: None, escopo: Escopo::default(), simular: false, buscas_seguidas: 0, resultados_busca: Vec::new(), fontes: String::new(), conferida: false, buscas: 0, consultas: Vec::new(), lidas: 0, plan: Vec::new(), plan_done: 0, nome: None,
+            context: context::State::default(), n_ctx, search: false, largest_prompt: 0, tail_note: String::new() })
     }
 
     /// The agent's name as the person sees it (the screen indicator and the approval card say it).
@@ -562,7 +619,9 @@ impl Agent {
             let espaco = if m.ajustes.por_espaco { memoria::espaco_atual() } else { None };
             on_event(Event::Memory { items: m.para_o_agente(espaco.as_deref()).iter().map(|l| l.texto.clone()).collect() });
         }
-        self.messages[0]["content"] = json!(format!("{}{}{}\n\n{}", self.base_prompt, turned_off_note(&self.tools), remembered, now_note()));
+        self.messages[0]["content"] = json!(format!("{}{}{}", self.base_prompt, turned_off_note(&self.tools), remembered));
+        // (the clock changes every minute: at the end of the prompt, so the start of it stays cached)
+        self.tail_note = now_note();
         let mut offered: Vec<Tool> = select_tools(&self.tools, &self.person_text, self.allow_web).into_iter()
             .filter(|t| !self.desligada(t)).cloned().collect();
         let lower = request.to_lowercase();
@@ -606,7 +665,22 @@ impl Agent {
                 &[("ver", api_name("tela.ver")), ("clicar", api_name("tela.clicar")), ("digitar", api_name("tela.digitar")), ("teclas", api_name("tela.teclas"))]);
             self.messages[0]["content"] = json!(format!("{}\n\n{nota}", self.messages[0]["content"].as_str().unwrap_or("")));
         }
-        let api_tools: Vec<Value> = offered.iter().map(api_tool).collect();
+        let mut api_tools: Vec<Value> = offered.iter().map(api_tool).collect();
+        // the window (summaries are written after the answer, never before it). The tools follow the conversation's
+        // state, not the request's words: the search is offered whenever part of the conversation is outside the
+        // window, and the reopen tool whenever it holds a result that may go as a digest, so the tools block (the
+        // start of the prompt) is the same from one request to the next and the server's cache of it keeps working.
+        // Only the note about the earlier messages depends on the request, and it goes at the end of the prompt.
+        self.search = context::refers_back(request);
+        self.largest_prompt = 0;
+        let w = self.window(&api_tools);
+        if w.partial {
+            offered.push(context::search_tool());
+        }
+        if w.reopenable || w.stubbed > 0 {
+            offered.push(context::reopen_tool());
+        }
+        api_tools = offered.iter().map(api_tool).collect();
         let mut falhas_seguidas = 0;
         for _ in 0..max_steps() {
             on_event(Event::Status(tr("thinking…").to_string()));
@@ -614,10 +688,21 @@ impl Agent {
             let settings = permissoes::load();
             permissoes::may_run(&settings)?;
             permissoes::may_spend_tokens(&settings)?;
-            let Reply { content, tool_calls, cut, tokens } = self.model.chat(&self.messages, &api_tools)?;
+            let window = self.window(&api_tools);
+            if window.cut {
+                on_event(Event::Status(tr("the latest result is too long: only its beginning fits the context").to_string()));
+            }
+            let Reply { content, tool_calls, cut, tokens, prompt_tokens, evaluated } = self.model.chat(&window.messages, &api_tools)?;
+            self.largest_prompt = self.largest_prompt.max(prompt_tokens as usize);
             if tokens > 0 {
                 on_event(Event::Usage { tokens });
             }
+            // (the next estimates use the model's own count)
+            let sent_chars: usize = window.messages.iter().map(|m| m.to_string().chars().count()).sum::<usize>() + tools_chars(&api_tools);
+            self.context.measured(sent_chars, (prompt_tokens as usize).saturating_sub(window.messages.len() * 4));
+            let s = self.settings();
+            on_event(Event::Context { sent: if prompt_tokens > 0 { prompt_tokens } else { window.tokens as u64 }, evaluated, budget: s.budget_tokens as u64,
+                window: self.n_ctx as u64, kept: window.kept_exchanges, summarized: self.context.summarized_exchanges() });
             if tool_calls.is_empty() {
                 let mut answer = if content.is_empty() { tr("(no answer)").to_string() } else { content };
                 if cut {
@@ -635,7 +720,7 @@ impl Agent {
                         self.conferida = true;
                         on_event(Event::Status(tr("checking the answer against the pages…").to_string()));
                         let nota = trf("Check: these are in your answer but in none of the pages you read: {list}. Rewrite the answer with only what the pages say (words in brackets are the page's icons: [Gol] a goal, [yellowcard] a yellow card); where a detail is missing, say you did not find it. Do not mention this check.", &[("list", sem_fonte.join(", "))]);
-                        self.messages.push(json!({"role": "user", "content": nota}));
+                        self.messages.push(json!({"role": "user", "content": nota, "nota_do_motor": true}));
                         continue;
                     }
                 }
@@ -766,6 +851,26 @@ impl Agent {
                     on_event(Event::ToolDone { tool: name.clone(), ok, text: text.clone(), summary: if ok { tr("looked at the screen").to_string() } else { String::new() } });
                     self.remember_external(&name, &text);
                     let content = if ok { defesa::envelope(&name, &text) } else { format!("{}: {}", tr("refused or failed"), defesa::neutralize(&text)) };
+                    self.messages.push(json!({"role": "tool", "tool_call_id": call.id, "content": content}));
+                    continue;
+                }
+                // this conversation's archive: a search over it, or a kept result again (done here, read only)
+                if name == "conversa.buscar" || name == "conversa.abrir" {
+                    on_event(Event::ToolStart { tool: name.clone(), args: call.arguments.clone(), level: tool.level.clone(), description: tool.description.clone() });
+                    let (ok, text) = self.archive_call(&name, &call.arguments);
+                    algum_ok |= ok;
+                    on_event(Event::ToolDone { tool: name.clone(), ok, text: text.clone(), summary: if ok { tr("looked back in this conversation").to_string() } else { String::new() } });
+                    let content = if !ok {
+                        format!("{}: {}", tr("refused or failed"), defesa::neutralize(&text))
+                    } else if name == "conversa.abrir" {
+                        // (as the model got it then: a tool's result inside its envelope)
+                        text.clone()
+                    } else {
+                        defesa::envelope(&name, &text)
+                    };
+                    if ok {
+                        self.remember_external(&name, &text);
+                    }
                     self.messages.push(json!({"role": "tool", "tool_call_id": call.id, "content": content}));
                     continue;
                 }
@@ -971,13 +1076,27 @@ impl Agent {
         let dir = conversas_dir().join(id);
         let _ = std::fs::create_dir_all(&dir);
         if let Some(v) = std::fs::read_to_string(dir.join("mensagens.json")).ok().and_then(|t| serde_json::from_str::<Vec<Value>>(&t).ok()) {
+            let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
             for m in v.into_iter().filter(|m| m["role"] != "system") {
-                if m["role"] == "user" {
+                if m["role"] == "user" && m.get(context::NOTE_KEY).is_none() {
                     self.person_text.push('\n');
                     self.person_text.push_str(m["content"].as_str().unwrap_or(""));
                 }
+                for c in m["tool_calls"].as_array().into_iter().flatten() {
+                    names.insert(c["id"].as_str().unwrap_or("").to_string(), tool_name(c["function"]["name"].as_str().unwrap_or("")));
+                }
+                // what tools read before stays external content for the taint check (a new process forgot it)
+                if m["role"] == "tool" && m["content"].as_str().is_some_and(|c| c.contains("<<<DADOS EXTERNOS")) {
+                    let tool = names.get(m["tool_call_id"].as_str().unwrap_or("")).cloned().unwrap_or_default();
+                    self.remember_external(&tool, m["content"].as_str().unwrap_or(""));
+                }
                 self.messages.push(m);
             }
+        }
+        if let Some(v) = std::fs::read_to_string(dir.join("contexto.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+            self.context = context::State::from_json(&v).checked(&self.messages[1..]);
+            let summary = self.context.summary.clone();
+            self.remember_summary(&summary);
         }
         self.conversa = Some(dir);
     }
@@ -996,8 +1115,126 @@ impl Agent {
     fn guardar(&self) {
         if let Some(d) = &self.conversa {
             let v: Vec<&Value> = self.messages.iter().skip(1).collect();
-            let _ = std::fs::write(d.join("mensagens.json"), serde_json::to_string(&v).unwrap_or_default());
+            let _ = write_atomic(&d.join("mensagens.json"), serde_json::to_string(&v).unwrap_or_default().as_bytes());
+            let _ = write_atomic(&d.join("contexto.json"), self.context.to_json().to_string().as_bytes());
         }
+    }
+
+    /// The person's context settings (Agents › Settings › Advanced) for this model.
+    fn settings(&self) -> context::Settings {
+        context::Settings::from_prefs(&agent_prefs(), self.n_ctx)
+    }
+
+    /// The window the model gets now (context.rs), counted by the model itself near the budget (an estimate is a
+    /// ratio: a list of packages tokenizes denser than a conversation, and the critic's real count went 10 % over).
+    fn window(&mut self, api_tools: &[Value]) -> context::Window {
+        let system = self.messages[0]["content"].as_str().unwrap_or("").to_string();
+        let s = context::Settings { search: self.search, ..self.settings() };
+        let tools_json: String = api_tools.iter().map(|t| t.to_string()).collect();
+        let tools = tools_json.chars().count();
+        let ratio = self.context.ratio();
+        let model = &self.model;
+        let mut measured: Option<(usize, usize)> = None;
+        let mut count = |msgs: &[Value]| -> usize {
+            let est = context::estimate(msgs, tools, ratio);
+            if (est as f64) < s.budget_tokens as f64 * 0.5 {
+                return est;
+            }
+            let text: String = msgs.iter().map(|m| m.to_string()).collect::<String>() + &tools_json;
+            match model.count_tokens(&text) {
+                Some(n) => {
+                    measured = Some((text.chars().count(), n));
+                    n + msgs.len() * 4
+                }
+                None => est,
+            }
+        };
+        let w = context::build_with_tail(&system, &self.messages[1..], &self.context, &s, &self.tail_note, &mut count);
+        if let Some((chars, n)) = measured {
+            self.context.measured(chars, n);
+        }
+        w
+    }
+
+    /// A summary was written from content (files, pages, tools): values in it are checked as content read on this
+    /// computer — never as the web's. (As web content, a whole address in it was exempt: an address the agent had
+    /// built with a local account number went out once a summary carried it.)
+    fn remember_summary(&mut self, summary: &str) {
+        for (text, web) in context::summary_taint_sources(summary) {
+            self.external.push(text);
+            self.external_web.push(web);
+        }
+    }
+
+    /// After the answer: whether older exchanges are due to go into the summary (the request's largest prompt neared
+    /// the budget, or the exchanges since the summary passed the setting). Cheap: it only builds the request; the
+    /// model call is `CompactionJob::run`, which the caller runs where it does not hold the person up.
+    pub fn plan_compaction(&self) -> Option<CompactionJob> {
+        let s = self.settings();
+        let (upto, reason) = context::compaction_due(&self.messages[1..], &self.context, &s, self.largest_prompt)?;
+        let from = self.context.covered.min(upto);
+        let history = &self.messages[1..];
+        let exchanges = context::exchange_starts(history).iter().filter(|&&i| i >= from && i < upto).count();
+        if exchanges == 0 {
+            return None;
+        }
+        let (input, _) = context::summary_input(history, from, upto, context::SUMMARY_INPUT_CHARS);
+        let previous = self.context.summary.clone();
+        Some(CompactionJob {
+            model: self.model.clone(), request: context::summary_request(&previous, &input), previous, upto, exchanges, reason, before: self.largest_prompt,
+            covered: self.context.covered, archive_len: history.len(),
+        })
+    }
+
+    /// Applies a finished job (the model's items). A job made for another state of the conversation (a request came
+    /// in meanwhile) is dropped.
+    pub fn finish_compaction(&mut self, job: &CompactionJob, items: Vec<String>, on_event: &dyn Fn(Event)) {
+        if job.covered != self.context.covered || job.archive_len != self.messages.len() - 1 {
+            return;
+        }
+        let summary = context::merge_summary(&job.previous, &context::clean_summary(&items.join("\n")));
+        if summary.trim().is_empty() {
+            return;
+        }
+        self.context.summary = summary.clone();
+        self.context.covered = job.upto;
+        self.remember_summary(&summary);
+        // (the next request's window as the model will count it: the system prompt now and the summary)
+        let after = self.window(&[]).tokens;
+        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let before = job.before;
+        self.context.compactions.push(context::Compaction { at, exchanges: job.exchanges, upto: job.upto, summary: summary.clone(), tokens_before: before, tokens_after: after, reason: job.reason.to_string() });
+        self.guardar();
+        on_event(Event::Compacted { exchanges: job.exchanges, total: self.context.summarized_exchanges(), summary, before: before as u64, after: after as u64, reason: job.reason.to_string(), at });
+    }
+
+    /// The whole thing in the calling thread (a request run once from the command line: nobody waits on a pipe).
+    pub fn after_answer(&mut self, on_event: &dyn Fn(Event)) {
+        let Some(job) = self.plan_compaction() else { return };
+        on_event(Event::Status(tr("summarizing the older part of the conversation…").to_string()));
+        match job.run(&crate::modelo::Cancel::default()) {
+            Ok(items) => self.finish_compaction(&job, items, on_event),
+            Err(e) => on_event(Event::Status(trf("could not summarize the conversation: {e}", &[("e", e)]))),
+        }
+    }
+
+    /// conversa.buscar / conversa.abrir over this conversation's archive (the current request is not searched).
+    fn archive_call(&self, name: &str, args: &Value) -> (bool, String) {
+        let history = &self.messages[1..];
+        let current = context::exchange_starts(history).last().copied().unwrap_or(history.len());
+        let text = if name == "conversa.buscar" {
+            context::search_text(&context::search(history, args["consulta"].as_str().unwrap_or(""), current, 5))
+        } else {
+            match context::reopen(history, args["ref"].as_str().unwrap_or(""), current) {
+                Some(t) => t,
+                None => return (false, tr("no kept result has this reference").to_string()),
+            }
+        };
+        // (content that gives orders never came back to the model the first time; it does not now)
+        if defesa::hidden_order(&text).is_some() {
+            return (false, tr("(content withheld)").to_string());
+        }
+        (true, text)
     }
 
     /// memoria.lembrar / memoria.esquecer. (ok, text for the model and the person)

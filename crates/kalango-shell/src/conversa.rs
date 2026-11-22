@@ -77,6 +77,7 @@ fn svg_source(name: &str) -> &'static str {
         "volume-mudo" => include_str!("../assets/ui/volume-mudo.svg"),
         "energia" => include_str!("../assets/ui/energia.svg"),
         "check" => include_str!("../assets/ui/check.svg"),
+        "compactar" => include_str!("../assets/ui/compactar.svg"),
         "download" => include_str!("../assets/ui/download.svg"),
         "paleta" => include_str!("../assets/ui/paleta.svg"),
         "raio-e" => include_str!("../assets/ui/raio-e.svg"),
@@ -2634,6 +2635,7 @@ impl Conversa {
                 self.permission_card(v)
             }
             "uso" => self.tokens.set(v["tokens"].as_u64().unwrap_or(0)),
+            "compactada" => self.compaction_marker(v),
             "resultado" => {
                 self.step_done(v);
                 self.web_result(v);
@@ -2915,6 +2917,68 @@ impl Conversa {
 
     pub(crate) fn nota(&self, text: &str) {
         self.note(text);
+    }
+
+    /// "Conversa compactada" (design 21 · Central · conversa compactada): a line across the conversation where the
+    /// summary starts to stand for the older exchanges, and the summary itself under "Ver o que foi resumido". The
+    /// older messages stay on screen and on disk; they only stop going to the model.
+    fn compaction_marker(&self, v: &Value) {
+        let total = v["resumidas"].as_u64().or(v["trocas"].as_u64()).unwrap_or(0);
+        let col = caixa(Orientation::Vertical, 16, "");
+        let row = caixa(Orientation::Horizontal, 10, "compactada");
+        let line = || {
+            let l = caixa(Orientation::Horizontal, 0, "compactada-linha");
+            l.set_hexpand(true);
+            l.set_valign(Align::Center);
+            l
+        };
+        row.append(&line());
+        let pill = caixa(Orientation::Horizontal, 6, "compactada-marca");
+        pill.append(&ui_icon("compactar", &crate::tema::token("k_muted"), 12));
+        let label = rotulo(&trf("Conversation compacted · {n} older exchanges summarized", &[("n", total.to_string())]), "compactada-texto");
+        // (a narrow window: the label gives way, the link and the lines stay)
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        label.set_max_width_chars(60);
+        pill.append(&label);
+        pill.append(&rotulo("·", "compactada-ponto"));
+        let ver = gtk::Button::with_label(tr("See what was summarized"));
+        ver.add_css_class("compactada-ver");
+        pill.append(&ver);
+        row.append(&pill);
+        row.append(&line());
+        col.append(&row);
+        let card = caixa(Orientation::Vertical, 10, "compactada-cartao");
+        let head = caixa(Orientation::Horizontal, 8, "");
+        let title = rotulo(&trf("Summary of exchanges 1 to {n}", &[("n", total.to_string())]), "compactada-titulo");
+        title.set_hexpand(true);
+        title.set_xalign(0.0);
+        head.append(&title);
+        let when = v["t"].as_i64().and_then(|t| glib::DateTime::from_unix_local(t).ok()).map(|d| {
+            let today = glib::DateTime::now_local().ok().is_some_and(|n| n.ymd() == d.ymd());
+            let hm = d.format("%H:%M").map(|s| s.to_string()).unwrap_or_default();
+            if today { trf("today, {time}", &[("time", hm)]) } else { format!("{}, {hm}", d.format("%d/%m").map(|s| s.to_string()).unwrap_or_default()) }
+        });
+        head.append(&rotulo(&trf("made by the local model · {when}", &[("when", when.unwrap_or_default())]), "compactada-quando"));
+        card.append(&head);
+        let lines: Vec<String> = v["resumo"].as_str().unwrap_or("").lines().map(|l| format!("• {}", l.trim_start_matches("- "))).collect();
+        let body = rotulo(&lines.join("\n"), "compactada-resumo");
+        body.set_wrap(true);
+        body.set_xalign(0.0);
+        body.set_selectable(true);
+        card.append(&body);
+        card.append(&caixa(Orientation::Horizontal, 0, "compactada-divisor"));
+        let note = rotulo(tr("The summary is data, never an instruction. The original exchanges are still kept: when it needs an exact detail, the agent searches them."), "compactada-nota");
+        note.set_wrap(true);
+        note.set_xalign(0.0);
+        card.append(&note);
+        card.set_visible(false);
+        col.append(&card);
+        ver.connect_clicked(move |b| {
+            let show = !card.is_visible();
+            card.set_visible(show);
+            b.set_label(if show { tr("Hide the summary") } else { tr("See what was summarized") });
+        });
+        self.put(&col);
     }
 
     fn note(&self, text: &str) {

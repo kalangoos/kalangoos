@@ -7,6 +7,7 @@
 
 mod composed;
 mod conectores;
+mod context;
 mod defesa;
 mod disposicao;
 mod kalangod;
@@ -40,7 +41,8 @@ fn print_event(e: &Event) {
             eprintln!("{dim}{mark} {tool}: {}{}{reset}", short.replace('\n', " "), if text.chars().count() > 160 { "…" } else { "" });
         }
         Event::Answer(s) => println!("{s}"),
-        Event::Usage { .. } | Event::Memory { .. } => {}
+        Event::Usage { .. } | Event::Memory { .. } | Event::Context { .. } => {}
+        Event::Compacted { exchanges, .. } => eprintln!("{dim}· {}{reset}", trf("conversation compacted: {n} older exchanges summarized", &[("n", exchanges.to_string())])),
         Event::Plan { steps, done, .. } => {
             for (i, p) in steps.iter().enumerate() {
                 eprintln!("\x1b[2m{} {p}\x1b[0m", if i < *done { "[x]" } else { "[ ]" });
@@ -1273,20 +1275,48 @@ fn main() {
     if let Some(id) = &conversa {
         agent.continuar(id);
     }
+    // What comes in on stdin in a conversation (the lines of the person's requests and of the shell's settings and
+    // answers), read by a thread of its own so that the main thread can also hear a summary finish. The approval
+    // question below takes its answer from the same queue; whatever else arrives while it waits is kept, in order,
+    // for the loop.
+    enum Msg {
+        Line(String),
+        Eof,
+        Summary(u64, Result<Vec<String>, String>),
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<Msg>();
+    let backlog: std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<Msg>>> = Default::default();
+    let from_channel = std::rc::Rc::new(std::cell::Cell::new(false));
     // the person's answer when a tool asks first
-    let mut confirm = move |id: u64| -> permissoes::Answer {
+    let mut confirm = {
+        let (backlog, from_channel) = (backlog.clone(), from_channel.clone());
+        let rx = &rx;
+        move |id: u64| -> permissoes::Answer {
         let stdin = std::io::stdin();
         if json {
             // the shell answers with {"resposta": "uma-vez" | "sempre" | "negar", "id": n}
             loop {
                 let mut line = String::new();
-                if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
+                if from_channel.get() {
+                    match rx.recv() {
+                        Ok(Msg::Line(l)) => line = l,
+                        Ok(Msg::Summary(..)) => continue,
+                        Ok(Msg::Eof) | Err(_) => {
+                            backlog.borrow_mut().push_back(Msg::Eof);
+                            return permissoes::Answer::Deny;
+                        }
+                    }
+                } else if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
                     return permissoes::Answer::Deny;
                 }
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) {
                     if v.get("resposta").is_some() && v["id"].as_u64().is_none_or(|i| i == id) {
                         return permissoes::Answer::parse(v["resposta"].as_str().unwrap_or(""));
                     }
+                }
+                // (not the answer: a later request or setting, kept for the loop)
+                if from_channel.get() {
+                    backlog.borrow_mut().push_back(Msg::Line(line));
                 }
             }
         }
@@ -1298,6 +1328,7 @@ fn main() {
         let mut line = String::new();
         let _ = stdin.lock().read_line(&mut line);
         permissoes::Answer::parse(line.trim())
+        }
     };
     if json {
         println!("{}", serde_json::json!({"tipo": "pronto", "modelo": agent.model_name()}));
@@ -1314,6 +1345,8 @@ fn main() {
             fail(e);
         }
         done();
+        // (after the turn is over: the person has the answer while the older exchanges are summarized)
+        agent.after_answer(&emit);
         return;
     }
     // conversation: one request per line
@@ -1321,14 +1354,85 @@ fn main() {
     if interactive {
         eprintln!("{}", trf("KalangoOS agent ({model}, local). Empty line or Ctrl+D ends.", &[("model", agent.model_name().to_string())]));
     }
+    // The lines come from a thread of their own (not from a terminal: there the approval question reads the same input),
+    // so the main thread can also hear a summary finish: a summary runs in the background while the person reads, and
+    // a new request cancels it (the model server has one slot) and is answered at once.
+    if !interactive {
+        from_channel.set(true);
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let stdin = std::io::stdin();
+            loop {
+                let mut line = String::new();
+                if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
+                    let _ = tx.send(Msg::Eof);
+                    return;
+                }
+                if tx.send(Msg::Line(line)).is_err() {
+                    return;
+                }
+            }
+        });
+    }
     let stdin = std::io::stdin();
+    // the summary running now: its number, what it stands for, and how to stop it
+    let mut running: Option<(u64, std::sync::Arc<motor::CompactionJob>, modelo::Cancel)> = None;
+    let mut next_job = 0u64;
+    // a request was answered since the last attempt (one attempt per answer: a failure does not repeat at once)
+    let mut check_due = false;
     loop {
         if interactive {
             eprint!("\x1b[1m› \x1b[0m");
             let _ = std::io::stderr().flush();
         }
-        let mut line = String::new();
-        if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+        if check_due && running.is_none() {
+            check_due = false;
+            if let Some(job) = agent.plan_compaction() {
+                next_job += 1;
+                let (id, job, cancel) = (next_job, std::sync::Arc::new(job), modelo::Cancel::default());
+                let (tx, job2, cancel2) = (tx.clone(), job.clone(), cancel.clone());
+                std::thread::spawn(move || {
+                    let r = job2.run(&cancel2);
+                    let _ = tx.send(Msg::Summary(id, r));
+                });
+                running = Some((id, job, cancel));
+            }
+        }
+        let line = if interactive {
+            let mut line = String::new();
+            if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            line
+        } else {
+            let next = backlog.borrow_mut().pop_front().map(Ok).unwrap_or_else(|| rx.recv());
+            match next {
+                Ok(Msg::Line(l)) => {
+                    // the person is waiting for an answer, not for the summary
+                    let setting = matches!(serde_json::from_str::<serde_json::Value>(l.trim()), Ok(serde_json::Value::Object(_)));
+                    if let (false, Some((_, _, cancel))) = (setting, running.take_if(|_| !setting)) {
+                        cancel.cancel();
+                    }
+                    l
+                }
+                Ok(Msg::Summary(id, result)) => {
+                    if running.as_ref().is_some_and(|(n, _, _)| *n == id) {
+                        let (_, job, _) = running.take().unwrap();
+                        if let Ok(items) = result {
+                            agent.finish_compaction(&job, items, &emit);
+                        }
+                    }
+                    continue;
+                }
+                Ok(Msg::Eof) | Err(_) => {
+                    if let Some((_, _, cancel)) = running.take() {
+                        cancel.cancel();
+                    }
+                    break;
+                }
+            }
+        };
+        if line.trim().is_empty() {
             break;
         }
         // a JSON object is a setting from the shell, e.g. {"web": false}
@@ -1356,6 +1460,11 @@ fn main() {
             }
         }
         done();
+        if interactive {
+            agent.after_answer(&emit);
+        } else {
+            check_due = true;
+        }
     }
 }
 

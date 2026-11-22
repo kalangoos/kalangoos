@@ -50,6 +50,27 @@ fn option_row(title: &str, sub: &str, control: &impl IsA<gtk::Widget>) -> gtk::B
     r
 }
 
+/// A slider with its value at its right, as wide as the design's (215); `set` gets each new value.
+fn slider(range: (u32, u32), value: u32, debug: &str, set: impl Fn(u32) + 'static) -> gtk::Box {
+    let b = caixa(Orientation::Horizontal, 10, "");
+    let scale = gtk::Scale::with_range(Orientation::Horizontal, f64::from(range.0), f64::from(range.1), 1.0);
+    scale.add_css_class("cfg-escala");
+    scale.set_draw_value(false);
+    scale.set_size_request(215, -1);
+    scale.set_value(f64::from(value));
+    crate::central::posicao_debug_sempre(debug, scale.upcast_ref());
+    let v = rotulo(&value.to_string(), "cfg-valor-pequeno");
+    v.set_width_chars(3);
+    b.append(&scale);
+    b.append(&v);
+    scale.connect_value_changed(move |s| {
+        let n = s.value().round() as u32;
+        v.set_text(&n.to_string());
+        set(n);
+    });
+    b
+}
+
 /// A segmented choice; `on_pick` gets the chosen id.
 fn segmented(options: &[(&'static str, &str)], current: &str, on_pick: impl Fn(&'static str) + 'static) -> gtk::Box {
     let seg = caixa(Orientation::Horizontal, 2, "cfg-segmentado");
@@ -324,6 +345,14 @@ fn advanced(p: &AgentPrefs) -> Tab {
     sub.set_wrap(true);
     sub.set_max_width_chars(1);
     c.append(&sub);
+    col.append(&c);
+
+    // the conversation's memory (the engine's window and summary, docs/CONTEXTO.md)
+    let c = card(tr("CONVERSATION MEMORY"));
+    c.append(&option_row(tr("Remember the last exchanges whole"), tr("the older ones become a summary; the agent still finds what was said in them"),
+        &slider(agent_prefs::KEEP_RANGE, p.keep_exchanges, "ajustes trocas-mantidas", |n| agent_prefs::update(|p| p.keep_exchanges = n))));
+    c.append(&option_row(tr("Summarize long conversations every"), tr("exchanges since the last summary · at 0, nothing is summarized and the older ones only leave the window"),
+        &slider(agent_prefs::COMPACT_RANGE, p.compact_every, "ajustes resumir-a-cada", |n| agent_prefs::update(|p| p.compact_every = n))));
     col.append(&c);
 
     let c = card(tr("CONVERSATIONS"));
