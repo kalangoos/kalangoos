@@ -34,6 +34,7 @@ mod fluxos_ferramentas;
 // (some helpers serve the editors of the platform, which come next)
 #[allow(dead_code)]
 mod fluxos_ui;
+mod flow_router;
 mod fluxo_canvas;
 mod fluxo_construtor;
 mod fluxo_execucoes;

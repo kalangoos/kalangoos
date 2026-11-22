@@ -890,19 +890,7 @@ impl FlowPage {
                 self.select_many(set);
             }
             CanvasEvent::Moved(places, into) => {
-                {
-                    let mut d = self.doc.borrow_mut();
-                    for (id, x, y) in &places {
-                        if let Some(n) = d.node_mut(id) {
-                            n.x = *x;
-                            n.y = *y;
-                        }
-                    }
-                    for (id, parent) in &into {
-                        d.set_parent(id, parent.as_deref());
-                    }
-                    d.fix_sandboxes();
-                }
+                self.doc.borrow_mut().move_nodes(&places, &into);
                 if into.is_empty() {
                     self.record();
                     self.schedule_save();
@@ -915,8 +903,8 @@ impl FlowPage {
                     self.refresh_inspector();
                 }
             }
-            CanvasEvent::Connect(a, b) => {
-                let ok = self.doc.borrow().may_connect(&a, &b) && self.doc.borrow_mut().connect(&a, &b);
+            CanvasEvent::Connect(a, way, b) => {
+                let ok = self.doc.borrow().may_connect(&a, &b) && self.doc.borrow_mut().connect_way(&a, way.as_ref().map(Option::as_deref), &b);
                 if ok {
                     self.changed();
                     // (the chosen block's ways out show where they go now)

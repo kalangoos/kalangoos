@@ -3419,6 +3419,10 @@ entry.fluxo-mapa > text > placeholder, entry.fluxo-campo > text > placeholder { 
 .fluxo-no-passo { font-size: 10px; font-weight: 600; color: @k_teal; background: alpha(@k_teal, 0.12); border-radius: 3px; padding: 0 5px; }
 .fluxo-no-saidas { margin-top: 6px; }
 .fluxo-no-saida-ponto { border-radius: 3px; min-width: 5px; min-height: 5px; background: @k_teal; }
+/* a named port's row: exactly PORT_ROW_H high (the port on the card's edge sits in line with it, fluxo_modelo::port_points) */
+.fluxo-no-saida { min-height: 18px; }
+.fluxo-no-saida .fluxo-no-mono { margin-top: 0; }
+.fluxo-no-saidas-modo { font-size: 11px; font-weight: 500; color: @k_purple; }
 .fluxo-no-aviso { margin-top: 6px; }
 .fluxo-no-aviso-texto { font-size: 11px; color: @k_gold; }
 .fluxo-percurso { background: @k_bg; border: 1px solid @k_border; border-radius: 4px; padding: 4px 10px; font-size: 12px; color: @k_teal; }

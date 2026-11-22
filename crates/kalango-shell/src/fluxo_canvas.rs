@@ -52,7 +52,9 @@ pub enum CanvasEvent {
     SelectMany(Vec<String>, bool),
     /// blocks dragged to these places, and the ones that went into a sandbox (Some) or out of one (None)
     Moved(Vec<(String, f64, f64)>, Vec<(String, Option<String>)>),
-    Connect(String, String),
+    /// a connection drawn from a block's port (its way when the port has a name: None picks the first way free) to
+    /// another block
+    Connect(String, Option<Option<String>>, String),
     /// a connection's end dragged to another block
     Reconnect(EdgeDoc, String),
     /// the right button: on a block (Some) or on the empty canvas, at a screen and a world point
@@ -70,7 +72,8 @@ enum Drag {
     Pan { start: (f64, f64) },
     /// the blocks that move (each with where it started; a sandbox brings the blocks inside along)
     Move { id: String, ids: Vec<(String, (f64, f64))> },
-    Connect { from: String, at: (f64, f64) },
+    /// (`way`: the named port it left by)
+    Connect { from: String, way: Option<Option<String>>, at: (f64, f64) },
     Reconnect { edge: EdgeDoc, at: (f64, f64) },
     Band { from: (f64, f64), at: (f64, f64) },
 }
@@ -103,6 +106,10 @@ pub struct Canvas {
     /// each sandbox's title width (its dashed border breaks there)
     captions: RefCell<HashMap<String, f64>>,
     pub edge: RefCell<Option<EdgeDoc>>,
+    /// the connections' routes, kept while nothing they go around changes (a drag reroutes only what it touches)
+    routes: RefCell<crate::flow_router::RouteCache>,
+    /// each block's rows of named ports (their ports sit in line with them, wherever the text puts them)
+    port_rows: RefCell<HashMap<String, Vec<gtk::Box>>>,
     fitted: Cell<bool>,
     pub on_event: RefCell<Option<Rc<dyn Fn(CanvasEvent)>>>,
 }
@@ -113,7 +120,10 @@ pub fn trigger_rect(flow: &FlowDoc, i: usize, h: f64) -> Rect {
     Rect { x, y: y + i as f64 * (h + 40.0), w: m::node_width("trigger"), h }
 }
 
-fn rgba(hex: &str, a: f64) -> (f64, f64, f64, f64) {
+/// A colour as cairo takes it (red, green, blue, alpha).
+type Rgba = (f64, f64, f64, f64);
+
+fn rgba(hex: &str, a: f64) -> Rgba {
     let c = gdk::RGBA::parse(crate::tema::cor(hex)).unwrap_or(gdk::RGBA::WHITE);
     (c.red() as f64, c.green() as f64, c.blue() as f64, a)
 }
@@ -221,7 +231,7 @@ impl Canvas {
         let c = Rc::new(Canvas {
             root, fixed, edges, minimap, zoom_label, tip, banner, banner_text, banner_note, add_button, controls: [zoom.clone(), mapa.clone()], view: Cell::new(View::default()), data: RefCell::default(),
             nodes: RefCell::default(), drag: RefCell::new(Drag::None), moved: Cell::new(false), shift: Cell::new(false), pointer: Cell::new((0.0, 0.0)), path, captions: RefCell::default(), edge: RefCell::default(),
-            fitted: Cell::new(false), on_event: RefCell::default(),
+            fitted: Cell::new(false), on_event: RefCell::default(), routes: RefCell::default(), port_rows: RefCell::default(),
         });
         let w = Rc::downgrade(&c);
         c.edges.set_draw_func(move |_, cr, _, _| {
@@ -313,6 +323,28 @@ impl Canvas {
             v.pan.0 = v.pan.0.min(24.0 - b.x * v.zoom).max(24.0 - b.x * v.zoom);
             self.set_view(v);
         }
+        self.log_places();
+    }
+
+    /// Each block's place on the screen, for the session's scripts (`KALANGO_SHELL_DEBUG` only).
+    fn log_places(&self) {
+        if std::env::var_os("KALANGO_SHELL_DEBUG").is_none() {
+            return;
+        }
+        for (id, w, _) in self.nodes.borrow().iter() {
+            crate::central::posicao_debug(&format!("fluxo bloco {id}"), w.upcast_ref());
+        }
+        // (and each port, in the window's coordinates)
+        let Some(win) = self.root.root() else { return };
+        let v = self.view.get();
+        for (id, list) in self.ports() {
+            for (i, (q, _)) in list.iter().enumerate() {
+                let s = v.to_screen(*q);
+                if let Some(p) = self.root.compute_point(&win, &graphene::Point::new(s.0 as f32, s.1 as f32)) {
+                    eprintln!("debug central: fluxo porta {id} {i} em {:.0} {:.0}", p.x(), p.y());
+                }
+            }
+        }
     }
 
     /// Shows the flow again from the start (a new flow: fit it once more).
@@ -349,6 +381,9 @@ impl Canvas {
     /// Draws the flow anew.
     pub fn set_data(self: &Rc<Self>, d: CanvasData) {
         *self.data.borrow_mut() = d;
+        self.port_rows.borrow_mut().clear();
+        // (new data — a flow opened, undo, redo, Organizar, a paste: every route worked out anew)
+        self.routes.borrow_mut().clear();
         for (_, w, _) in self.nodes.borrow_mut().drain(..) {
             self.fixed.remove(&w);
         }
@@ -417,6 +452,7 @@ impl Canvas {
         }
         self.edges.queue_draw();
         self.minimap.queue_draw();
+        self.log_places();
     }
 
     /// A sandbox's dashed area (design "Bloco em sandbox"): its title on the border; the blocks inside sit over it.
@@ -555,27 +591,7 @@ impl Canvas {
             st.set_margin_top(6);
             b.append(&st);
         }
-        // one row per way of its own (an agent's routes, a condition's rules)
         if let Some(n) = node {
-            let rows = m::way_rows(n);
-            if !rows.is_empty() {
-                let list = caixa(Orientation::Vertical, 2, "fluxo-no-saidas");
-                for r in rows {
-                    let row = caixa(Orientation::Horizontal, 6, "fluxo-no-saida");
-                    let dot = caixa(Orientation::Horizontal, 0, "fluxo-no-saida-ponto");
-                    dot.set_size_request(5, 5);
-                    dot.set_valign(Align::Center);
-                    row.append(&dot);
-                    let l = rotulo(&r, "fluxo-no-mono");
-                    l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                    l.set_max_width_chars(10);
-                    l.set_xalign(0.0);
-                    l.set_hexpand(true);
-                    row.append(&l);
-                    list.append(&row);
-                }
-                b.append(&list);
-            }
             // several ways at once and no Join after them
             if d.flow.needs_join(id) {
                 let row = caixa(Orientation::Horizontal, 6, "fluxo-no-aviso");
@@ -588,12 +604,114 @@ impl Canvas {
                 row.append(&l);
                 b.append(&row);
             }
+            // one row per way out, last on the card: each port sits on the right side in line with its row (design
+            // "portas com nome"; `m::port_points` puts them there)
+            if m::named_ports(n) {
+                let list = caixa(Orientation::Vertical, m::PORT_ROW_GAP as i32, "fluxo-no-saidas");
+                if let Some(c) = m::ports_caption(n) {
+                    let l = rotulo(c, "fluxo-no-saidas-modo");
+                    l.set_xalign(0.0);
+                    list.append(&l);
+                }
+                let mut rows = Vec::new();
+                for p in m::out_ports(n) {
+                    let row = caixa(Orientation::Horizontal, 6, "fluxo-no-saida");
+                    rows.push(row.clone());
+                    row.set_size_request(-1, m::PORT_ROW_H as i32);
+                    row.set_tooltip_text(Some(&p.tip));
+                    let dot = caixa(Orientation::Horizontal, 0, "fluxo-no-saida-ponto");
+                    dot.set_size_request(5, 5);
+                    dot.set_valign(Align::Center);
+                    row.append(&dot);
+                    let l = rotulo(&m::short_label(&p.label, m::PORT_LABEL_CHARS), "fluxo-no-mono");
+                    l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                    l.set_max_width_chars(10);
+                    l.set_single_line_mode(true);
+                    l.set_valign(Align::Center);
+                    l.set_xalign(0.0);
+                    l.set_hexpand(true);
+                    row.append(&l);
+                    list.append(&row);
+                }
+                self.port_rows.borrow_mut().insert(id.to_string(), rows);
+                b.append(&list);
+            }
         }
         b
     }
 
     fn rect_of(&self, id: &str) -> Option<Rect> {
         self.nodes.borrow().iter().find(|(i, _, _)| i == id).map(|(_, _, r)| *r)
+    }
+
+    /// Each block's ports where they sit now, with their ways (not the triggers' nor an End's).
+    fn ports(&self) -> Vec<(String, Vec<((f64, f64), Option<String>)>)> {
+        let d = self.data.borrow();
+        self.nodes
+            .borrow()
+            .iter()
+            .filter_map(|(id, _, r)| {
+                let n = d.flow.node(id).filter(|n| n.kind != "end" && n.kind != "sandbox")?;
+                Some((id.clone(), m::grab_points(n, *r, &self.port_places(n, *r))))
+            })
+            .collect()
+    }
+
+    /// Every block's card on the canvas (the triggers' too; not a sandbox's dashed area, which holds blocks): what a
+    /// connection going back and a label keep clear of.
+    fn cards(&self) -> Vec<Rect> {
+        let d = self.data.borrow();
+        self.nodes.borrow().iter().filter(|(id, _, _)| d.flow.node(id).is_none_or(|n| n.kind != "sandbox")).map(|(_, _, r)| *r).collect()
+    }
+
+    /// Where a block's ports are: in line with its rows as the card shows them (measured once the card is on screen:
+    /// a bigger text makes taller rows), else where the design puts them.
+    fn port_places(&self, n: &m::NodeDoc, r: Rect) -> Vec<(f64, f64)> {
+        let fallback = m::port_points(n, r);
+        if !m::named_ports(n) {
+            return fallback;
+        }
+        let rows = self.port_rows.borrow();
+        let card = self.nodes.borrow().iter().find(|(id, _, _)| *id == n.id).map(|(_, w, _)| w.clone());
+        let (Some(rows), Some(card)) = (rows.get(&n.id), card) else { return fallback };
+        // (the card's own coordinates are the world's: the zoom is a transform outside it)
+        // (from the card's outer top: its own coordinates start inside its border and padding)
+        let Some(top) = card.compute_bounds(&card).map(|b| b.y() as f64) else { return fallback };
+        let middles: Option<Vec<f64>> = rows.iter().map(|row| row.compute_bounds(&card).filter(|b| b.height() > 0.0).map(|b| m::row_middle(top, b.y() as f64, b.height() as f64))).collect();
+        match middles {
+            Some(m) if m.len() == fallback.len() => m::port_points_from_rows(r, &m),
+            _ => fallback,
+        }
+    }
+
+    /// Where every connection drawn runs (with whether it is a trigger's): by its way's port out of its source, into
+    /// its target's in port, around every card (`flow_router`); kept while nothing changes, and while a block is
+    /// dragged only the routes it touches are worked out again.
+    fn geometries(&self) -> Vec<(EdgeDoc, bool, m::Route, m::EdgePath)> {
+        let edges = self.drawn_edges();
+        let cards = self.cards();
+        let d = self.data.borrow();
+        let mut kept = Vec::new();
+        let mut links = Vec::new();
+        for (e, trigger) in edges {
+            let (Some(a), Some(b)) = (self.rect_of(&e.source), self.rect_of(&e.target)) else { continue };
+            let node = d.flow.node(&e.source);
+            let ports = node.map(|n| self.port_places(n, a)).unwrap_or_default();
+            let r = m::edge_route_at(node, e.handle.as_deref(), a, b, &ports);
+            links.push(((e.source.clone(), e.target.clone(), e.handle.clone()), crate::flow_router::Link { route: r, src: a, dst: b }));
+            kept.push((e, trigger, r));
+        }
+        let mut cache = self.routes.borrow_mut();
+        let paths = cache.update(links, cards).to_vec();
+        kept.into_iter().zip(paths).map(|((e, t, r), p)| (e, t, r, p)).collect()
+    }
+
+    /// The tip of the port under the pointer (what that way out does).
+    fn port_tip(&self, world: (f64, f64)) -> Option<String> {
+        let (id, way) = m::hit_port(&self.ports(), world, 7.0 / self.view.get().zoom)?;
+        let d = self.data.borrow();
+        let ports = m::out_ports(d.flow.node(&id)?);
+        ports.into_iter().find(|p| p.handle == way).map(|p| p.tip)
     }
 
     /// The connections drawn: the flow's and each trigger's to the block the run starts at.
@@ -649,22 +767,22 @@ impl Canvas {
             let _ = cr.stroke();
             cr.set_dash(&[], 0.0);
         }
-        let edges = self.drawn_edges();
+        let geometries = self.geometries();
+        let cards = self.cards();
         let fanout = |s: &str| d.flow.edges.iter().filter(|e| e.source == s).count();
         let mut ports: Vec<((f64, f64), (f64, f64, f64, f64))> = Vec::new();
         let _ = &bg;
-        let mut labels: Vec<((f64, f64), String, (f64, f64, f64, f64), bool)> = Vec::new();
+        // (each label with the places it may go, best first, in the world: (spot, sits to its left))
+        let mut labels: Vec<(Vec<((f64, f64), bool)>, String, Rgba)> = Vec::new();
         let moving = match &*self.drag.borrow() {
             Drag::Reconnect { edge, .. } => Some(edge.clone()),
             _ => None,
         };
-        for (e, from_trigger) in &edges {
+        for (e, from_trigger, r, path) in &geometries {
             if moving.as_ref() == Some(e) {
                 continue;
             }
-            let (Some(a), Some(b)) = (self.rect_of(&e.source), self.rect_of(&e.target)) else { continue };
-            let r = m::route(a, b);
-            let bz = m::bezier(&r);
+            let (r, path) = (*r, path);
             let travelled = d.travelled.contains(&(e.source.clone(), e.target.clone())) || (*from_trigger && d.states.contains_key(&e.target));
             let waiting = d.states.get(&e.target).map(String::as_str) == Some("waiting") && travelled;
             let selected = chosen.as_ref() == Some(e);
@@ -682,10 +800,14 @@ impl Canvas {
             } else {
                 grey
             };
-            let p: Vec<(f64, f64)> = bz.iter().map(|q| v.to_screen(*q)).collect();
             cr.new_path();
-            cr.move_to(p[0].0, p[0].1);
-            cr.curve_to(p[1].0, p[1].1, p[2].0, p[2].1, p[3].0, p[3].1);
+            for (i, seg) in path.segments.iter().enumerate() {
+                let p: Vec<(f64, f64)> = seg.iter().map(|q| v.to_screen(*q)).collect();
+                if i == 0 {
+                    cr.move_to(p[0].0, p[0].1);
+                }
+                cr.curve_to(p[1].0, p[1].1, p[2].0, p[2].1, p[3].0, p[3].1);
+            }
             set(cr, color);
             cr.set_line_width(if selected { 2.0 } else { 1.5 } * z.max(0.6));
             if waiting || r.back {
@@ -695,20 +817,34 @@ impl Canvas {
             }
             let _ = cr.stroke();
             cr.set_dash(&[], 0.0);
-            if !r.back {
-                ports.push((p[0], color));
-            }
-            ports.push((p[3], color));
+            // (the source's out port and the target's in port, wherever the blocks sit)
+            ports.push((v.to_screen(r.from), color));
+            ports.push((v.to_screen(r.to), color));
             // the way's label (a run's numbers when it has them)
-            let src_kind = d.flow.node(&e.source).map(|n| n.kind.as_str()).unwrap_or("");
-            let mut text = e.handle.as_ref().and_then(|h| d.labels.get(&(e.source.clone(), h.clone())).cloned()).unwrap_or_else(|| m::way_label(src_kind, e.handle.as_deref()));
+            let src = d.flow.node(&e.source);
+            let src_kind = src.map(|n| n.kind.as_str()).unwrap_or("");
+            let named = src.map(|n| m::way_name(n, e.handle.as_deref())).unwrap_or_else(|| m::way_label(src_kind, e.handle.as_deref()));
+            let mut text = e.handle.as_ref().and_then(|h| d.labels.get(&(e.source.clone(), h.clone())).cloned()).unwrap_or_else(|| m::short_label(&named, m::PORT_LABEL_CHARS));
             // (a For each's "done" only reads when it also has its "empty list" way)
             if src_kind == "for_each" && e.handle.is_none() && !d.flow.edges.iter().any(|x| x.source == e.source && x.handle.as_deref() == Some(m::EMPTY_LIST)) {
                 text.clear();
             }
+            // (a named port says its way next to it: the line repeats it only going back, far from the port, or with
+            // a run's numbers — design "portas com nome", "ligação para trás")
+            let numbers = e.handle.as_ref().is_some_and(|h| d.labels.contains_key(&(e.source.clone(), h.clone())));
+            if src.is_some_and(m::named_ports) && !r.back && !numbers {
+                text.clear();
+            }
             if !text.is_empty() {
-                let t = if r.back { 0.12 } else if fanout(&e.source) >= 3 { 0.86 } else { 0.5 };
-                let q = v.to_screen(m::point_at(&bz, t));
+                // (going back: halfway along its run around the blocks)
+                // (along the line, where it covers no card)
+                // (a routed connection: halfway along its longest stretch; a curve: along it)
+                let spots: Vec<((f64, f64), bool)> = if r.back || !path.points.is_empty() {
+                    vec![(path.label_at, false)]
+                } else {
+                    let t0 = if fanout(&e.source) >= 3 { 0.86 } else { 0.5 };
+                    [t0, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8].iter().map(|t| (m::point_at(&path.segments[0], *t), false)).collect()
+                };
                 let tc = if r.back {
                     purple
                 } else if e.handle.as_deref() == Some(m::LOW_CONFIDENCE) {
@@ -718,7 +854,7 @@ impl Canvas {
                 } else {
                     rgba("#8E8F99", 1.0)
                 };
-                labels.push((q, if r.back { format!("↻ {text}") } else { text }, tc, r.back));
+                labels.push((spots, text, tc));
             }
         }
         // a For each's loop back (design "Fluxo · construtor": its agent runs once per item, inside the block; the
@@ -746,7 +882,10 @@ impl Canvas {
             let word = m::item_word(n.data["items"].as_str().unwrap_or("content"));
             // (while it runs, the item it is on; once done, all of them)
             let at = d.progress.get(&n.id).copied().or_else(|| d.items.get(&n.id).map(|k| (*k, *k)));
-            labels.push((v.to_screen(m::point_at(&bz, 0.88)), format!("↻ {}", m::loop_label(&word, at)), c, true));
+            // (to the left of the curve near where it arrives; further along it, or over it, when a card is there)
+            let ts = [0.88, 0.75, 0.62, 0.5, 0.38, 0.25, 0.12];
+            let spots: Vec<((f64, f64), bool)> = ts.iter().map(|t| (m::point_at(&bz, *t), true)).chain(ts.iter().map(|t| (m::point_at(&bz, *t), false))).collect();
+            labels.push((spots, format!("↻ {}", m::loop_label(&word, at)), c));
         }
         // the band being drawn on the empty canvas
         if let Drag::Band { from, at } = &*self.drag.borrow() {
@@ -761,42 +900,63 @@ impl Canvas {
         }
         // a connection being drawn (or its end moved to another block)
         let drawing = match &*self.drag.borrow() {
-            Drag::Connect { from, at } => Some((from.clone(), *at)),
-            Drag::Reconnect { edge, at } => Some((edge.source.clone(), *at)),
+            Drag::Connect { from, way, at } => Some((from.clone(), way.clone().flatten(), *at)),
+            Drag::Reconnect { edge, at } => Some((edge.source.clone(), edge.handle.clone(), *at)),
             _ => None,
         };
-        if let Some((from, at)) = drawing.as_ref().map(|(f, a)| (f, a)) {
+        if let Some((from, way, at)) = drawing.as_ref() {
             if let Some(a) = self.rect_of(from) {
+                let node = d.flow.node(from);
                 let target = m::hit_node(&self.rects(), *at).filter(|t| t != from).and_then(|t| self.rect_of(t));
-                let (p0, p1) = match target {
+                let segments = match target {
                     Some(b) => {
-                        let r = m::route(a, b);
-                        (r, m::bezier(&r))
+                        let ports = node.map(|n| self.port_places(n, a)).unwrap_or_default();
+                        let r = m::edge_route_at(node, way.as_deref(), a, b, &ports);
+                        crate::flow_router::route_all(&[crate::flow_router::Link { route: r, src: a, dst: b }], &cards, &[]).remove(0).segments
                     }
                     None => {
-                        let r = m::Route { from: a.right_mid(), from_side: m::Side::Right, to: *at, to_side: m::Side::Left, back: false };
-                        (r, m::bezier(&r))
+                        // (from the port it left by, to the pointer)
+                        let ports = node.map(|n| self.port_places(n, a)).unwrap_or_default();
+                        let start = m::edge_route_at(node, way.as_deref(), a, Rect { x: a.x + a.w + 1.0, y: a.y, w: 0.0, h: a.h }, &ports).from;
+                        let r = m::Route { from: start, from_side: m::Side::Right, to: *at, to_side: m::Side::Left, back: false };
+                        vec![m::bezier(&r)]
                     }
                 };
-                let _ = p0;
-                let p: Vec<(f64, f64)> = p1.iter().map(|q| v.to_screen(*q)).collect();
-                cr.move_to(p[0].0, p[0].1);
-                cr.curve_to(p[1].0, p[1].1, p[2].0, p[2].1, p[3].0, p[3].1);
+                cr.new_path();
+                for (i, seg) in segments.iter().enumerate() {
+                    let p: Vec<(f64, f64)> = seg.iter().map(|q| v.to_screen(*q)).collect();
+                    if i == 0 {
+                        cr.move_to(p[0].0, p[0].1);
+                        ports.push((p[0], accent));
+                    }
+                    cr.curve_to(p[1].0, p[1].1, p[2].0, p[2].1, p[3].0, p[3].1);
+                }
                 set(cr, accent);
                 cr.set_line_width(1.5 * z.max(0.6));
                 let _ = cr.stroke();
-                ports.push((p[0], accent));
             }
         }
         // the chosen block's free ports (to drag a new connection from)
         if let Some(sel) = d.selected.as_ref().filter(|s| !s.starts_with(m::TRIGGER_PREFIX)) {
             if let Some(r) = self.rect_of(sel) {
-                if d.flow.node(sel).is_some_and(|n| n.kind != "end") {
-                    for q in m::out_ports(r) {
+                if let Some(n) = d.flow.node(sel).filter(|n| n.kind != "end") {
+                    for (q, _) in m::grab_points(n, r, &self.port_places(n, r)) {
                         let s = v.to_screen(q);
                         if !ports.iter().any(|(p, _)| (p.0 - s.0).abs() < 2.0 && (p.1 - s.1).abs() < 2.0) {
                             ports.push((s, accent));
                         }
+                    }
+                }
+            }
+        }
+        // every named port shows, faint while nothing leaves by it (design "portas com nome")
+        let free = (grey.0, grey.1, grey.2, 0.8);
+        for (id, list) in self.ports() {
+            if d.flow.node(&id).is_some_and(m::named_ports) {
+                for (q, _) in list {
+                    let s = v.to_screen(q);
+                    if !ports.iter().any(|(p, _)| (p.0 - s.0).abs() < 2.0 && (p.1 - s.1).abs() < 2.0) {
+                        ports.push((s, free));
                     }
                 }
             }
@@ -816,13 +976,18 @@ impl Canvas {
         // (the labels shrink with the blocks, down to where they still read)
         fd.set_absolute_size(11.0 * z.clamp(0.5, 1.4) * gtk::pango::SCALE as f64);
         layout.set_font_description(Some(&fd));
-        for (q, text, c, back) in labels {
+        // (too small to read, and bigger than the cards around them: no labels below LABELS_MIN_ZOOM)
+        let labels = if z < m::LABELS_MIN_ZOOM { Vec::new() } else { labels };
+        for (spots, text, c) in labels {
             layout.set_text(&text);
             let (w, h) = layout.pixel_size();
             let (w, h) = (w as f64, h as f64);
             let (px, py) = (6.0, 2.0);
-            // (a loop's label sits to the left of where it arrives)
-            let (x, y) = if back { (q.0 - w - 2.0 * px - 2.0, q.1 - h / 2.0 - py) } else { (q.0 - w / 2.0 - px, q.1 - h / 2.0 - py) };
+            // (the chip's size in the world, a little gap to the left of a loop's spot)
+            let (cw, ch) = ((w + 2.0 * px + 2.0) / z, (h + 2.0 * py) / z);
+            // (where it would cover a card wherever it goes, it is left out)
+            let Some(corner) = m::label_place(&spots, cw, ch, &cards) else { continue };
+            let (x, y) = v.to_screen(corner);
             rounded(cr, x, y, w + 2.0 * px, h + 2.0 * py, 4.0);
             set(cr, chip_bg);
             let _ = cr.fill_preserve();
@@ -890,12 +1055,7 @@ impl Canvas {
 
     /// The connection whose arriving end is under `p` (to drag it to another block).
     fn hit_edge_end(&self, p: (f64, f64), radius: f64) -> Option<EdgeDoc> {
-        let edges = self.data.borrow().flow.edges.clone();
-        edges.into_iter().find(|e| {
-            let (Some(a), Some(b)) = (self.rect_of(&e.source), self.rect_of(&e.target)) else { return false };
-            let to = m::route(a, b).to;
-            (to.0 - p.0).powi(2) + (to.1 - p.1).powi(2) <= radius * radius
-        })
+        self.geometries().into_iter().filter(|(_, trigger, _, _)| !trigger).map(|(e, _, r, _)| (e, r.to)).find(|(_, to)| (to.0 - p.0).powi(2) + (to.1 - p.1).powi(2) <= radius * radius).map(|(e, _)| e)
     }
 
     fn connect_input(self: &Rc<Self>) {
@@ -912,13 +1072,12 @@ impl Canvas {
             let world = c.view.get().to_world((x, y));
             let rects = c.rects();
             let r = 7.0 / c.view.get().zoom;
-            let port = m::hit_port(&rects, world, r)
-                .filter(|id| !id.starts_with(m::TRIGGER_PREFIX))
-                .filter(|id| c.data.borrow().flow.node(id).is_some_and(|n| n.kind != "end"))
-                .map(str::to_string);
+            let port = m::hit_port(&c.ports(), world, r);
             let end = if port.is_none() { c.hit_edge_end(world, r) } else { None };
-            *c.drag.borrow_mut() = if let Some(from) = port {
-                Drag::Connect { from, at: world }
+            *c.drag.borrow_mut() = if let Some((from, way)) = port {
+                // (a named port connects its own way)
+                let named = c.data.borrow().flow.node(&from).is_some_and(m::named_ports);
+                Drag::Connect { from, way: named.then_some(way), at: world }
             } else if let Some(edge) = end {
                 Drag::Reconnect { edge, at: world }
             } else if let Some(id) = m::hit_node(&rects, world) {
@@ -976,6 +1135,9 @@ impl Canvas {
         g.connect_drag_end(move |g, dx, dy| {
             let Some(c) = w.upgrade() else { return };
             let d = std::mem::replace(&mut *c.drag.borrow_mut(), Drag::None);
+            // (a drag let go: the routes worked out anew, as for a flow just opened)
+            c.routes.borrow_mut().clear();
+            c.edges.queue_draw();
             let start = g.start_point().unwrap_or((0.0, 0.0));
             if !c.moved.get() {
                 c.click(start);
@@ -1009,11 +1171,11 @@ impl Canvas {
                         c.emit(CanvasEvent::Select(Some(id)));
                     }
                 }
-                Drag::Connect { from, .. } => {
+                Drag::Connect { from, way, .. } => {
                     let target = m::hit_node(&c.rects(), at).map(str::to_string);
                     c.edges.queue_draw();
                     if let Some(t) = target.filter(|t| *t != from && !t.starts_with(m::TRIGGER_PREFIX)) {
-                        c.emit(CanvasEvent::Connect(from, t));
+                        c.emit(CanvasEvent::Connect(from, way, t));
                     }
                 }
                 Drag::Reconnect { edge, .. } => {
@@ -1099,7 +1261,7 @@ impl Canvas {
                 let world = c.view.get().to_world((x, y));
                 let rects = c.rects();
                 let r = 7.0 / c.view.get().zoom;
-                let cursor = if m::hit_port(&rects, world, r).is_some() || c.hit_edge_end(world, r).is_some() {
+                let cursor = if m::hit_port(&c.ports(), world, r).is_some() || c.hit_edge_end(world, r).is_some() {
                     "crosshair"
                 } else if m::hit_node(&rects, world).is_some() {
                     "grab"
@@ -1110,6 +1272,19 @@ impl Canvas {
             }
         });
         self.root.add_controller(mov);
+        // a port's tip: its way's whole name and what it does
+        self.root.set_has_tooltip(true);
+        let w = Rc::downgrade(self);
+        self.root.connect_query_tooltip(move |_, x, y, _, tt| {
+            let Some(c) = w.upgrade() else { return false };
+            match c.port_tip(c.view.get().to_world((x as f64, y as f64))) {
+                Some(t) => {
+                    tt.set_text(Some(&t));
+                    true
+                }
+                None => false,
+            }
+        });
         let sc = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
         let w = Rc::downgrade(self);
         sc.connect_scroll(move |sc, dx, dy| {
@@ -1182,11 +1357,7 @@ impl Canvas {
             return;
         }
         let tol = 6.0 / self.view.get().zoom;
-        let hit = self.drawn_edges().into_iter().filter(|(_, t)| !t).find(|(e, _)| {
-            let (Some(a), Some(b)) = (self.rect_of(&e.source), self.rect_of(&e.target)) else { return false };
-            m::distance_to(&m::bezier(&m::route(a, b)), world) <= tol
-        });
-        let e = hit.map(|(e, _)| e);
+        let e = self.geometries().into_iter().filter(|(_, t, _, _)| !t).find(|(_, _, _, path)| m::distance_to_path(path, world) <= tol).map(|(e, _, _, _)| e);
         *self.edge.borrow_mut() = e.clone();
         self.edges.queue_draw();
         self.emit(CanvasEvent::Edge(e.clone()));

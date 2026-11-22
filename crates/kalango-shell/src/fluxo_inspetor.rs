@@ -708,7 +708,8 @@ fn ways_section(page: &Rc<FlowPage>, n: &NodeDoc) {
     targets.extend(doc.nodes.iter().filter(|x| x.id != n.id).map(|x| (x.id.clone(), page.node_title(&x.id))));
     for way in ways {
         let row = caixa(Orientation::Horizontal, 8, "fluxo-saida");
-        let name = m::way_label(&n.kind, way.as_deref());
+        // (named as its port on the card: an agent's "when to follow it", an approval's "approved", a score's level)
+        let name = m::short_label(&m::way_name(n, way.as_deref()), m::PORT_LABEL_CHARS);
         let chip = rotulo(if name.is_empty() { tr("next") } else { &name }, "fluxo-saida-chip");
         if matches!(way.as_deref(), Some("sim") | Some("true")) || (n.kind != "condition" && way.is_some() && way.as_deref() != Some(m::LOW_CONFIDENCE) && way.as_deref() != Some("não") && way.as_deref() != Some("false") && way.as_deref() != Some(m::ELSE_HANDLE)) {
             chip.add_css_class("sim");
@@ -2430,20 +2431,8 @@ fn agent_sections(page: &Rc<FlowPage>, n: &NodeDoc) {
         }));
     }
     c.append(&list);
-    let (w, nd) = (Rc::downgrade(page), node.clone());
-    let multi = switch_row(tr("Follow every way that holds"), "", n.data["multiple_ways"].as_bool().unwrap_or(false), true, move |on| {
-        if let Some(p) = w.upgrade() {
-            p.edit_node(&nd, |x| {
-                if on {
-                    x.data["multiple_ways"] = json!(true);
-                } else {
-                    x.data.as_object_mut().map(|o| o.remove("multiple_ways"));
-                }
-            });
-        }
-    });
-    multi.add_css_class("simples");
-    c.append(&multi);
+    // (no "follow every way" here: the engine takes one way of an agent's, the one it chose — only a condition
+    // follows several)
     // Se falhar: attempts, first wait (doubles each time) and the limit of each attempt
     c.append(&titled(tr("If it fails"), ""));
     let retry = n.data["retry"].clone();
