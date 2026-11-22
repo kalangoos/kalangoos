@@ -86,6 +86,17 @@ WOFF2), que o build copia para o `dist/`; as versões ficam no `site/package-loc
 | Roboto | Tema claro (referência do Design System); também no site (`@fontsource/roboto`) | OFL-1.1 |
 | Ubuntu | Títulos do tema claro; também no site (`@fontsource/ubuntu`) | Ubuntu Font Licence 1.0 (`Ubuntu-font-1.0`) |
 
+## Site: área de membros
+
+A área de membros do site (`site/src/members/`, `site/worker/`) não traz arquivos de imagem nem de fonte novos. Traz:
+
+| Item | Uso | Licença |
+|---|---|---|
+| Marca do GitHub (Octicons `mark-github`), desenhada como caminho SVG em `site/src/lib/icons.site.ts` | Ícone do botão "Entrar com o GitHub" | MIT (GitHub Inc.) |
+| `marked` (`site/package.json`) | Só como analisador do Markdown dos documentos públicos; o HTML não é inserido na página | MIT |
+| `wrangler` (só em `site/worker/package.json`, desenvolvimento do Worker de login) | Publicar o Worker, feito pelos mantenedores | MIT ou Apache-2.0 |
+| Dependências de `wrangler` (`site/worker/package-lock.json`: `workerd`, `esbuild`, `miniflare`, `sharp` opcional com `libvips` LGPL-3.0-or-later, pacotes 0BSD e BSD) | Só a ferramenta de publicação, instalada com `npm ci` em `site/worker/`; nada disso entra no site nem no código do Worker publicado | As de cada pacote (MIT, Apache-2.0, BSD, ISC, 0BSD, CC0-1.0; LGPL-3.0-or-later nos binários `libvips` opcionais do `sharp`) |
+
 ## Dependências em Rust
 
 As crates mantêm as próprias licenças, todas permissivas ou de copyleft fraco: MIT, Apache-2.0, BSD-3-Clause,

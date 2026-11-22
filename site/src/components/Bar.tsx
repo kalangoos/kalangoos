@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Icon } from './Icon';
 import { useSite } from '../lib/context';
 import { pathOf } from '../lib/routes';
+import { MemberButton, useMemberState, type MemberState } from './Member';
 
 const KEY = 'kalangoos-theme';
 
@@ -11,9 +12,14 @@ function currentTheme(): 'dark' | 'light' {
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
-/** The site's header is the system's top bar: brand, the island with the project's status, follow, language and theme. */
-export function Bar() {
+/**
+ * The site's header is the system's top bar: brand, the island with the project's status, download, language, theme and
+ * the members area ("Entrar", with "em breve" while the login service is not connected, or the account). The members
+ * page passes what it already knows about the visitor; the other pages ask the service once, only if the build has one.
+ */
+export function Bar({ member }: { member?: MemberState } = {}) {
   const { t, lang, page } = useSite();
+  const memberState = useMemberState(member);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   useEffect(() => setTheme(currentTheme()), []);
 
@@ -77,6 +83,8 @@ export function Bar() {
           <Icon name="sun" className="icon when-dark" />
           <Icon name="moon" className="icon when-light" />
         </button>
+        <span className="bar__sep" aria-hidden="true" />
+        <MemberButton state={memberState} />
       </div>
     </header>
   );
