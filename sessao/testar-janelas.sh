@@ -198,8 +198,8 @@ for app in "${APPS[@]}"; do
   ok "$app: fechar e reabrir mostra o que mostrava, como quando a janela ficava escondida" '[ -z "$REG" ]'
   fechar "$id"
 done
-# Help closed while it listens: as on main, the listening goes on behind the closed (here unrealized) window, and
-# opened again it still shows it listening; the microphone button stops it
+# Help closed while it listens: the listening stops (the recorder is gone, the microphone is not open behind a closed
+# window); opened again, the button is back to normal and the card says why
 if [[ " ${APPS[*]} " == *" ajuda "* ]]; then
   echo "== ajuda ouvindo"
   shell_cmd ajuda; esperar_janela os.kalango.Ajuda; sleep 2
@@ -214,11 +214,9 @@ if [[ " ${APPS[*]} " == *" ajuda "* ]]; then
   gravar os.kalango.Ajuda "$OUT/ajuda-mic-h.txt"
   shell_cmd ajuda; esperar_janela os.kalango.Ajuda; sleep 2
   gravar os.kalango.Ajuda "$OUT/ajuda-mic-1.txt"
-  mexer ativar os.kalango.Ajuda "$(achar "$OUT/ajuda-mic-1.txt" 'GtkButton .*aju-mic')"; sleep 1.5
-  G3=$(gravador)
-  echo "  (gravando ao abrir o microfone: $G1; com a janela fechada e solta: $G2; depois do segundo clique: $G3)"
-  ok "ajuda: fechada enquanto ouve, segue ouvindo como no main e reaberta mostra que ouve; o microfone para" \
-    '[ "$G1" = sim ] && [ "$G2" = sim ] && [ "$G3" = não ] && head -1 "$OUT/ajuda-mic-h.txt" | grep -q "realized=false natives=0" && grep -a "aju-mic" "$OUT/ajuda-mic-1.txt" | grep -q gravando'
+  echo "  (gravando ao abrir o microfone: $G1; com a janela fechada e solta: $G2)"
+  ok "ajuda: fechada enquanto ouve, a escuta para (o gravador some, o microfone não fica aberto) e o botão volta ao normal" \
+    '[ "$G1" = sim ] && [ "$G2" = não ] && head -1 "$OUT/ajuda-mic-h.txt" | grep -q "realized=false natives=0" && ! grep -a "aju-mic" "$OUT/ajuda-mic-1.txt" | grep -q gravando'
   fechar os.kalango.Ajuda
 fi
 # Music paused by MPRIS (a media key, the island) while its window is closed and unrealized: opened again, its button

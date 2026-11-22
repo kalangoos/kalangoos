@@ -107,7 +107,7 @@ pub struct HelpApp {
     topics: RefCell<Vec<Topic>>,
     current: RefCell<Option<(String, Option<String>)>>,
     overlay: RefCell<Option<gtk::Window>>,
-    recording: RefCell<Option<crate::voz::Recording>>,
+    recording: Rc<RefCell<Option<crate::voz::Recording>>>,
     shell: Weak<Shell>,
 }
 
@@ -360,7 +360,7 @@ impl HelpApp {
         window.set_child(Some(&root));
         let a = Rc::new(HelpApp {
             window, entry, answer, answer_text, show_me, open_page, do_it, topics: RefCell::default(), current: RefCell::default(),
-            overlay: RefCell::default(), recording: RefCell::default(), shell: Rc::downgrade(shell),
+            overlay: RefCell::default(), recording: Rc::default(), shell: Rc::downgrade(shell),
         });
         a.wire(&send, &mic, &start_buttons, &common_buttons, &manual_b, &comm_b, community, &report);
         a
@@ -421,6 +421,14 @@ impl HelpApp {
                         }
                     });
                 }
+            }
+        });
+        // closed while listening: the listening stops and the recording is thrown away (the window is only hidden, and
+        // before this the recorder went on behind it, with the microphone open)
+        let w = Rc::downgrade(self);
+        stop_listening_when_closed(&self.window, &self.recording, mic, move |text| {
+            if let Some(a) = w.upgrade() {
+                a.say(text, None);
             }
         });
         for (b, id) in start.iter().chain(common.iter()) {
@@ -723,9 +731,86 @@ fn ask_agent(cmd: &str, input: &serde_json::Value) -> Result<serde_json::Value, 
     serde_json::from_slice::<serde_json::Value>(&o.stdout).map_err(|_| String::from_utf8_lossy(&o.stderr).trim().lines().last().unwrap_or("").to_string())
 }
 
+/// A window that closes while the microphone listens: the recording stops and is discarded (off the UI thread), the
+/// microphone's button goes back to normal and `said` tells the person why. Nothing happens when it is not listening.
+fn stop_listening_when_closed(window: &impl IsA<gtk::Widget>, recording: &Rc<RefCell<Option<crate::voz::Recording>>>, mic: &gtk::Button,
+    said: impl Fn(&str) + 'static) {
+    let (rec, mic) = (Rc::downgrade(recording), mic.downgrade());
+    window.connect_visible_notify(move |win| {
+        if win.is_visible() {
+            return;
+        }
+        let Some(r) = rec.upgrade().and_then(|r| r.borrow_mut().take()) else { return };
+        if let Some(m) = mic.upgrade() {
+            m.remove_css_class("gravando");
+        }
+        said(tr("Listening stopped: the window was closed."));
+        crate::lateral::em_segundo_plano(move || crate::voz::discard(r), |()| {});
+        if debug() {
+            eprintln!("debug ajuda: escuta parada ao fechar a janela");
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Needs a display of its own (KALANGO_TESTE_GTK=1, as `release_tests` in superficies.rs). Closing the window
+    /// while the recorder runs stops it, resets the button and says why; closing it when not listening does nothing.
+    #[test]
+    fn closing_the_window_stops_the_listening() {
+        if std::env::var_os("KALANGO_TESTE_GTK").is_none() || gtk::init().is_err() {
+            eprintln!("(sem KALANGO_TESTE_GTK e uma tela: pulado)");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("kalango-ajuda-teste-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("gravador.sh");
+        std::fs::write(&script, "#!/bin/bash\n: > \"$1\"\ntrap 'exit 0' INT TERM\nwhile :; do sleep 0.1; done\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::env::set_var("KALANGO_GRAVADOR", &script);
+        std::env::set_var("XDG_RUNTIME_DIR", &dir);
+        let run = |ms: u64| {
+            let ctx = glib::MainContext::default();
+            let end = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+            while std::time::Instant::now() < end {
+                ctx.iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        let recorder_runs = || std::process::Command::new("pgrep").arg("-f").arg(format!("^/bin/bash {} ", script.display()))
+            .output().map(|o| o.status.success()).unwrap_or(false);
+        let win = gtk::Window::new();
+        let mic = gtk::Button::new();
+        let recording: Rc<RefCell<Option<crate::voz::Recording>>> = Rc::default();
+        let said = Rc::new(RefCell::new(Vec::<String>::new()));
+        let s = said.clone();
+        stop_listening_when_closed(&win, &recording, &mic, move |t| s.borrow_mut().push(t.to_string()));
+        // not listening: closing says nothing
+        win.set_visible(true);
+        run(50);
+        win.set_visible(false);
+        run(50);
+        assert!(said.borrow().is_empty(), "nothing said when it was not listening");
+        // listening: closing stops it
+        win.set_visible(true);
+        *recording.borrow_mut() = Some(crate::voz::start("teste").expect("the stand-in recorder starts"));
+        mic.add_css_class("gravando");
+        run(300);
+        assert!(recorder_runs(), "the recorder runs while listening");
+        win.set_visible(false);
+        run(1000);
+        assert!(recording.borrow().is_none(), "the recording is let go");
+        assert!(!mic.has_css_class("gravando"), "the button is reset");
+        assert_eq!(*said.borrow(), vec![tr("Listening stopped: the window was closed.").to_string()]);
+        assert!(!recorder_runs(), "the recorder is stopped: the microphone is not open behind the closed window");
+        win.destroy();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn topics_and_search() {
