@@ -61,7 +61,7 @@ Uma distribuição Linux (base Ubuntu LTS) em que agentes de IA operam o sistema
 - **Visual**: sem sombras; cantos sutis (8 janelas e painéis, 6 cartões, 4 controles; círculos só em chaves,
   pontos e avatares); cores só dos tokens.
 - **Rust** em tudo o que é programa nosso. **Identificadores novos em inglês**; não renomeie os que existem em
-  português. **Textos da interface** passam por `tr("English")` com a tradução no catálogo `pt_BR.json`.
+  português. **Textos da interface** passam por `tr("English")` com a tradução no catálogo `pt_BR.json`. Estratégia global (fallback EN, novos catálogos, Weblate, fontes/IME): `docs/I18N.md`.
 - **Testes do motor de agentes usam o modelo real** (LFM3 pelo llama.cpp). Nunca um modelo falso ou roteirizado;
   o que é determinístico vira teste de unidade de funções puras.
 - **Testes nunca tocam a pasta pessoal real**: use as pastas do teste (`crate::pastas`, `KALANGO_AREA_TESTE`,

@@ -1,19 +1,34 @@
 //! KalangoOS · UI translations.
 //!
 //! Source strings are English and double as message ids: `tr("Search apps and actions…")`. Each locale has a
-//! catalog (`locales/<locale>.json`, English → translation) embedded in the binary. The language is the one chosen
-//! in the system (`LANGUAGE`, `LC_ALL`, `LC_MESSAGES`, `LANG`, in that order); a missing language or string falls
-//! back to English.
+//! catalog (`locales/<locale>.json`, English → translation) embedded in the binary. The language is chosen by
+//! `KALANGO_UI_LANG` (override for tests and agents) or the system (`LANGUAGE`, `LC_ALL`, `LC_MESSAGES`, `LANG`,
+//! in that order). A missing language or string falls back to English (the msgid itself).
 //!
 //! Placeholders are named: `trf("{n} requests", &[("n", n.to_string())])`.
+//!
+//! See `docs/I18N.md` for the global language strategy (catalogs, Weblate, image fonts/IME).
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-/// (locale, catalog) pairs embedded at build time.
+/// (locale, catalog) pairs embedded at build time. English is never listed: the msgid is the English string.
 const CATALOGS: &[(&str, &str)] = &[("pt_BR", include_str!("../locales/pt_BR.json"))];
 
 static ACTIVE: OnceLock<HashMap<String, String>> = OnceLock::new();
+static ACTIVE_NAME: OnceLock<Option<&'static str>> = OnceLock::new();
+
+/// Catalog names shipped in this binary (never includes English — English is the msgid).
+pub fn available_catalogs() -> &'static [&'static str] {
+    // Keep order stable for UI / docs; today only pt_BR.
+    static NAMES: OnceLock<Vec<&'static str>> = OnceLock::new();
+    NAMES.get_or_init(|| CATALOGS.iter().map(|(n, _)| *n).collect()).as_slice()
+}
+
+/// Whether this binary embeds a UI catalog for `locale` (after [`normalize`]).
+pub fn has_ui_catalog(locale: &str) -> bool {
+    normalize(locale).is_some()
+}
 
 /// Normalizes a POSIX locale (`pt_BR.UTF-8@euro`) to a catalog name; `pt` alone maps to `pt_BR`.
 pub fn normalize(locale: &str) -> Option<&'static str> {
@@ -21,14 +36,32 @@ pub fn normalize(locale: &str) -> Option<&'static str> {
     if base.is_empty() || base == "C" || base == "POSIX" {
         return None;
     }
+    // Explicit English → no catalog (msgid is already English).
+    let lang = base.split('_').next().unwrap_or("");
+    if lang.eq_ignore_ascii_case("en") {
+        return None;
+    }
     CATALOGS.iter().map(|(n, _)| *n).find(|n| *n == base).or_else(|| {
-        let lang = base.split('_').next().unwrap_or("");
         CATALOGS.iter().map(|(n, _)| *n).find(|n| n.split('_').next() == Some(lang))
     })
 }
 
-/// The catalog chosen by the system environment (or None for English).
+/// Override from the environment (`KALANGO_UI_LANG`), if set and non-empty.
+///
+/// Must be read before the first [`tr`] / [`trf`] call: the active catalog is locked for the process lifetime
+/// (language changes in Settings apply after the next sign-in).
+fn override_locale() -> Option<&'static str> {
+    match std::env::var("KALANGO_UI_LANG") {
+        Ok(v) if !v.trim().is_empty() => normalize(v.trim()),
+        _ => None,
+    }
+}
+
+/// The catalog chosen by override or the system environment (or None for English).
 pub fn system_locale() -> Option<&'static str> {
+    if let Some(l) = override_locale() {
+        return Some(l);
+    }
     if let Ok(list) = std::env::var("LANGUAGE") {
         if let Some(l) = list.split(':').find_map(normalize) {
             return Some(l);
@@ -44,6 +77,11 @@ pub fn system_locale() -> Option<&'static str> {
     None
 }
 
+/// Catalog name currently active for [`tr`] / [`trf`], or `None` when falling back to English msgids.
+pub fn active_locale() -> Option<&'static str> {
+    *ACTIVE_NAME.get_or_init(system_locale)
+}
+
 pub fn catalog(locale: Option<&str>) -> HashMap<String, String> {
     locale
         .and_then(|l| CATALOGS.iter().find(|(n, _)| *n == l))
@@ -52,7 +90,11 @@ pub fn catalog(locale: Option<&str>) -> HashMap<String, String> {
 }
 
 fn active() -> &'static HashMap<String, String> {
-    ACTIVE.get_or_init(|| catalog(system_locale()))
+    ACTIVE.get_or_init(|| {
+        let name = system_locale();
+        let _ = ACTIVE_NAME.set(name);
+        catalog(name)
+    })
 }
 
 /// Marks a string for translation without translating it yet (for `const` tables); translate with [`tr`] when
@@ -89,7 +131,27 @@ mod tests {
         assert_eq!(normalize("pt_BR.UTF-8"), Some("pt_BR"));
         assert_eq!(normalize("pt_PT.UTF-8"), Some("pt_BR"), "same language falls to the closest catalog");
         assert_eq!(normalize("en_US.UTF-8"), None);
+        assert_eq!(normalize("en"), None);
         assert_eq!(normalize("C.UTF-8"), None);
+        assert_eq!(normalize("es_ES.UTF-8"), None, "no Spanish catalog yet");
+    }
+
+    #[test]
+    fn catalogs_list_ships_pt_br_only_today() {
+        let names = available_catalogs();
+        assert!(names.contains(&"pt_BR"));
+        assert!(!names.iter().any(|n| n.starts_with("en")), "English is the msgid, not a catalog");
+        assert!(has_ui_catalog("pt_BR.UTF-8"));
+        assert!(!has_ui_catalog("en_US.UTF-8"));
+        assert!(!has_ui_catalog("ja_JP.UTF-8"));
+    }
+
+    #[test]
+    fn english_fallback_returns_msgid() {
+        // Empty catalog (English path): tr identity.
+        let empty = catalog(None);
+        assert!(empty.is_empty());
+        assert_eq!(empty.get("Search"), None);
     }
 
     /// Every string marked for translation in the UI crates has a pt_BR entry, and no entry is left unused.

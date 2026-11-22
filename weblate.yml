@@ -1,0 +1,25 @@
+# Weblate component stub for KalangoOS UI catalogs.
+# Hosting is not wired yet — see docs/I18N.md. When the Weblate project exists, import this file
+# (or mirror the fields below in the project settings).
+#
+# Source language: English (message ids in tr("…")).
+# File format: JSON (key → translation).
+
+settings:
+  project: kalangoos
+  component: kalango-i18n
+  repo: https://github.com/kalangoos/kalangoos.git
+  push_url: https://github.com/kalangoos/kalangoos.git
+  branch: main
+  filemask: crates/kalango-i18n/locales/*.json
+  template: ""
+  # English has no catalog file; Weblate uses the JSON keys as source strings.
+  new_base: crates/kalango-i18n/locales/pt_BR.json
+  file_format: json
+  monolingual: true
+  license: MIT
+  agreement: ""
+  language_code_style: bcp_lower
+  # Open pull requests instead of pushing to main.
+  vcs: github
+  push_on_commit: false

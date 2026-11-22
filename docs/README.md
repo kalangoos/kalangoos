@@ -9,6 +9,7 @@
 | [LANCAMENTO.md](LANCAMENTO.md) | Versões, marcos, canais e critérios de publicação |
 | [LICENCAS.md](LICENCAS.md) | Licenças do código, da marca e de recursos de terceiros |
 | [PLANO.md](PLANO.md) | Resumo do plano; o detalhe em checkbox está no OpenSpec |
+| [I18N.md](I18N.md) | Idiomas: catálogos UI, fallback EN, Weblate, fontes/IME na imagem |
 | [../openspec](../openspec) | Especificação completa: 7 fases (propostas, desenhos, tarefas) e 40 capacidades |
 | [especificacao/](especificacao/index.html) | Página gerada do OpenSpec, com progresso e requisitos |
 | [pagina/](pagina/index.html) | Diário do projeto: etapas, casos de uso e evolução |

@@ -25,6 +25,8 @@ swaybg wlsunset grim openssh-client mosh fonts-inter fonts-jetbrains-mono
 libgtk-3-0t64 libpulse0 libopus0 libaom3 libyuv0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libxtst6 libxfixes3
 libxcb-randr0 libxcb-shm0 libgraphene-1.0-0 libdbus-1-3
 # O que o instalador usa (particionar, criptografar, copiar, carregador de boot)
-cryptsetup gdisk dosfstools e2fsprogs ntfs-3g rsync squashfs-tools zstd language-pack-gnome-pt-base language-pack-pt-base grub-efi-amd64 efibootmgr parted pciutils cryptsetup-initramfs pkexec
+# Idiomas: pt na imagem; en para fallback do sistema; demais language-pack-* sob demanda (docs/I18N.md).
+# Fontes Unicode + IME (CJK/índicos etc. sem embutir fonts-noto-cjk no ISO).
+cryptsetup gdisk dosfstools e2fsprogs ntfs-3g rsync squashfs-tools zstd language-pack-gnome-pt-base language-pack-pt-base language-pack-gnome-en-base language-pack-en-base fonts-noto-core fonts-noto-color-emoji ibus ibus-gtk4 grub-efi-amd64 efibootmgr parted pciutils cryptsetup-initramfs pkexec
 # Rust onde já é maduro: coreutils (uutils), sudo e a hora
 coreutils-from-uutils sudo-rs ntpd-rs
