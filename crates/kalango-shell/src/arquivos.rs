@@ -867,6 +867,11 @@ fn ler_leve(p: &Path) -> Vec<(PathBuf, String, bool)> {
 impl Arquivos {
     pub fn new(app: &gtk::Application, shell: &Rc<Shell>) -> Rc<Arquivos> {
         let janela = gtk::ApplicationWindow::new(app);
+        // (its app id as its name: the state written by `kalango-shell estado` finds it by it)
+        janela.set_widget_name("os.kalango.Arquivos");
+        // (closed for a while, the window lets go of its surface and renderer and keeps its widgets — its tabs, the
+        // folder, the selection, an agent at work with its banner: see superficies::release_resources_when_hidden)
+        crate::superficies::release_resources_when_hidden(&janela, || true);
         janela.set_title(Some(tr("Files")));
         // the design's 1400 × 868; on a small screen almost all of it
         let (w, h) = crate::superficies::tamanho_de_janela(1400, 868);
@@ -1274,10 +1279,11 @@ impl Arquivos {
         }
         a.ligar(&nl, &organizar_b, &pedir, &lista_rol, &grade_rol);
         let w = Rc::downgrade(&a);
-        shell.right_bar().conversa.ao_evento(move |v| {
-            if let Some(a) = w.upgrade() {
-                a.agente_fez(v);
-            }
+        // (while this Files lives: it leaves with it)
+        shell.right_bar().conversa.ao_evento_enquanto(move |v| {
+            let Some(a) = w.upgrade() else { return false };
+            a.agente_fez(v);
+            true
         });
         a
     }

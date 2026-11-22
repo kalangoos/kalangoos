@@ -1314,8 +1314,14 @@ pub fn dock(app: &gtk::Application, shell: &Rc<Shell>) -> gtk::ApplicationWindow
                     // right click: context menu
                     let right_click = gtk::GestureClick::new();
                     right_click.set_button(3);
-                    let (s, app, button) = (shell.clone(), a.clone(), b.clone());
-                    right_click.connect_pressed(move |_, _, _, _| show_dock_menu(&s, &app, &button));
+                    // (the button weakly: its own controller holding it strongly kept every dock ever built alive,
+                    // with its icons — the dock is built again each time an unpinned app opens or closes)
+                    let (s, app, button) = (shell.clone(), a.clone(), b.downgrade());
+                    right_click.connect_pressed(move |_, _, _, _| {
+                        if let Some(button) = button.upgrade() {
+                            show_dock_menu(&s, &app, &button)
+                        }
+                    });
                     b.add_controller(right_click);
                     d.append(&b);
                     novos.push((id, ItemDock { botao: b, icone, ind }));
@@ -1377,6 +1383,140 @@ pub fn dock(app: &gtk::Application, shell: &Rc<Shell>) -> gtk::ApplicationWindow
 
 // ------------------------------------------------------------------------------------------------- área de trabalho
 
+/// How long a closed app window waits, hidden, before what it holds of the display is let go
+/// (`KALANGO_SOLTAR_JANELA_MS` sets it, for the tests).
+fn release_delay() -> std::time::Duration {
+    let ms = RELEASE_DELAY_SET.with(|d| d.get()).unwrap_or_else(|| crate::release_policy::delay_ms(std::env::var("KALANGO_SOLTAR_JANELA_MS").ok().as_deref()));
+    // (glib counts the delay in 32-bit milliseconds: past that it would wrap round to a short one)
+    std::time::Duration::from_millis(ms.min(u64::from(u32::MAX)))
+}
+
+thread_local! {
+    /// The delay set while the shell runs (`kalango-shell estado prazo MS`, the window tests: a pass with windows kept
+    /// hidden as before, one with them let go, in the same session)
+    static RELEASE_DELAY_SET: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// For the window tests: the delay of the windows closed from now on.
+pub(crate) fn set_release_delay(ms: u64) {
+    RELEASE_DELAY_SET.with(|d| d.set(Some(ms)));
+}
+
+/// An app of the shell hides its window on close (it opens again as it was, at once); after a while hidden, the window
+/// lets go of what it holds of the display — its surface, its renderer with its buffers and textures, its popovers'
+/// surfaces — and keeps everything else: every widget and what is in it (the text typed, the page, the scroll, the
+/// size), the app and its work. Opened again, GTK realizes it anew (some tens of ms). Kept realized, each app ever
+/// opened held tens of MB of renderer until the session ended.
+///
+/// `ready` answers false to wait a while longer (it is asked again after the delay): something that a surface going
+/// away could change (a video playing). A dialog open over the window holds it too (its parent's surface must stay).
+pub(crate) fn release_resources_when_hidden(window: &impl IsA<gtk::Window>, ready: impl Fn() -> bool + 'static) {
+    release_resources_when_hidden_after(window, None, ready);
+}
+
+/// `delay`: none for the shell's (read each time the window is hidden: `estado prazo` may change it)
+fn release_resources_when_hidden_after(window: &impl IsA<gtk::Window>, delay: Option<std::time::Duration>, ready: impl Fn() -> bool + 'static) {
+    let timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
+    let ready: Rc<dyn Fn() -> bool> = Rc::new(ready);
+    let window: &gtk::Window = window.as_ref();
+    if std::env::var_os("KALANGO_MEDIR_JANELAS").is_some() {
+        log_first_frame(window);
+    }
+    window.connect_visible_notify(move |w| {
+        if let Some(id) = timer.borrow_mut().take() {
+            id.remove();
+        }
+        if !w.is_visible() {
+            arm_unrealize(&w.downgrade(), &timer, &ready, delay.unwrap_or_else(release_delay));
+        }
+    });
+}
+
+/// (the window tests) When the window, mapped, has painted its first frame — and whether it had to be realized anew.
+fn log_first_frame(window: &gtk::Window) {
+    let fresh = Rc::new(Cell::new(false));
+    let f = fresh.clone();
+    window.connect_realize(move |_| f.set(true));
+    window.connect_map(move |w| {
+        let Some(clock) = w.frame_clock() else { return };
+        let (id, f, name) = (Rc::new(RefCell::new(None::<glib::SignalHandlerId>)), fresh.clone(), w.widget_name());
+        let id2 = id.clone();
+        *id.borrow_mut() = Some(clock.connect_after_paint(move |c| {
+            if let Some(h) = id2.borrow_mut().take() {
+                eprintln!("debug medir: {name} pintada t={} {}", glib::monotonic_time(), if f.replace(false) { "realizada de novo" } else { "já realizada" });
+                c.disconnect(h);
+            }
+        }));
+    });
+}
+
+/// A dialog of the window's own (transient for it) is on screen.
+fn has_open_dialog(win: &gtk::Window) -> bool {
+    gtk::Window::list_toplevels().iter().filter_map(|t| t.downcast_ref::<gtk::Window>()).any(|t| t.is_visible() && t.transient_for().as_ref() == Some(win))
+}
+
+fn arm_unrealize(w: &glib::WeakRef<gtk::Window>, timer: &Rc<RefCell<Option<glib::SourceId>>>, ready: &Rc<dyn Fn() -> bool>, delay: std::time::Duration) {
+    let (w, t, r) = (w.clone(), timer.clone(), ready.clone());
+    let id = glib::timeout_add_local_once(delay, move || {
+        t.borrow_mut().take();
+        let Some(win) = w.upgrade() else { return };
+        if win.is_visible() || !win.is_realized() {
+            return;
+        }
+        if !r() || has_open_dialog(&win) {
+            arm_unrealize(&w, &t, &r, delay);
+            return;
+        }
+        if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+            eprintln!("debug janela: «{}» desrealizada depois de fechada ({} superfícies)", win.title().unwrap_or_default(), crate::window_state::realized_natives(win.upcast_ref()));
+        }
+        // (the widget's unrealize — gtk_widget_unrealize —, not NativeExt's, which is for implementations)
+        gtk::prelude::WidgetExt::unrealize(&win);
+        // (what it held is free now, but the allocator keeps the pages: given back, the RSS comes down)
+        glib::timeout_add_local_once(std::time::Duration::from_millis(500), crate::mem_debug::trim);
+    });
+    *timer.borrow_mut() = Some(id);
+}
+
+/// Runs `f` every `period` while `w` is mapped — a window on screen, a page shown —, as a repeating timer would; while
+/// it is not (a closed window, minimized ones stay mapped) the timer is taken out, and it starts again when `w` maps.
+/// For the jobs that only work while their widget shows: closed, they woke the shell for nothing. `f` answers false to
+/// stop for good.
+pub(crate) fn every_while_mapped(w: &impl IsA<gtk::Widget>, period: std::time::Duration, f: impl Fn() -> bool + 'static) {
+    let source: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
+    let f: Rc<dyn Fn() -> bool> = Rc::new(f);
+    let done = Rc::new(Cell::new(false));
+    let start = {
+        let (source, f, done) = (source.clone(), f.clone(), done.clone());
+        move || {
+            if done.get() || source.borrow().is_some() {
+                return;
+            }
+            let (s, f, d) = (source.clone(), f.clone(), done.clone());
+            let id = glib::timeout_add_local(period, move || {
+                if f() {
+                    return glib::ControlFlow::Continue;
+                }
+                d.set(true);
+                // (ended by Break: taken out without removing it)
+                s.borrow_mut().take();
+                glib::ControlFlow::Break
+            });
+            *source.borrow_mut() = Some(id);
+        }
+    };
+    let w: &gtk::Widget = w.as_ref();
+    if w.is_mapped() {
+        start();
+    }
+    w.connect_map(move |_| start());
+    w.connect_unmap(move |_| {
+        if let Some(id) = source.borrow_mut().take() {
+            id.remove();
+        }
+    });
+}
+
 /// The size an app's window opens at: its design's, or almost all of a smaller screen (the bars and the dock stay in
 /// view) — the screen as niri has it now, not GDK's monitor (which can keep an old size after a scale change: a
 /// window opened after the scale went from 125% back to 100% came out at half the size).
@@ -1393,4 +1533,89 @@ pub(crate) fn tamanho_da_saida() -> Option<(i32, i32)> {
     let v = crate::servicos::niri_pedido(serde_json::json!("Outputs")).ok()?;
     let lg = v.get("Outputs")?.as_object()?.values().find_map(|s| s.get("logical").filter(|l| !l.is_null()).cloned())?;
     Some((lg["width"].as_i64()? as i32, lg["height"].as_i64()? as i32))
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::release_resources_when_hidden_after;
+    use gtk::glib;
+    use gtk::prelude::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    fn run(ms: u64) {
+        let ctx = glib::MainContext::default();
+        let end = Instant::now() + Duration::from_millis(ms);
+        while Instant::now() < end {
+            ctx.iteration(false);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Needs a display of its own (it maps a window): KALANGO_TESTE_GTK=1 with DISPLAY on a virtual one —
+    /// `Xvfb :119 & KALANGO_TESTE_GTK=1 DISPLAY=:119 GDK_BACKEND=x11 WAYLAND_DISPLAY= cargo test release_tests`, or in
+    /// CI `KALANGO_TESTE_GTK=1 GDK_BACKEND=x11 xvfb-run -a cargo test -p kalango-shell release_tests` (one test: GTK
+    /// lives on the one thread that started it).
+    #[test]
+    fn a_closed_window_lets_go_of_its_surface_and_keeps_its_widgets() {
+        if std::env::var_os("KALANGO_TESTE_GTK").is_none() || gtk::init().is_err() {
+            eprintln!("(sem KALANGO_TESTE_GTK e uma tela: pulado)");
+            return;
+        }
+        let win = gtk::Window::new();
+        let field = gtk::Entry::new();
+        field.set_text("o que a pessoa digitou");
+        win.set_child(Some(&field));
+        let (asked, allow) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(true)));
+        let (a, l) = (asked.clone(), allow.clone());
+        release_resources_when_hidden_after(&win, Some(Duration::from_millis(150)), move || {
+            a.set(a.get() + 1);
+            l.get()
+        });
+        // opened again while still hidden: the timer is cancelled, the window stays realized
+        win.set_visible(true);
+        run(50);
+        win.set_visible(false);
+        run(60);
+        win.set_visible(true);
+        run(300);
+        assert_eq!(asked.get(), 0, "shown again before the delay");
+        assert!(win.is_realized());
+        // busy: asked, kept realized, and asked again later
+        allow.set(false);
+        win.set_visible(false);
+        run(400);
+        assert!(asked.get() >= 2, "asked again while busy ({})", asked.get());
+        assert!(win.is_realized(), "kept while busy");
+        // a dialog of its own open over it: kept too
+        allow.set(true);
+        let dialog = gtk::Window::builder().transient_for(&win).build();
+        dialog.set_visible(true);
+        run(300);
+        assert!(win.is_realized(), "kept while its dialog is open");
+        dialog.set_visible(false);
+        // free: unrealized, and everything in it stays
+        run(300);
+        assert!(!win.is_realized(), "its surface let go once free");
+        assert_eq!(field.text(), "o que a pessoa digitou");
+        assert_eq!(win.child().as_ref(), Some(field.upcast_ref::<gtk::Widget>()));
+        // opened again: realized anew, as it was
+        win.set_visible(true);
+        run(100);
+        assert!(win.is_realized() && field.is_realized());
+        assert_eq!(field.text(), "o que a pessoa digitou");
+        // (the test's own windows go)
+        for w in [win, dialog] {
+            w.destroy();
+        }
+        // (here too: GTK lives on this thread) an icon drawn for one scale is drawn again when the screens' scale changes
+        let width = |i: &gtk::Image| i.paintable().and_downcast::<gtk::gdk::Texture>().map(|t| t.width());
+        let icon = crate::apps::imagem_kalango("agentes", 48);
+        let first = width(&icon).expect("the icon drawn as a texture");
+        crate::apps::redraw_icons_at(2.0);
+        assert_eq!(width(&icon), Some(crate::apps::icon_pixels(48, 2.0)), "drawn again at twice the pixels (was {first})");
+        crate::apps::redraw_icons_at(1.0);
+        assert_eq!(width(&icon), Some(48), "and back");
+    }
 }

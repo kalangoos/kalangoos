@@ -170,6 +170,11 @@ pub struct Central {
 impl Central {
     pub fn new(app: &gtk::Application, shell: &Rc<Shell>) -> Rc<Central> {
         let janela = gtk::ApplicationWindow::new(app);
+        // (its app id as its name: the state written by `kalango-shell estado` finds it by it)
+        janela.set_widget_name("os.kalango.Agentes");
+        // (closed for a while, the window lets go of its surface and renderer and keeps its widgets: see
+        // superficies::release_resources_when_hidden)
+        crate::superficies::release_resources_when_hidden(&janela, || true);
         janela.set_title(Some(tr("Agents")));
         // (for the session test: where the keyboard's focus goes — a form's field, the search, a button)
         if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
@@ -733,11 +738,12 @@ impl Central {
             true
         };
         atualizar();
-        glib::timeout_add_local(Duration::from_secs(1), move || if atualizar() { glib::ControlFlow::Continue } else { glib::ControlFlow::Break });
+        // (both only while the window shows: closed, they woke the shell for nothing)
+        crate::superficies::every_while_mapped(&c.janela, Duration::from_secs(1), atualizar);
         // the requests waiting, every 2 s (in the background)
         let w = Rc::downgrade(&c);
-        glib::timeout_add_local(Duration::from_secs(2), move || {
-            let Some(c) = w.upgrade() else { return glib::ControlFlow::Break };
+        crate::superficies::every_while_mapped(&c.janela, Duration::from_secs(2), move || {
+            let Some(c) = w.upgrade() else { return false };
             if c.janela.is_visible() {
                 let w = Rc::downgrade(&c);
                 crate::lateral::em_segundo_plano(|| crate::servicos::kalangod_pendentes().unwrap_or_default(), move |p| {
@@ -746,7 +752,7 @@ impl Central {
                     }
                 });
             }
-            glib::ControlFlow::Continue
+            true
         });
         c
     }

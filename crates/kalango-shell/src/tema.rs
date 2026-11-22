@@ -366,6 +366,8 @@ thread_local! {
     /// every glyph the shell drew (weak): recoloured when the theme changes
     static GLIFOS: RefCell<HashMap<usize, (glib::WeakRef<gtk::Widget>, Box<dyn Fn(&gtk::Widget)>)>> = RefCell::default();
     static OUVINTES: RefCell<Vec<Box<dyn Fn()>>> = RefCell::default();
+    /// listeners that last while they answer true (a window's page: gone with it)
+    static OUVINTES_ENQUANTO: RefCell<Vec<Box<dyn Fn() -> bool>>> = RefCell::default();
     static GERACAO: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -426,6 +428,17 @@ pub fn registrar(w: &impl IsA<gtk::Widget>, refazer: impl Fn(&gtk::Widget) + 'st
 /// Called after each change (the settings' preview, the dock…).
 pub fn ao_mudar(f: impl Fn() + 'static) {
     OUVINTES.with(|o| o.borrow_mut().push(Box::new(f)));
+}
+
+/// Called after each change while `f` answers true (a page of a window that is let go leaves with it).
+pub fn ao_mudar_enquanto(f: impl Fn() -> bool + 'static) {
+    OUVINTES_ENQUANTO.with(|o| o.borrow_mut().push(Box::new(f)));
+}
+
+/// How many listeners of each kind there are (the tests: a page built again must not add one for good).
+#[cfg(test)]
+pub(crate) fn ouvintes_contagem() -> (usize, usize) {
+    (OUVINTES.with(|o| o.borrow().len()), OUVINTES_ENQUANTO.with(|o| o.borrow().len()))
 }
 
 /// Loads the style sheet at start (the provider is kept for the changes).
@@ -517,6 +530,19 @@ pub fn aplicar(t: &Tema) {
         let mut o = o.borrow_mut();
         let novos = std::mem::take(&mut *o);
         *o = ouvintes;
+        o.extend(novos);
+    });
+    avisar_enquanto();
+}
+
+/// The listeners that answer false leave.
+fn avisar_enquanto() {
+    let mut vivos = OUVINTES_ENQUANTO.with(|o| o.take());
+    vivos.retain(|f| f());
+    OUVINTES_ENQUANTO.with(|o| {
+        let mut o = o.borrow_mut();
+        let novos = std::mem::take(&mut *o);
+        *o = vivos;
         o.extend(novos);
     });
 }
@@ -652,5 +678,25 @@ mod tests {
         let mut m = HashMap::new();
         m.insert("#A5A1E2".to_string(), "#8ED2C3".to_string());
         assert_eq!(trocar_cores("color: #a5a1e2; x: #A5A1E2FF; y: alpha(#A5A1E2, 0.2)", &m), "color: #8ED2C3; x: #A5A1E2FF; y: alpha(#8ED2C3, 0.2)");
+    }
+}
+
+#[cfg(test)]
+mod listener_tests {
+    use super::{ao_mudar_enquanto, avisar_enquanto, ouvintes_contagem};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[test]
+    fn a_page_listener_leaves_once_its_page_is_gone() {
+        let (_, antes) = ouvintes_contagem();
+        let viva = Rc::new(Cell::new(true));
+        let v = viva.clone();
+        ao_mudar_enquanto(move || v.get());
+        avisar_enquanto();
+        assert_eq!(ouvintes_contagem().1, antes + 1, "kept while its page lives");
+        viva.set(false);
+        avisar_enquanto();
+        assert_eq!(ouvintes_contagem().1, antes, "gone with its page");
     }
 }

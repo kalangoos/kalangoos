@@ -46,9 +46,10 @@ env XDG_CURRENT_DESKTOP=KalangoOS XDG_DESKTOP_PORTAL_DIR="$ROOT/sessao/dist/shar
     KALANGO_CLIMA_URL=http://127.0.0.1:1 RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" HOME="$X/area" XDG_DATA_HOME="$X/data" XDG_CONFIG_HOME="$X/config" XDG_STATE_HOME="$X/state" XDG_CACHE_HOME="$X/cache" \
     __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json LIBGL_ALWAYS_SOFTWARE=1 \
     ./sessao/rodar.sh > "$OUT/rodar.log" 2>&1 &
-for _ in $(seq 90); do grep -q "sessão de teste em" "$OUT/rodar.log" && break; sleep 1; done
+# (a loaded machine can take minutes to build and start it)
+for _ in $(seq 300); do grep -q "sessão de teste em" "$OUT/rodar.log" && break; sleep 1; done
 T=$(grep -o "/tmp/kalango-sessao-[A-Za-z0-9]*" "$OUT/rodar.log" | head -1)
-for _ in $(seq 90); do grep -q pronto "$T/shell.log" 2>/dev/null && break; sleep 1; done
+for _ in $(seq 300); do grep -q pronto "$T/shell.log" 2>/dev/null && break; sleep 1; done
 SOCK=$(grep -ao "niri.wayland-[0-9]*\.[0-9]*\.sock" "$T/niri.log" | head -1)
 export NIRI_SOCKET="$XDG_RUNTIME_DIR/$SOCK" DISPLAY="$DISP"
 W=$(xdotool search --name "^niri$" | head -1)

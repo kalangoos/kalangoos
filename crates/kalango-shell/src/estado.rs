@@ -53,6 +53,8 @@ pub struct Estado {
     /// the latest day summary from `kalango-agente resumo` (the desktop widget and the "Hoje" bar share it)
     pub resumo_dia: RefCell<Option<serde_json::Value>>,
     ouvintes: RefCell<Vec<Box<dyn Fn()>>>,
+    /// listeners that last while they answer true (a widget's: gone with it)
+    ouvintes_enquanto: RefCell<Vec<Box<dyn Fn() -> bool>>>,
     /// told of each window that opens (its id and app id)
     ao_abrir: RefCell<Vec<Box<dyn Fn(u64, &str)>>>,
     seq: Cell<u64>,
@@ -68,10 +70,22 @@ impl Estado {
         self.ao_abrir.borrow_mut().push(Box::new(f));
     }
 
+    /// Listens while `f` answers true: a listener for something that goes (a list in a conversation) leaves with it
+    /// instead of piling up for the whole session.
+    pub fn ouvir_enquanto(&self, f: impl Fn() -> bool + 'static) {
+        self.ouvintes_enquanto.borrow_mut().push(Box::new(f));
+    }
+
     pub fn avisar(&self) {
         for f in self.ouvintes.borrow().iter() {
             f();
         }
+        // (taken out while they run: one may add another)
+        let mut vivos = std::mem::take(&mut *self.ouvintes_enquanto.borrow_mut());
+        vivos.retain(|f| f());
+        let mut agora = self.ouvintes_enquanto.borrow_mut();
+        vivos.append(&mut agora);
+        *agora = vivos;
     }
 
     fn espaco(v: &Value) -> Espaco {
@@ -204,5 +218,28 @@ impl Estado {
             _ => return,
         }
         self.avisar();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Estado;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[test]
+    fn a_listener_that_answers_false_leaves() {
+        let e = Estado::default();
+        let calls = Rc::new(Cell::new(0));
+        let c = calls.clone();
+        e.ouvir_enquanto(move || {
+            c.set(c.get() + 1);
+            c.get() < 2
+        });
+        for _ in 0..5 {
+            e.avisar();
+        }
+        assert_eq!(calls.get(), 2);
+        assert!(e.ouvintes_enquanto.borrow().is_empty());
     }
 }

@@ -27,12 +27,22 @@ pub struct Players {
 
 const PREFIXO: &str = "org.mpris.MediaPlayer2.";
 
+/// A value of the metadata's a{sv}, out of its box when it comes in one ("v"); as it is otherwise. (Asking for the
+/// box of a value that has none is a GLib-CRITICAL on every MPRIS change.)
+fn sem_caixa(v: &glib::Variant) -> glib::Variant {
+    if v.type_() == glib::VariantTy::VARIANT {
+        v.as_variant().unwrap_or_else(|| v.clone())
+    } else {
+        v.clone()
+    }
+}
+
 fn ler(p: &gio::DBusProxy) -> Option<Midia> {
     let meta = p.cached_property("Metadata")?;
     let meta: HashMap<String, glib::Variant> = meta.get()?;
-    let s = |k: &str| meta.get(k).and_then(|v| v.as_variant().unwrap_or(v.clone()).get::<String>());
+    let s = |k: &str| meta.get(k).and_then(|v| sem_caixa(v).get::<String>());
     let artista = meta.get("xesam:artist").and_then(|v| {
-        let v = v.as_variant().unwrap_or(v.clone());
+        let v = sem_caixa(v);
         v.get::<Vec<String>>().map(|a| a.join(", ")).or_else(|| v.get::<String>())
     }).unwrap_or_default();
     let titulo = s("xesam:title").unwrap_or_default();
@@ -251,5 +261,20 @@ impl CapaDeslizante {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sem_caixa;
+    use gtk::glib::{self, prelude::ToVariant};
+
+    #[test]
+    fn a_boxed_value_comes_out_and_a_plain_one_stays() {
+        let plain = "Faixa".to_variant();
+        assert_eq!(sem_caixa(&plain).get::<String>().as_deref(), Some("Faixa"));
+        let boxed = glib::Variant::from_variant(&plain);
+        assert_eq!(boxed.type_().as_str(), "v");
+        assert_eq!(sem_caixa(&boxed).get::<String>().as_deref(), Some("Faixa"));
     }
 }

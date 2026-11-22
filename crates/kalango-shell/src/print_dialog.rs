@@ -313,36 +313,51 @@ pub fn ask(pdf: PathBuf, title: String, app: String, done: impl FnOnce(Outcome) 
     let d = Rc::new(Dialog { doc, page: Cell::new(0), pages, preview: preview.clone(), page_label, copies: Cell::new(1), copies_label,
         range_mode: Cell::new(0), range: range.clone(), print_b: print_b.clone(), status });
     let done: Rc<RefCell<Option<Box<dyn FnOnce(Outcome)>>>> = Rc::new(RefCell::new(Some(Box::new(done))));
+    // (the window and the dialog weakly in every closure: the window's own widgets holding it — or the dialog that
+    // holds them — kept each print dialog ever opened alive, with its document; the dialog lives with the window)
     let finish = {
-        let (done, w) = (done.clone(), window.clone());
+        let (done, w) = (done.clone(), window.downgrade());
         move |o: Outcome| {
             if let Some(f) = done.borrow_mut().take() {
                 f(o);
             }
-            w.close();
+            if let Some(w) = w.upgrade() {
+                w.close();
+            }
         }
     };
     let finish = Rc::new(finish);
-    let dd = d.clone();
-    preview.set_draw_func(move |_, cr, w, h| dd.draw(cr, f64::from(w), f64::from(h)));
+    let keep = d.clone();
+    window.connect_destroy(move |_| {
+        let _ = &keep;
+    });
+    let dd = Rc::downgrade(&d);
+    preview.set_draw_func(move |_, cr, w, h| {
+        if let Some(d) = dd.upgrade() {
+            d.draw(cr, f64::from(w), f64::from(h))
+        }
+    });
     for (b, k) in [(&prev, -1), (&next, 1)] {
-        let d = d.clone();
+        let w = Rc::downgrade(&d);
         b.connect_clicked(move |_| {
+            let Some(d) = w.upgrade() else { return };
             let p = (d.page.get() + k).clamp(0, (d.pages - 1).max(0));
             d.page.set(p);
             d.update();
         });
     }
     for (b, k) in [(&minus, -1i32), (&plus, 1)] {
-        let d = d.clone();
+        let w = Rc::downgrade(&d);
         b.connect_clicked(move |_| {
+            let Some(d) = w.upgrade() else { return };
             d.copies.set((d.copies.get() as i32 + k).clamp(1, 99) as u32);
             d.update();
         });
     }
     for (i, t) in pages_t.iter().enumerate() {
-        let d = d.clone();
+        let w = Rc::downgrade(&d);
         t.connect_toggled(move |t| {
+            let Some(d) = w.upgrade() else { return };
             if t.is_active() {
                 d.range_mode.set(i as u8);
                 d.range.set_visible(i == 2);
@@ -353,8 +368,12 @@ pub fn ask(pdf: PathBuf, title: String, app: String, done: impl FnOnce(Outcome) 
             }
         });
     }
-    let dd = d.clone();
-    range.connect_changed(move |_| dd.update());
+    let dd = Rc::downgrade(&d);
+    range.connect_changed(move |_| {
+        if let Some(d) = dd.upgrade() {
+            d.update();
+        }
+    });
     // closing: the window's ×, Cancel, Esc
     let f = finish.clone();
     close.connect_clicked(move |_| f(Outcome::Cancelled));
@@ -366,10 +385,11 @@ pub fn ask(pdf: PathBuf, title: String, app: String, done: impl FnOnce(Outcome) 
         glib::Propagation::Proceed
     });
     let keys = gtk::EventControllerKey::new();
-    let w = window.clone();
-    keys.connect_key_pressed(move |_, k, _, _| {
+    keys.connect_key_pressed(move |c, k, _, _| {
         if k == gdk::Key::Escape {
-            w.close();
+            if let Some(w) = c.widget().and_downcast::<gtk::Window>() {
+                w.close();
+            }
             return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
@@ -398,8 +418,9 @@ pub fn ask(pdf: PathBuf, title: String, app: String, done: impl FnOnce(Outcome) 
         }
     });
     // print: CUPS's lp with the choices
-    let (f, d2, title3) = (finish.clone(), d.clone(), title.clone());
+    let (f, d2, title3) = (finish.clone(), Rc::downgrade(&d), title.clone());
     print_b.connect_clicked(move |_| {
+        let Some(d2) = d2.upgrade() else { return };
         let Some(p) = list.get(printer.selected() as usize) else { return };
         let pages = match d2.range_mode.get() {
             1 => Some((d2.page.get() + 1).to_string()),

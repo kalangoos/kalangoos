@@ -88,6 +88,8 @@ pub struct MusicPlayer {
     mix: RefCell<Option<Mix>>,
     mpris: RefCell<Option<gio::DBusConnection>>,
     dragging: Cell<bool>,
+    /// the progress timer runs (only while the window shows or a song plays)
+    ticking: Cell<bool>,
     now_col: gtk::Box,
     measured: RefCell<Vec<(String, gtk::Widget)>>,
     right_col: gtk::Box,
@@ -219,9 +221,14 @@ impl MusicPlayer {
     fn new(app: &gtk::Application, shell: &Rc<Shell>) -> Rc<MusicPlayer> {
         let (w, h) = crate::superficies::tamanho_de_janela(1500, 910);
         let window = gtk::ApplicationWindow::builder().application(app).title(tr("Music")).default_width(w).default_height(h).build();
+        // (its app id as its name: the state written by `kalango-shell estado` finds it by it)
+        window.set_widget_name("os.kalango.Musica");
         // (one window for the app, kept: closing hides it and opening shows it again — a closed GTK window shown again
         // could not be closed any more, and it kept text input from the other windows)
         window.set_hide_on_close(true);
+        // (closed for a while, the window lets go of its surface and renderer and keeps its widgets: see
+        // superficies::release_resources_when_hidden)
+        crate::superficies::release_resources_when_hidden(&window, || true);
         window.add_css_class("ed-janela");
         let sem_barra = gtk::Box::new(Orientation::Horizontal, 0);
         sem_barra.set_visible(false);
@@ -425,7 +432,7 @@ impl MusicPlayer {
             window, pages, rail, cover, title, sub, wave, t_now, t_total, fav, play, mix_card, mix_title, mix_line, mix_play, up_next, songs, lists, favs,
             search, empty, library: RefCell::default(), queue: RefCell::default(), pos: Cell::new(0), media: RefCell::default(), waveform: RefCell::default(),
             cover_surface: RefCell::default(), old_cover: RefCell::default(), slide: Cell::new(0.0), mix: RefCell::default(), mpris: RefCell::default(),
-            dragging: Cell::new(false), now_col: now, measured: RefCell::default(), right_col: right, narrow: Cell::new(false), queue_shown: Cell::new(false), shell: Rc::downgrade(shell),
+            dragging: Cell::new(false), ticking: Cell::new(false), now_col: now, measured: RefCell::default(), right_col: right, narrow: Cell::new(false), queue_shown: Cell::new(false), shell: Rc::downgrade(shell),
         });
         p.wire(&prev, &next, &qb, &items, &pop);
         {
@@ -631,12 +638,17 @@ impl MusicPlayer {
             let j = j.clone();
             glib::idle_add_local_once(move || gtk::prelude::GtkWindowExt::set_focus(&j, None::<&gtk::Widget>));
         });
-        // the progress, four times a second
+        // the progress, four times a second — while the window shows or a song plays (hidden and paused, it slept on
+        // waking the shell four times a second)
+        self.ensure_ticking();
         let w = Rc::downgrade(self);
-        glib::timeout_add_local(Duration::from_millis(250), move || {
-            let Some(p) = w.upgrade() else { return glib::ControlFlow::Break };
-            p.tick();
-            glib::ControlFlow::Continue
+        // (shown again: brought up to date at once — paused or moved by MPRIS or a media key while the timer slept —,
+        // as the timer that never slept showed it)
+        self.window.connect_map(move |_| {
+            if let Some(p) = w.upgrade() {
+                p.tick();
+                p.ensure_ticking();
+            }
         });
         self.serve_mpris();
     }
@@ -993,6 +1005,13 @@ impl MusicPlayer {
                 p.sub.set_text(&trf("This song could not be played: {error}", &[("error", e.to_string())]));
             }
         });
+        // (playing again from MPRIS with the window closed: the progress follows)
+        let w = Rc::downgrade(self);
+        m.connect_playing_notify(move |m| {
+            if let (true, Some(p)) = (m.is_playing(), w.upgrade()) {
+                p.ensure_ticking();
+            }
+        });
         m.play();
         *self.media.borrow_mut() = Some(m);
         if debug() {
@@ -1042,6 +1061,24 @@ impl MusicPlayer {
                 *p.waveform.borrow_mut() = v;
                 p.wave.queue_draw();
             }
+        });
+    }
+
+    fn ensure_ticking(self: &Rc<Self>) {
+        if self.ticking.replace(true) {
+            return;
+        }
+        let w = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_millis(250), move || {
+            let Some(p) = w.upgrade() else { return glib::ControlFlow::Break };
+            if !crate::release_policy::keep_ticking(p.window.is_visible(), p.playing()) {
+                // (a last time: what stopped it — the pause — shows when the window comes back)
+                p.tick();
+                p.ticking.set(false);
+                return glib::ControlFlow::Break;
+            }
+            p.tick();
+            glib::ControlFlow::Continue
         });
     }
 

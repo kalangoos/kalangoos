@@ -496,6 +496,11 @@ struct Inicio {
 impl Configuracoes {
     pub fn new(app: &gtk::Application, shell: &Rc<Shell>) -> Rc<Configuracoes> {
         let janela = gtk::ApplicationWindow::new(app);
+        // (its app id as its name: the state written by `kalango-shell estado` finds it by it)
+        janela.set_widget_name("os.kalango.Configuracoes");
+        // (closed for a while, the window lets go of its surface and renderer and keeps its widgets: see
+        // superficies::release_resources_when_hidden)
+        crate::superficies::release_resources_when_hidden(&janela, || true);
         janela.set_title(Some(tr("Settings")));
         // (for the session test: where the keyboard's focus goes — the arrows move it between the page's controls)
         if depurando() {

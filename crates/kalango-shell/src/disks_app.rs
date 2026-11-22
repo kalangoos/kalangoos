@@ -128,9 +128,14 @@ impl DisksApp {
     fn new(app: &gtk::Application, shell: &Rc<Shell>) -> Rc<DisksApp> {
         let (w, h) = crate::superficies::tamanho_de_janela(1500, 910);
         let window = gtk::ApplicationWindow::builder().application(app).title(tr("Disks")).default_width(w).default_height(h).build();
+        // (its app id as its name: the state written by `kalango-shell estado` finds it by it)
+        window.set_widget_name("os.kalango.Discos");
         // (one window for the app, kept: closing hides it and opening shows it again — a closed GTK window shown again
         // could not be closed any more, and it kept text input from the other windows)
         window.set_hide_on_close(true);
+        // (closed for a while, the window lets go of its surface and renderer and keeps its widgets: see
+        // superficies::release_resources_when_hidden)
+        crate::superficies::release_resources_when_hidden(&window, || true);
         window.add_css_class("ed-janela");
         let sem_barra = gtk::Box::new(Orientation::Horizontal, 0);
         sem_barra.set_visible(false);
@@ -393,9 +398,12 @@ impl DisksApp {
             if let Some(l) = b.child().and_downcast::<gtk::Label>() {
                 l.set_xalign(0.0);
             }
-            let (w, pop) = (Rc::downgrade(self), pop.clone());
+            // (the popover weakly: the button is inside it, and a strong one from its own child kept both for good)
+            let (w, pop) = (Rc::downgrade(self), pop.downgrade());
             b.connect_clicked(move |_| {
-                pop.popdown();
+                if let Some(pop) = pop.upgrade() {
+                    pop.popdown();
+                }
                 if let Some(a) = w.upgrade() {
                     f(&a);
                 }
@@ -449,12 +457,12 @@ impl DisksApp {
         });
         // the rates, every second (while the window is open)
         let w = Rc::downgrade(self);
-        glib::timeout_add_local(Duration::from_secs(1), move || {
-            let Some(a) = w.upgrade() else { return glib::ControlFlow::Break };
+        crate::superficies::every_while_mapped(&self.window, Duration::from_secs(1), move || {
+            let Some(a) = w.upgrade() else { return false };
             if a.window.is_visible() {
                 a.sample_rates();
             }
-            glib::ControlFlow::Continue
+            true
         });
     }
 

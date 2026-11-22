@@ -441,6 +441,11 @@ impl Visao {
                 .filter(|j| j.espaco.is_some_and(|e| es.iter().any(|x| x.id == e && x.saida == saida)))
                 .map(|j| j.id).take(24).collect()
         };
+        // (the pictures of windows that closed since go: kept, one of 720 px stayed for every window ever shown here)
+        {
+            let vivas = s.estado.janelas.borrow();
+            self.texturas.borrow_mut().retain(|id, _| vivas.contains_key(id));
+        }
         for id in ids {
             self.pedir_miniatura(id);
         }
