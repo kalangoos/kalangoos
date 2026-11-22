@@ -35,6 +35,19 @@
 #          o kalangod escreve para o kalango-tela), o teclado, o mouse ou o toque da própria pessoa rodam KALANGO_PESSOA_ATIVA
 #          (kalangod tela pessoa: a sessão do agente termina) — só que aconteceu, nunca qual tecla; no máximo uma vez por
 #          segundo; e com a sessão bloqueada o ponteiro virtual não faz nada.
+#   0012 · modo privacidade: uma linha "pid" do arquivo de 0008 com a palavra "privacidade" (o Kalango Remote pede só para
+#          uma sessão que ninguém aprovou neste computador) cobre o monitor local de preto — só o ponteiro e as camadas
+#          kalango-remote-* DO APP (o cliente é o pai do núcleo do arquivo, o kalango-remote ao lado dele: o namespace sozinho
+#          não vale) ficam por cima — enquanto a captura de quem controla (wlr-screencopy, screencast) vê a área de trabalho
+#          de verdade. A cobertura só existe com o app vivo, o núcleo vivo e um kalango-remote-banner mapeado; sem isso, com
+#          a sessão bloqueada, com o arquivo ilegível ou gravável por outros (avisos no registro) ela sai: o que falha, falha
+#          aberto. A entrada da própria pessoa só enxerga essas camadas (o botão Parar alcança o aviso mesmo com outro overlay
+#          acima dele, diálogo, captura de tela ou janela em tela cheia); teclas, rolagem, caneta, gestos e toques não chegam
+#          aos programas escondidos; Esc Esc, atalhos como o botão de energia e o ponteiro virtual seguem; nada anterior à
+#          cobertura é desenhado. Esc Esc sob a cobertura levanta a cobertura para aquela concessão e termina o núcleo (um app
+#          ou núcleo travado não prende a pessoa); os atalhos do compositor que agem às cegas não fazem nada sob a cobertura
+#          (seguem Esc Esc, VT, sair, suspender, monitores e os que abrem um programa, como o bloqueio); uma tecla segurada
+#          quando ela começou é solta no programa escondido. `niri msg kalango-features` lista "privacy".
 set -eu
 cd "$(dirname "$0")/../.."
 BASE=8ed0da44d974c32c6877d2f4630c314da0717ecb

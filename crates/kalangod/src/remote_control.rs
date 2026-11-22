@@ -16,7 +16,9 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-pub const CAPABILITIES: [&str; 3] = ["captura", "ponteiro", "teclado"];
+/// `privacidade`: the local monitors are covered in black while the session lasts (niri patch 0012); the app asks
+/// for it only for a session nobody approved on this computer.
+pub const CAPABILITIES: [&str; 4] = ["captura", "ponteiro", "teclado", "privacidade"];
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Grant {
@@ -66,7 +68,7 @@ pub fn validate(caller: &Peer, apps: &[String], target: &Process, capabilities: 
         return Err(trf("{exe} is not Kalango Remote's core", &[("exe", target.exe.clone())]));
     }
     if capabilities.is_empty() || capabilities.iter().any(|c| !CAPABILITIES.contains(&c.as_str())) {
-        return Err(tr("capabilities must be captura, ponteiro or teclado").to_string());
+        return Err(tr("capabilities must be captura, ponteiro, teclado or privacidade").to_string());
     }
     Ok(())
 }
@@ -184,6 +186,8 @@ mod tests {
         assert!(validate(&app, &apps, &Process { exe: "/usr/bin/grim".into(), ..core.clone() }, &all).is_err(), "a child that is not the core");
         assert!(validate(&app, &apps, &Process { uid: 0, ..core.clone() }, &all).is_err(), "another user's");
         assert!(validate(&app, &apps, &core, &["tudo".to_string()]).is_err());
+        assert!(validate(&app, &apps, &core, &["agente".to_string()]).is_err(), "only kalangod's own helper marks an agent");
+        assert_eq!(validate(&app, &apps, &core, &["captura".to_string(), "privacidade".to_string()]), Ok(()));
         assert!(validate(&app, &apps, &core, &[]).is_err());
     }
 
