@@ -507,7 +507,7 @@ pub fn candidates(st: &crate::server::State, peer: &Peer) -> Vec<PathBuf> {
             id: 0, time: 0, caller: format!("kalangod ({})", peer.exe), uid: peer.uid, pid: peer.pid, tool: "kalango/pastas".into(), level: "usuario".into(),
             args: json!({"pasta": shown}), status: "negado".into(),
             summary: trf("{path} is no longer the folder you approved (it was moved, or swapped for a link): commands do not write there until you approve it again", &[("path", shown)]),
-            inverse: None, restore_point: None, miniatura: None, startup: None,
+            inverse: None, restore_point: None, miniatura: None, startup: None, d1: None,
         });
     }
     let extra: Vec<PathBuf> = ok.into_iter().filter(|p| !v.iter().any(|w| is_within(p, w))).collect();

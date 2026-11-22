@@ -16,6 +16,7 @@
 mod allowlist;
 mod approval;
 mod cofre;
+mod d1_marks;
 mod remoto;
 mod conector;
 mod guard;

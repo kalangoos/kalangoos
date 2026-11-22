@@ -1,0 +1,12 @@
+[package]
+name = "kalango-d1"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+description = "KalangoOS · recomendação do d1 para as aprovações: pedido ao modelo, regras duras e leitura da resposta (funções puras)"
+
+[dependencies]
+serde_json = "1"
+kalango-i18n = { path = "../kalango-i18n" }
+unicode-normalization = "0.1"

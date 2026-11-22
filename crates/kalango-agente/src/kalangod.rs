@@ -99,6 +99,16 @@ impl Client {
         self.request("kalango/inicio", json!({"ferramenta": name, "argumentos": args})).ok().and_then(|v| v["pede"].as_bool()).unwrap_or(false)
     }
 
+    /// Tells kalangod the next call of this exact action was let through by "Aprovar sozinho" (the d1 said safe with
+    /// this confidence), so the timeline marks it. kalangod checks the setting and the narrow list itself and only
+    /// then keeps the mark; an old kalangod without the method: ignored.
+    /// kalangod's answer says whether it agreed: when it did not (the setting is off there, the action is not on its
+    /// list, the person has been denying), or when it is an old kalangod, the engine asks the person instead.
+    pub fn mark_d1(&mut self, name: &str, args: &Value, confidence: u8, reason: &str) -> bool {
+        self.request("kalango/aprovado_d1", json!({"ferramenta": name, "argumentos": args, "confianca": confidence, "motivo": reason}))
+            .ok().and_then(|v| v["registrado"].as_bool()).unwrap_or(false)
+    }
+
         /// How many approval requests wait for the person.
     pub fn pending(&mut self) -> Result<usize, String> {
         Ok(self.request("kalango/pendentes", json!({}))?.as_array().map(|a| a.len()).unwrap_or(0))

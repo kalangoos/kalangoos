@@ -427,6 +427,7 @@ pub fn stop_copies_on_blocked_networks(state_dir: &std::path::Path, timeline: &c
             restore_point: None,
             miniatura: None,
             startup: None,
+            d1: None,
         });
         done.push(id);
     }

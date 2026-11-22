@@ -10,6 +10,7 @@ description = "KalangoOS agent engine: local model (llama.cpp + LFM3) acting on 
 serde_json = "1"
 ureq = { version = "2", default-features = false, features = ["json"] }
 kalango-i18n = { path = "../kalango-i18n" }
+kalango-d1 = { path = "../kalango-d1" }
 base64 = "0.22"
 unicode-normalization = "0.1"
 libc = "0.2"

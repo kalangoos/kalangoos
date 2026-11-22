@@ -106,7 +106,19 @@ struct Client {
 
 impl Client {
     fn new(sock: &Path) -> Client {
-        let s = UnixStream::connect(sock).unwrap();
+        // (kalangod may not be listening yet: tries for about 5 s)
+        let mut tries = 0;
+        let s = loop {
+            match UnixStream::connect(sock) {
+                Ok(s) => break s,
+                Err(e) if tries < 100 => {
+                    tries += 1;
+                    let _ = e;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => panic!("kalangod did not accept the connection in 5 s: {e}"),
+            }
+        };
         Client { w: s.try_clone().unwrap(), r: BufReader::new(s), n: 0 }
     }
     fn rpc(&mut self, method: &str, params: Value) -> Value {
@@ -2039,4 +2051,24 @@ fn an_impossible_gpu_reservation_does_not_ask() {
         let p = c.rpc("kalango/pendentes", json!({}));
         assert!(p["result"].as_array().unwrap().is_empty(), "nobody was asked: {p}");
     }
+}
+
+/// "Aprovar sozinho": the mark for the timeline is believed only from the agents' engine. Any other caller announcing
+/// a perfectly valid approval (setting on, an eligible action, a high confidence) is not marked as approved by the d1.
+#[test]
+fn only_the_engine_can_announce_an_approval_by_the_d1() {
+    let d = start_startup();
+    let mut c = Client::new(&d.sock);
+    let setting = d.area.join("cfg/kalango/agente-permissoes.json");
+    std::fs::create_dir_all(setting.parent().unwrap()).unwrap();
+    std::fs::write(&setting, r#"{"aprovacao_d1": {"ligada": true, "confianca": 60}}"#).unwrap();
+    std::fs::create_dir_all(d.area.join("Documentos/pasta")).unwrap();
+    let file = d.area.join("Documentos/pasta/a.txt");
+    std::fs::write(&file, "x").unwrap();
+    let args = json!({"caminho": file});
+    let r = c.rpc("kalango/aprovado_d1", json!({"ferramenta": "arquivos.lixeira", "argumentos": args, "confianca": 99, "motivo": "trash"}));
+    assert_eq!(r["result"]["registrado"], false, "{r}");
+    assert_eq!(c.call("arquivos.lixeira", args)["isError"], false);
+    let log = std::fs::read_to_string(d._dir.path().join("estado/linha-do-tempo.jsonl")).unwrap();
+    assert!(log.contains("arquivos.lixeira") && !log.contains("\"d1\""), "{log}");
 }

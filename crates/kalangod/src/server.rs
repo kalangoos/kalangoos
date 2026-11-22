@@ -25,6 +25,8 @@ pub struct State {
     pub caches: crate::allowlist::CacheIndex,
     pub remote_control: crate::remote_control::RemoteControl,
     pub screen: crate::screen_control::ScreenControl,
+    /// "Aprovar sozinho" marks waiting for the call they announce (`d1_marks.rs`)
+    pub d1_marks: crate::d1_marks::Marks,
 }
 
 pub fn serve(cfg: Config) -> std::io::Result<()> {
@@ -41,7 +43,7 @@ pub fn serve(cfg: Config) -> std::io::Result<()> {
     std::fs::create_dir_all(&cfg.state_dir)?;
     std::fs::set_permissions(&cfg.state_dir, std::fs::Permissions::from_mode(0o700))?;
     let remote_control = crate::remote_control::RemoteControl::new(cfg.controle_remoto.clone(), cfg.controle_remoto_sempre.clone());
-    let state = Arc::new(State { timeline: Arc::new(Timeline::open(&cfg.state_dir)?), approvals: Approvals::open(&cfg.state_dir), folders: crate::allowlist::Store::open(&cfg.state_dir), caches: crate::allowlist::CacheIndex::open(&cfg.state_dir), remote_control, screen: Default::default(), cfg });
+    let state = Arc::new(State { timeline: Arc::new(Timeline::open(&cfg.state_dir)?), approvals: Approvals::open(&cfg.state_dir), folders: crate::allowlist::Store::open(&cfg.state_dir), caches: crate::allowlist::CacheIndex::open(&cfg.state_dir), remote_control, screen: Default::default(), d1_marks: Default::default(), cfg });
     // the agents' grant caches: pruned now and every hour (a grant that went, unused for 30 days, over 10 GB)
     {
         let st = state.clone();
@@ -174,7 +176,7 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
                     id: 0, time: 0, caller: rule.name.clone(), uid: peer.uid, pid: peer.pid, tool: format!("controle_remoto.{acao}"),
                     level: "sistema".into(), args: params.clone(), status: if res.is_ok() { "ok".into() } else { "negado".into() },
                     summary: match &res { Ok(_) => kalango_i18n::trf("remote control {acao} for process {pid}", &[("acao", acao.to_string()), ("pid", pid.to_string())]), Err(e) => e.clone() },
-                    inverse: None, restore_point: None, miniatura: None, startup: None,
+                    inverse: None, restore_point: None, miniatura: None, startup: None, d1: None,
                 });
             }
             match res {
@@ -192,7 +194,7 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
                         id: 0, time: 0, caller: rule.name.clone(), uid: peer.uid, pid: peer.pid, tool: "tela.fim".into(), level: "usuario".into(),
                         args: json!({"motivo": why.word(), "janela": w, "acoes": n}), status: "ok".into(),
                         summary: kalango_i18n::trf("screen control of “{w}” ended after {n} actions: {why}", &[("w", w.clone()), ("n", n.to_string()), ("why", why.text())]),
-                        inverse: None, restore_point: None, miniatura: None, startup: None,
+                        inverse: None, restore_point: None, miniatura: None, startup: None, d1: None,
                     });
                 }
             };
@@ -285,8 +287,15 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
             }
             let approve = params.get("aprovar").and_then(Value::as_bool).unwrap_or(false);
             let always = params.get("sempre").and_then(Value::as_bool).unwrap_or(false);
+            let asker = st.approvals.list().into_iter().find(|p| p.id == pid).map(|p| p.uid);
             match st.approvals.decide(pid, approve, always, peer, st.cfg.approval_requires_tty, &st.cfg.aprovadores_graficos, Duration::from_secs(st.cfg.total_grant_s)) {
-                Ok(m) => ok(id, json!({"mensagem": m})),
+                Ok(m) => {
+                    // (the person's answer counts for "Aprovar sozinho": three denials in a row and it asks again)
+                    if let Some(uid) = asker {
+                        if approve { st.d1_marks.person_approved(uid) } else { st.d1_marks.person_denied(uid) }
+                    }
+                    ok(id, json!({"mensagem": m}))
+                }
                 Err(e) => err(id, -32003, &e),
             }
         }
@@ -358,6 +367,16 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
             let ask = g.asks(st, peer);
             ok(id, json!({"pede": ask, "arquivos": files}))
         }
+        // "Aprovar sozinho": the engine says the next call of this exact action was let through by the d1; kalangod keeps
+        // the mark (for the timeline) only if the person's setting, the narrow list and the rules all agree
+        "kalango/aprovado_d1" => {
+            let name = params.get("ferramenta").and_then(Value::as_str).unwrap_or("");
+            let a = params.get("argumentos").cloned().unwrap_or(json!({}));
+            let confidence = params.get("confianca").and_then(Value::as_u64).unwrap_or(0);
+            let reason = params.get("motivo").and_then(Value::as_str).unwrap_or("");
+            let kept = crate::d1_marks::announce(st, peer, name, &a, confidence, reason);
+            ok(id, json!({"registrado": kept}))
+        }
         // where agents' commands write (Permissões › Pastas dos comandos): the work folders and the project folders
         "kalango/pastas" => {
             let home = &crate::allowlist::real_home(&peer.home);
@@ -415,9 +434,14 @@ fn log(st: &State, peer: &Peer, rule: &CallerRule, tool: &str, level: Level, arg
 
 #[allow(clippy::too_many_arguments)]
 fn log_with(st: &State, peer: &Peer, rule: &CallerRule, tool: &str, level: Level, args: &Value, status: &str, summary: &str, inverse: Option<Value>, rp: Option<String>, miniatura: Option<String>, startup: Option<Value>) -> u64 {
+    log_full(st, peer, rule, tool, level, args, status, summary, inverse, rp, miniatura, startup, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_full(st: &State, peer: &Peer, rule: &CallerRule, tool: &str, level: Level, args: &Value, status: &str, summary: &str, inverse: Option<Value>, rp: Option<String>, miniatura: Option<String>, startup: Option<Value>, d1: Option<Value>) -> u64 {
     st.timeline.append(Entry {
         id: 0, time: 0, caller: format!("{} ({})", rule.name, peer.exe), uid: peer.uid, pid: peer.pid,
-        tool: tool.into(), level: level.name().into(), args: args.clone(), status: status.into(), summary: summary.into(), inverse, restore_point: rp, miniatura, startup,
+        tool: tool.into(), level: level.name().into(), args: args.clone(), status: status.into(), summary: summary.into(), inverse, restore_point: rp, miniatura, startup, d1,
     })
 }
 
@@ -671,7 +695,9 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
             let status = if st.cfg.dry_run && tool.level >= Level::Sistema { "simulado" } else { "ok" };
             let mini = value.get("miniatura").and_then(Value::as_str).map(str::to_string);
             // (the timeline keeps what the action was, not the picture's bytes)
-            let n = log_with(st, peer, rule, name, tool.level, args, status, &summary, inverse.clone(), rp.clone(), mini, startup);
+            // (announced by the person's "Aprovar sozinho", and still valid now: `d1_marks.rs`)
+            let d1 = st.d1_marks.take(peer.pid, name, args);
+            let n = log_full(st, peer, rule, name, tool.level, args, status, &summary, inverse.clone(), rp.clone(), mini, startup, d1);
             let mut v = value;
             if let Value::Object(m) = &mut v {
                 m.insert("registro".into(), json!(n));
@@ -717,6 +743,9 @@ fn undo_since(st: &State, peer: &Peer, rule: &CallerRule, args: &Value, rp: Opti
             Ok(out) => {
                 log_with(st, peer, rule, "linha_do_tempo.desfazer", Level::Sistema, &json!({"id": e.id}), "desfeito",
                     &kalango_i18n::trf("undid #{id}: {action}", &[("id", e.id.to_string()), ("action", out.summary.clone())]), None, rp.clone(), None, mark);
+                if e.d1.is_some() {
+                    st.d1_marks.person_denied(e.uid);
+                }
                 desfeitos.push(e.id);
             }
             Err(err) => falhas.push(json!({"id": e.id, "erro": err})),
@@ -744,6 +773,10 @@ fn undo(st: &State, peer: &Peer, rule: &CallerRule, args: &Value, rp: Option<Str
     let (mark, startup_ok) = startup_gate(st, peer, rule, &tool, tname, &targs)?.map(|(m, a)| (Some(m), a)).unwrap_or_default();
     let ctx = Ctx { cfg: &st.cfg, peer, rule, timeline: &st.timeline, lan: None, state: None, startup_ok };
     let out = (tool.run)(&ctx, &targs)?;
+    // undoing what the d1 approved by itself is a denial of that approval
+    if e.d1.is_some() {
+        st.d1_marks.person_denied(e.uid);
+    }
     let n = log_with(st, peer, rule, "linha_do_tempo.desfazer", Level::Sistema, &json!({"id": id}), "desfeito", &kalango_i18n::trf("undid #{id}: {action}", &[("id", id.to_string()), ("action", out.summary.clone())]), None, rp, None, mark);
     Ok((json!({"desfeito": id, "registro": n, "acao": out.summary}), kalango_i18n::trf("undid #{id}", &[("id", id.to_string())])))
 }
