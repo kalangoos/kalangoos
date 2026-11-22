@@ -363,7 +363,9 @@ impl FlowDoc {
     /// after it: the ways never meet again, and what comes after runs once per way.
     pub fn needs_join(&self, id: &str) -> bool {
         let Some(n) = self.node(id) else { return false };
-        if n.kind != "parallel" && n.data["multiple_ways"] != json!(true) {
+        // (several ways at once: In parallel, or a condition following every rule that holds — the engine does that only
+        // for conditions)
+        if n.kind != "parallel" && !(n.kind == "condition" && n.data["multiple_ways"] == json!(true)) {
             return false;
         }
         let mut targets: Vec<&str> = self.edges.iter().filter(|e| e.source == id).map(|e| e.target.as_str()).collect();
@@ -403,6 +405,41 @@ impl FlowDoc {
         let ws = ways(n);
         let Some(handle) = ws.iter().find(|w| w.is_none() || !used.contains(*w)).cloned() else { return false };
         self.edges.push(EdgeDoc { source: source.into(), target: target.into(), handle });
+        true
+    }
+
+    /// Blocks dragged on the canvas: each to its new place, and the ones let go over a sandbox into it (or out of one).
+    /// Only the places change unless a block goes into or out of a sandbox (then the connections that would cross its
+    /// edge go, as [`FlowDoc::set_parent`] says): the connections never follow where a block sits.
+    pub fn move_nodes(&mut self, places: &[(String, f64, f64)], into: &[(String, Option<String>)]) {
+        for (id, x, y) in places {
+            if let Some(n) = self.node_mut(id) {
+                n.x = *x;
+                n.y = *y;
+            }
+        }
+        for (id, parent) in into {
+            self.set_parent(id, parent.as_deref());
+        }
+        self.fix_sandboxes();
+    }
+
+    /// A connection drawn from one of `source`'s ports: by that port's way (`Some`), or the first way free (`None`,
+    /// a port without a name). The default way may fan out (In parallel, a For each's "all done"); a named way goes
+    /// to one block, so it moves to `target`. Returns false when nothing changed.
+    pub fn connect_way(&mut self, source: &str, way: Option<Option<&str>>, target: &str) -> bool {
+        let Some(handle) = way else { return self.connect(source, target) };
+        if source == target || self.node(source).is_none_or(|n| !ways(n).iter().any(|w| w.as_deref() == handle)) {
+            return false;
+        }
+        if self.edges.iter().any(|e| e.source == source && e.target == target && e.handle.as_deref() == handle) {
+            return false;
+        }
+        if handle.is_none() {
+            self.edges.push(EdgeDoc { source: source.into(), target: target.into(), handle: None });
+        } else {
+            self.set_way(source, handle, Some(target));
+        }
         true
     }
 
@@ -524,16 +561,15 @@ pub fn path_text(steps: &[Step], name: impl Fn(&str) -> String) -> String {
     names.join(" → ")
 }
 
-/// A card's rows for its ways out when it has several of its own (an agent's routes, a condition's rules): what
-/// each is called.
-pub fn way_rows(n: &NodeDoc) -> Vec<String> {
-    match n.kind.as_str() {
-        "agent" => n.data["routes"].as_array().into_iter().flatten().filter_map(|r| r["id"].as_str().map(str::to_string)).collect(),
-        "condition" if n.data["conditions"].as_array().is_some_and(|c| c.len() > 1) => {
-            n.data["conditions"].as_array().into_iter().flatten().map(|c| format!("{} · {}", c["id"].as_str().unwrap_or(""), rule_text(&c["data"]))).collect()
+/// What a connection leaving by way `handle` of `n` is called on the canvas: its port's name (an agent's "when to
+/// follow it", an approval's "approved"), else [`way_label`].
+pub fn way_name(n: &NodeDoc, handle: Option<&str>) -> String {
+    if n.kind != "parallel" {
+        if let Some(p) = out_ports(n).into_iter().find(|p| p.handle.as_deref() == handle && !p.label.is_empty()) {
+            return p.label;
         }
-        _ => vec![],
     }
+    way_label(&n.kind, handle)
 }
 
 
@@ -955,8 +991,11 @@ impl Side {
     }
 }
 
-/// Where a connection leaves and arrives: right → left when the target is to the right, bottom → top when it is
-/// below, and a loop on the left (dashed) when it goes back up to a block above.
+/// Where a connection leaves and arrives. It always leaves by the source's **out** port (on the right; the bottom
+/// only for a one-way block whose target sits below it, as the design stacks them) and arrives at the target's **in**
+/// port (on the left; the top when it comes from above). Where the blocks sit never swaps them: a target behind the
+/// source (to its left, or above it) gets a connection that goes out to the right, around and back in from the left
+/// (`back`, dashed like the For each's loop back; design "ligação para trás").
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Route {
     pub from: (f64, f64),
@@ -966,29 +1005,60 @@ pub struct Route {
     pub back: bool,
 }
 
+/// The route of a one-way block (its out port in the middle of its right side).
 pub fn route(src: Rect, dst: Rect) -> Route {
-    let overlap_x = dst.x < src.x + src.w && src.x < dst.x + dst.w;
-    if dst.y + dst.h <= src.y && overlap_x {
-        return Route { from: src.left_mid(), from_side: Side::Left, to: dst.left_mid(), to_side: Side::Left, back: true };
-    }
     if dst.x >= src.x + src.w - 1.0 {
         Route { from: src.right_mid(), from_side: Side::Right, to: dst.left_mid(), to_side: Side::Left, back: false }
     } else if dst.y >= src.y + src.h - 1.0 {
         Route { from: src.bottom_mid(), from_side: Side::Bottom, to: dst.top_mid(), to_side: Side::Top, back: false }
-    } else if dst.x + dst.w <= src.x + 1.0 {
-        Route { from: src.left_mid(), from_side: Side::Left, to: dst.right_mid(), to_side: Side::Right, back: false }
     } else {
-        Route { from: src.top_mid(), from_side: Side::Top, to: dst.bottom_mid(), to_side: Side::Bottom, back: false }
+        Route { from: src.right_mid(), from_side: Side::Right, to: dst.left_mid(), to_side: Side::Left, back: true }
     }
 }
 
-/// The cubic Bézier of a route: the handles go out along each side's normal (a loop bulges further out).
+/// The route from one of a block's named ports (`port`, on its right side, in line with its row).
+pub fn route_from(src: Rect, port: (f64, f64), dst: Rect) -> Route {
+    if dst.x >= src.x + src.w - 1.0 {
+        Route { from: port, from_side: Side::Right, to: dst.left_mid(), to_side: Side::Left, back: false }
+    } else if dst.y >= src.y + src.h - 1.0 {
+        Route { from: port, from_side: Side::Right, to: dst.top_mid(), to_side: Side::Top, back: false }
+    } else {
+        Route { from: port, from_side: Side::Right, to: dst.left_mid(), to_side: Side::Left, back: true }
+    }
+}
+
+/// The cubic Bézier of a forward route: the handles go out along each side's normal.
 pub fn bezier(r: &Route) -> [(f64, f64); 4] {
     let d = ((r.to.0 - r.from.0).powi(2) + (r.to.1 - r.from.1).powi(2)).sqrt();
-    let k = if r.back { (d * 0.35).clamp(40.0, 90.0) } else { (d * 0.4).clamp(16.0, 120.0) };
+    let k = (d * 0.4).clamp(16.0, 120.0);
     let (n0, n1) = (r.from_side.normal(), r.to_side.normal());
     [r.from, (r.from.0 + n0.0 * k, r.from.1 + n0.1 * k), (r.to.0 + n1.0 * k, r.to.1 + n1.1 * k), r.to]
 }
+
+/// A connection as drawn: its cubic pieces (one for a free forward curve; a routed one is a line with round turns,
+/// `points` its corners from port to port) and where its label sits. Routed by `flow_router`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgePath {
+    pub segments: Vec<[(f64, f64); 4]>,
+    pub label_at: (f64, f64),
+    pub points: Vec<(f64, f64)>,
+    /// (the router's own: its search's corners before they were moved apart, and the widest window it looked in —
+    /// None for a free curve)
+    pub raw: Vec<(f64, f64)>,
+    pub window: Option<Rect>,
+}
+
+/// Where a label of size `w`×`h` goes: at the first of `spots` where it covers no card (each spot is the label's
+/// middle, or its right edge when the spot says the label sits to its left); None when every spot covers one (the
+/// label is left out rather than drawn over a card). Returns its top-left.
+pub fn label_place(spots: &[((f64, f64), bool)], w: f64, h: f64, cards: &[Rect]) -> Option<(f64, f64)> {
+    let at = |(p, left): &((f64, f64), bool)| if *left { (p.0 - w, p.1 - h / 2.0) } else { (p.0 - w / 2.0, p.1 - h / 2.0) };
+    let clear = |(x, y): (f64, f64)| !cards.iter().any(|c| x < c.x + c.w + 2.0 && x + w > c.x - 2.0 && y < c.y + c.h + 2.0 && y + h > c.y - 2.0);
+    spots.iter().map(at).find(|q| clear(*q))
+}
+
+/// Below this zoom the connections' labels are left out (they would be bigger than the cards around them).
+pub const LABELS_MIN_ZOOM: f64 = 0.45;
 
 pub fn point_at(b: &[(f64, f64); 4], t: f64) -> (f64, f64) {
     let u = 1.0 - t;
@@ -996,19 +1066,208 @@ pub fn point_at(b: &[(f64, f64); 4], t: f64) -> (f64, f64) {
     (a * b[0].0 + bb * b[1].0 + c * b[2].0 + d * b[3].0, a * b[0].1 + bb * b[1].1 + c * b[2].1 + d * b[3].1)
 }
 
-/// The shortest distance from `p` to the curve (sampled), to pick a connection with the pointer.
+/// The shortest distance from `p` to the curve (sampled about every 2 units of its length, at least 40 times), to
+/// pick a connection with the pointer.
 pub fn distance_to(b: &[(f64, f64); 4], p: (f64, f64)) -> f64 {
-    (0..=40).map(|i| point_at(b, i as f64 / 40.0)).map(|q| ((q.0 - p.0).powi(2) + (q.1 - p.1).powi(2)).sqrt()).fold(f64::INFINITY, f64::min)
+    let hull: f64 = b.windows(2).map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt()).sum();
+    let n = ((hull / 2.0).ceil() as usize).clamp(40, 2000);
+    (0..=n).map(|i| point_at(b, i as f64 / n as f64)).map(|q| ((q.0 - p.0).powi(2) + (q.1 - p.1).powi(2)).sqrt()).fold(f64::INFINITY, f64::min)
 }
 
-/// The output ports of a block (where a new connection is dragged from): right and bottom.
-pub fn out_ports(r: Rect) -> [(f64, f64); 2] {
-    [r.right_mid(), r.bottom_mid()]
+/// The shortest distance from `p` to a drawn connection.
+pub fn distance_to_path(path: &EdgePath, p: (f64, f64)) -> f64 {
+    path.segments.iter().map(|b| distance_to(b, p)).fold(f64::INFINITY, f64::min)
 }
 
-/// The block whose output port is under `p` (within `radius`), topmost first.
-pub fn hit_port(rects: &[(String, Rect)], p: (f64, f64), radius: f64) -> Option<&str> {
-    rects.iter().rev().find(|(_, r)| out_ports(*r).iter().any(|q| (q.0 - p.0).powi(2) + (q.1 - p.1).powi(2) <= radius * radius)).map(|(id, _)| id.as_str())
+// ── ports ───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// One way out of a block as its port shows it (design "portas com nome"): the way (`handle`, as the connections
+/// keep it), the name next to the port and the port's tip (the whole name and what the way does).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutPort {
+    pub handle: Option<String>,
+    pub label: String,
+    pub tip: String,
+}
+
+/// How many characters a port's name keeps on the card before it ends in "…" (the card's width in mono 11 px).
+pub const PORT_LABEL_CHARS: usize = 20;
+/// A named port's row on the card: its height, the gap between rows and the card's bottom edge (padding and border).
+pub const PORT_ROW_H: f64 = 18.0;
+pub const PORT_ROW_GAP: f64 = 2.0;
+pub const CARD_BOTTOM: f64 = 12.0;
+
+/// `s` in at most `max` characters, ending in "…" when it is cut.
+pub fn short_label(s: &str, max: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// A block's ways out as ports, in the order of [`ways`]: an agent's ways by their "when to follow it" ("way N" when it
+/// is empty) and "else"; a condition's rules and "no"; a decision's options; an approval's "approved"/"denied"; a For
+/// each's "all done" (its own agent goes through the items) and "empty list"; In parallel's one way that every
+/// connection takes at once. A block with one plain way out has one port without a name; an End has none.
+pub fn out_ports(n: &NodeDoc) -> Vec<OutPort> {
+    let port = |handle: Option<String>, label: String, what: &str| {
+        let tip = if label.is_empty() { what.to_string() } else { format!("{label}\n{what}") };
+        OutPort { handle, label, tip }
+    };
+    match n.kind.as_str() {
+        "end" => vec![],
+        "agent" => {
+            let routes: Vec<&Value> = n.data["routes"].as_array().into_iter().flatten().filter(|r| r["id"].as_str().is_some()).collect();
+            if routes.is_empty() {
+                return vec![port(None, String::new(), tr("Next block"))];
+            }
+            let mut v: Vec<OutPort> = routes
+                .iter()
+                .map(|r| {
+                    // (no "when to follow it": the name the person gave the way, "caminho_2" read "caminho 2")
+                    let when = r["description"].as_str().unwrap_or("").trim();
+                    let name = r["label"].as_str().filter(|l| !l.trim().is_empty()).or(r["id"].as_str()).unwrap_or("").replace('_', " ");
+                    let label = if when.is_empty() { name } else { when.to_string() };
+                    port(r["id"].as_str().map(str::to_string), label, tr("The agent follows this way when it holds"))
+                })
+                .collect();
+            v.push(port(None, tr("else").into(), tr("Followed when no way holds")));
+            v
+        }
+        "condition" => {
+            let mut v: Vec<OutPort> = n.data["conditions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| {
+                    let id = c["id"].as_str()?;
+                    let rule = rule_text(&c["data"]);
+                    let what = if rule.trim().is_empty() { tr("Followed when the rule holds").to_string() } else { format!("{} {rule}", tr("Followed when")) };
+                    Some(port(Some(id.to_string()), id.to_string(), &what))
+                })
+                .collect();
+            v.push(port(Some(ELSE_HANDLE.into()), way_label("condition", Some(ELSE_HANDLE)), tr("Followed when no rule holds")));
+            v
+        }
+        "decide" => {
+            // (a score's ways are its levels' indexes from 0: named by its legend, "score N" counting from 1 when a level
+            // has none)
+            let q = &n.data["questions"][n.data["route"].as_str().unwrap_or("")];
+            let levels: Vec<String> = q["criteria"].as_array().filter(|_| q["type"] == "score").into_iter().flatten().map(|c| c.as_str().unwrap_or("").trim().to_string()).collect();
+            decide_ways(&n.data)
+                .into_iter()
+                .map(|w| {
+                    let level = w.parse::<usize>().ok().filter(|i| *i < levels.len());
+                    let label = match level {
+                        Some(i) if !levels[i].is_empty() => levels[i].clone(),
+                        Some(i) => kalango_i18n::trf("score {n}", &[("n", (i + 1).to_string())]),
+                        None => way_label("decide", Some(&w)),
+                    };
+                    let what = if w == LOW_CONFIDENCE {
+                        tr("Followed when the decision is not sure: you decide").to_string()
+                    } else if let Some(i) = level {
+                        kalango_i18n::trf("Followed when the score is level {n} of {total}: {legend}", &[("n", (i + 1).to_string()), ("total", levels.len().to_string()), ("legend", levels.join(" · "))])
+                    } else {
+                        tr("Followed when the decision picks this option").to_string()
+                    };
+                    port(Some(w.clone()), label, &what)
+                })
+                .collect()
+        }
+        "approval" => vec![port(Some("sim".into()), tr("approved").into(), tr("Followed when you approve")), port(Some("não".into()), tr("denied").into(), tr("Followed when you deny or the time to decide runs out"))],
+        "for_each" => vec![
+            port(None, way_label("for_each", None), tr("Followed once every item is done")),
+            port(Some(EMPTY_LIST.into()), way_label("for_each", Some(EMPTY_LIST)), tr("Followed when the list has no items")),
+        ],
+        "parallel" => vec![port(None, tr("all at once").into(), tr("Every connection from here runs at the same time"))],
+        _ => vec![port(None, String::new(), tr("Next block"))],
+    }
+}
+
+/// Whether a block's ports have names (rows on its card, each with its port): more than one way out, or In parallel.
+pub fn named_ports(n: &NodeDoc) -> bool {
+    n.kind == "parallel" || out_ports(n).len() > 1
+}
+
+/// What a block says above its named ports: "follow every way" when the mode that follows each way that holds is on
+/// (a condition's: the engine follows several ways only there).
+pub fn ports_caption(n: &NodeDoc) -> Option<&'static str> {
+    (n.kind == "condition" && named_ports(n) && n.data["multiple_ways"] == json!(true)).then(|| tr("follow every way"))
+}
+
+/// Where each port of a block in `r` sits: named ports on the right side in line with their rows (the last rows of
+/// the card), a plain one in the middle of the right side.
+pub fn port_points(n: &NodeDoc, r: Rect) -> Vec<(f64, f64)> {
+    let ports = out_ports(n);
+    if !named_ports(n) {
+        return ports.iter().map(|_| r.right_mid()).collect();
+    }
+    let k = ports.len();
+    (0..k).map(|i| (r.x + r.w, r.y + r.h - CARD_BOTTOM - (k - 1 - i) as f64 * (PORT_ROW_H + PORT_ROW_GAP) - PORT_ROW_H / 2.0)).collect()
+}
+
+/// Which port a connection leaves by: its way's, else the default way's (an agent's "no way chosen" goes there too),
+/// else the last.
+pub fn port_index(ports: &[OutPort], handle: Option<&str>) -> usize {
+    ports
+        .iter()
+        .position(|p| p.handle.as_deref() == handle)
+        .or_else(|| ports.iter().position(|p| p.handle.is_none() || p.handle.as_deref() == Some(ELSE_HANDLE)))
+        .unwrap_or(ports.len().saturating_sub(1))
+}
+
+/// The route of connection `e` (a block's or a trigger's, `node` None) between the rectangles of its ends, its ports
+/// where the design puts them (the canvas measures them: [`edge_route_at`]).
+#[cfg(test)]
+pub fn edge_route(node: Option<&NodeDoc>, handle: Option<&str>, src: Rect, dst: Rect) -> Route {
+    edge_route_at(node, handle, src, dst, &node.map(|n| port_points(n, src)).unwrap_or_default())
+}
+
+/// [`edge_route`] with the source's ports where the card really shows them (`ports`, in the order of
+/// [`out_ports`]: the canvas measures its rows, which grow with the text size); a missing one falls back to
+/// [`port_points`].
+pub fn edge_route_at(node: Option<&NodeDoc>, handle: Option<&str>, src: Rect, dst: Rect, ports: &[(f64, f64)]) -> Route {
+    match node.filter(|n| named_ports(n)) {
+        Some(n) => {
+            let k = port_index(&out_ports(n), handle);
+            let at = ports.get(k).copied().unwrap_or_else(|| port_points(n, src)[k]);
+            route_from(src, at, dst)
+        }
+        None => route(src, dst),
+    }
+}
+
+/// A row's middle from the card's outer top (its border box), from the row's bounds as GTK gives them in the card's
+/// own coordinates — whose origin is the card's content box, inside its border and padding: `card_top` is where the
+/// border box's top lies there (`card.compute_bounds(card)`, negative).
+pub fn row_middle(card_top: f64, row_y: f64, row_h: f64) -> f64 {
+    row_y + row_h / 2.0 - card_top
+}
+
+/// Where a new connection may be dragged from on a block: each of its ports (with its way); a block with one plain way
+/// out its bottom too, as the canvas always allowed (its connections still leave by the right side unless the target
+/// sits below).
+pub fn grab_points(n: &NodeDoc, r: Rect, places: &[(f64, f64)]) -> Vec<((f64, f64), Option<String>)> {
+    let ports = out_ports(n);
+    let mut v: Vec<((f64, f64), Option<String>)> = places.iter().copied().zip(ports.iter().map(|p| p.handle.clone())).collect();
+    if !named_ports(n) && !ports.is_empty() {
+        v.push((r.bottom_mid(), None));
+    }
+    v
+}
+
+/// A named port's place from where its row really is on the card: the right side, in line with the row's middle
+/// (`row_middles`: each row's middle from the card's top, as the canvas measures them).
+pub fn port_points_from_rows(r: Rect, row_middles: &[f64]) -> Vec<(f64, f64)> {
+    row_middles.iter().map(|m| (r.x + r.w, r.y + m)).collect()
+}
+
+/// The port under `p` (within `radius`): its block and its way, topmost block first. `ports` are each block's
+/// ports with their places.
+pub fn hit_port(ports: &[(String, Vec<((f64, f64), Option<String>)>)], p: (f64, f64), radius: f64) -> Option<(String, Option<String>)> {
+    ports.iter().rev().find_map(|(id, list)| list.iter().find(|(q, _)| (q.0 - p.0).powi(2) + (q.1 - p.1).powi(2) <= radius * radius).map(|(_, h)| (id.clone(), h.clone())))
 }
 
 /// The block under `p`, topmost first (the last drawn is on top).
@@ -1969,20 +2228,344 @@ mod tests {
         let below = route(a, Rect { x: 0.0, y: 180.0, w: 172.0, h: 80.0 });
         assert_eq!((below.from, below.to), ((86.0, 90.0), (86.0, 180.0)));
         assert_eq!((below.from_side, below.to_side), (Side::Bottom, Side::Top));
-        let back = route(Rect { x: 0.0, y: 300.0, w: 172.0, h: 90.0 }, a);
-        assert!(back.back);
-        assert_eq!((back.from_side, back.to_side), (Side::Left, Side::Left));
-        let left = route(Rect { x: 300.0, y: 0.0, w: 172.0, h: 90.0 }, Rect { x: 0.0, y: 20.0, w: 172.0, h: 90.0 });
-        assert_eq!((left.from_side, left.to_side), (Side::Left, Side::Right));
         let b = bezier(&right);
         assert_eq!((b[0], b[3]), (right.from, right.to));
         assert!(b[1].0 > b[0].0 && b[2].0 < b[3].0, "handles go out along the sides");
-        let bb = bezier(&back);
-        assert!(bb[1].0 < 0.0 && bb[2].0 < 0.0, "a loop bulges to the left");
         assert_eq!(point_at(&b, 0.0), b[0]);
         assert_eq!(point_at(&b, 1.0), b[3]);
         assert!(distance_to(&b, (200.0, 47.0)) < 3.0);
         assert!(distance_to(&b, (200.0, 200.0)) > 100.0);
+    }
+
+    /// The bug: a block dragged behind (left of, or above) the one before it drew its connection from the source's
+    /// left side (its in port) into the target's right side (its out port), as if the flow ran the other way.
+    #[test]
+    fn ports_never_swap_wherever_the_blocks_sit() {
+        let src = Rect { x: 400.0, y: 400.0, w: 172.0, h: 90.0 };
+        let (w, h) = (172.0, 100.0);
+        // (every place around the source, overlapping it included)
+        let places = [
+            ("right", 628.0, 400.0),
+            ("right, a bit lower", 628.0, 440.0),
+            ("left, same row", 172.0, 400.0),
+            ("left, a bit higher", 172.0, 380.0),
+            ("above", 400.0, 200.0),
+            ("above, to the left", 150.0, 150.0),
+            ("above, to the right", 700.0, 150.0),
+            ("below", 400.0, 600.0),
+            ("below, to the left", 100.0, 640.0),
+            ("below, to the right", 700.0, 640.0),
+            ("overlapping", 450.0, 430.0),
+            ("overlapping, to the left", 330.0, 410.0),
+            ("same place", 400.0, 400.0),
+        ];
+        for (where_, x, y) in places {
+            let dst = Rect { x, y, w, h };
+            let r = route(src, dst);
+            // out: the source's right side, or its bottom for a block below; in: the target's left side, or its top
+            let out = [(src.right_mid(), Side::Right), (src.bottom_mid(), Side::Bottom)];
+            let inn = [(dst.left_mid(), Side::Left), (dst.top_mid(), Side::Top)];
+            assert!(out.contains(&(r.from, r.from_side)), "{where_}: leaves by the out port, not {:?} {:?}", r.from, r.from_side);
+            assert!(inn.contains(&(r.to, r.to_side)), "{where_}: arrives at the in port, not {:?} {:?}", r.to, r.to_side);
+            assert!(r.from_side != Side::Left && r.from_side != Side::Top, "{where_}: never out of an in side");
+            assert!(r.to_side != Side::Right && r.to_side != Side::Bottom, "{where_}: never into an out side");
+            // the drawn line starts at the out port and ends at the in port, leaving outwards and arriving inwards
+            let p = crate::flow_router::route_all(&[crate::flow_router::Link { route: r, src, dst }], &[src, dst], &[]).remove(0);
+            let (first, last) = (p.segments[0], p.segments[p.segments.len() - 1]);
+            assert_eq!((first[0], last[3]), (r.from, r.to), "{where_}");
+            let (n0, n1) = (r.from_side.normal(), r.to_side.normal());
+            assert!((first[1].0 - first[0].0) * n0.0 + (first[1].1 - first[0].1) * n0.1 > 0.0, "{where_}: leaves outwards");
+            assert!((last[2].0 - last[3].0) * n1.0 + (last[2].1 - last[3].1) * n1.1 > 0.0, "{where_}: arrives from outside");
+            // the pieces join up
+            for k in 1..p.segments.len() {
+                assert_eq!(p.segments[k - 1][3], p.segments[k][0], "{where_}: piece {k}");
+            }
+            // behind the source: out to the right, around and in from the left, dashed
+            let behind = dst.x < src.x + src.w - 1.0 && dst.y < src.y + src.h - 1.0;
+            assert_eq!(r.back, behind, "{where_}");
+            if behind {
+                assert_eq!((r.from_side, r.to_side), (Side::Right, Side::Left), "{where_}");
+                assert!(p.segments.len() > 1, "{where_}: it goes around");
+                let xs = p.segments.iter().flat_map(|s| s.iter().map(|q| q.0));
+                assert!(xs.clone().fold(f64::MIN, f64::max) > src.x + src.w, "{where_}: out past the source's right side");
+                assert!(xs.fold(f64::MAX, f64::min) < dst.x, "{where_}: in from beyond the target's left side");
+            }
+        }
+    }
+
+    #[test]
+    fn a_label_goes_where_no_card_is() {
+        let card = Rect { x: 0.0, y: 0.0, w: 172.0, h: 90.0 };
+        // the first spot is over the card: the next one clear of it
+        let spots = [((100.0, 45.0), true), ((100.0, 150.0), true), ((300.0, 45.0), false)];
+        assert_eq!(label_place(&spots, 60.0, 16.0, &[card]), Some((40.0, 142.0)));
+        // nowhere clear: left out, never over a card
+        assert_eq!(label_place(&[((86.0, 45.0), false)], 60.0, 16.0, &[card]), None);
+    }
+
+    /// At a low zoom a chip is big in the world (its text keeps a size that reads): wherever it goes it covers no
+    /// card, and below LABELS_MIN_ZOOM the canvas leaves the labels out.
+    #[test]
+    fn a_label_at_low_zoom_never_covers_a_card() {
+        let cards: Vec<Rect> = (0..12).map(|i| Rect { x: (i % 4) as f64 * 228.0, y: (i / 4) as f64 * 160.0, w: 172.0, h: 100.0 }).collect();
+        for zoom in [0.3f64, 0.45, 0.6, 1.0, 1.4] {
+            // (the chip's size in the world: on screen it shrinks with the zoom only down to half)
+            let (w, h) = (60.0 * zoom.max(0.5) / zoom, 17.0 * zoom.max(0.5) / zoom);
+            for i in 0..11 {
+                let (a, b) = (cards[i], cards[i + 1]);
+                let spots: Vec<((f64, f64), bool)> = [0.5, 0.4, 0.6, 0.3, 0.7].iter().map(|t| (((a.x + a.w) * (1.0 - t) + b.x * t, (a.y + a.h / 2.0) * (1.0 - t) + (b.y + b.h / 2.0) * t), false)).collect();
+                if let Some((x, y)) = label_place(&spots, w, h, &cards) {
+                    assert!(!cards.iter().any(|c| x < c.x + c.w && x + w > c.x && y < c.y + c.h && y + h > c.y), "zoom {zoom}: {i}");
+                }
+            }
+        }
+    }
+
+    /// With a bigger text (the person's text size, or a long name that wraps) the rows grow: the ports follow the rows
+    /// the canvas measures, not the 18 px the design draws them at.
+    #[test]
+    fn ports_follow_the_rows_as_measured() {
+        let n = NodeDoc { id: "c".into(), kind: "condition".into(), data: json!({"conditions": [{"id": "sim", "data": {}}]}), ..Default::default() };
+        let src = Rect { x: 0.0, y: 0.0, w: 172.0, h: 190.0 };
+        // (text at 1.5×: rows 27 px high, 3 apart, the card's bottom edge 12)
+        let middles = [190.0 - 12.0 - 27.0 - 3.0 - 13.5, 190.0 - 12.0 - 13.5];
+        let at = port_points_from_rows(src, &middles);
+        assert_eq!(at, vec![(172.0, 134.5), (172.0, 164.5)]);
+        assert_ne!(at, port_points(&n, src), "the design's 18 px rows would put them elsewhere");
+        let dst = Rect { x: 300.0, y: 0.0, w: 172.0, h: 90.0 };
+        assert_eq!(edge_route_at(Some(&n), Some(ELSE_HANDLE), src, dst, &at).from, at[1]);
+        assert_eq!(edge_route_at(Some(&n), Some("sim"), src, dst, &at).from, at[0]);
+        // (nothing measured yet: the design's rows)
+        assert_eq!(edge_route_at(Some(&n), Some("sim"), src, dst, &[]).from, port_points(&n, src)[0]);
+    }
+
+    /// GTK measures a row from the card's content box (inside the border and padding of `.fluxo-no`): its middle
+    /// counted from the outer top is where the port goes — 12 px lower than the raw number (the bug of round 3: the
+    /// "negado" dot sat by "aprovado").
+    #[test]
+    fn a_rows_middle_counts_from_the_cards_outer_top() {
+        // (the card's real top and bottom inset, from the style sheet: border + padding)
+        let css = include_str!("../assets/style.css");
+        let rule = css.lines().find(|l| l.starts_with(".fluxo-no {")).expect("the card's rule");
+        let px = |key: &str| -> Vec<f64> {
+            let v = rule.split(key).nth(1).unwrap().split(';').next().unwrap();
+            v.split_whitespace().filter_map(|t| t.trim_end_matches("px").parse().ok()).collect()
+        };
+        let (border, pad) = (px("border:")[0], px("padding:"));
+        let (top, bottom) = (border + pad[0], border + pad[2]);
+        assert_eq!(bottom, CARD_BOTTOM, "the ports' formula uses the card's real bottom inset");
+        let n = NodeDoc { id: "p".into(), kind: "approval".into(), ..Default::default() };
+        let r = Rect { x: 0.0, y: 0.0, w: 172.0, h: 140.0 };
+        // the two rows as GTK reports them in the card's own (content box) coordinates
+        let content_h = r.h - top - bottom;
+        let rows = [(content_h - 2.0 * PORT_ROW_H - PORT_ROW_GAP, PORT_ROW_H), (content_h - PORT_ROW_H, PORT_ROW_H)];
+        let middles: Vec<f64> = rows.iter().map(|(y, h)| row_middle(-top, *y, *h)).collect();
+        assert_eq!(port_points_from_rows(r, &middles), port_points(&n, r), "measured and designed places agree");
+        // (taken raw, the ports would sit `top` higher than their rows)
+        let raw: Vec<f64> = rows.iter().map(|(y, h)| y + h / 2.0).collect();
+        assert_ne!(port_points_from_rows(r, &raw), port_points(&n, r));
+    }
+
+    #[test]
+    fn a_plain_block_is_grabbed_by_its_right_or_its_bottom() {
+        let r = Rect { x: 0.0, y: 0.0, w: 172.0, h: 90.0 };
+        let plain = NodeDoc { id: "a".into(), kind: "system_action".into(), ..Default::default() };
+        let g = grab_points(&plain, r, &port_points(&plain, r));
+        assert_eq!(g, vec![(r.right_mid(), None), (r.bottom_mid(), None)]);
+        let rects = vec![("a".to_string(), g)];
+        assert_eq!(hit_port(&rects, (86.0, 91.0), 7.0), Some(("a".to_string(), None)), "the bottom starts a link");
+        // a named block: only its rows (its bottom is not a way of its own)
+        let named = NodeDoc { id: "c".into(), kind: "approval".into(), ..Default::default() };
+        assert_eq!(grab_points(&named, r, &port_points(&named, r)).len(), 2);
+        // an End: none
+        let end = NodeDoc { id: "e".into(), kind: "end".into(), ..Default::default() };
+        assert!(grab_points(&end, r, &port_points(&end, r)).is_empty());
+    }
+
+    #[test]
+    fn named_ports_route_from_their_row() {
+        let n = NodeDoc { id: "c".into(), kind: "condition".into(), data: json!({"conditions": [{"id": "sim", "data": {}}]}), ..Default::default() };
+        let src = Rect { x: 0.0, y: 0.0, w: 172.0, h: 137.0 };
+        let pts = port_points(&n, src);
+        assert_eq!(pts, vec![(172.0, 137.0 - CARD_BOTTOM - 20.0 - 9.0), (172.0, 137.0 - CARD_BOTTOM - 9.0)]);
+        for (way, at) in [(Some("sim"), pts[0]), (Some(ELSE_HANDLE), pts[1])] {
+            for dst in [Rect { x: 228.0, y: 0.0, w: 172.0, h: 90.0 }, Rect { x: 0.0, y: 200.0, w: 172.0, h: 90.0 }, Rect { x: -300.0, y: 0.0, w: 172.0, h: 90.0 }, Rect { x: 0.0, y: -200.0, w: 172.0, h: 90.0 }] {
+                let r = edge_route(Some(&n), way, src, dst);
+                assert_eq!((r.from, r.from_side), (at, Side::Right), "{way:?} to {dst:?}: by its own row's port");
+                assert!(r.to == dst.left_mid() || r.to == dst.top_mid(), "{way:?} to {dst:?}");
+            }
+        }
+        // a one-way block (and a trigger) leave by the middle of the right side
+        let one = NodeDoc { id: "a".into(), kind: "system_action".into(), ..Default::default() };
+        assert_eq!(edge_route(Some(&one), None, src, Rect { x: 300.0, y: 0.0, w: 172.0, h: 90.0 }).from, src.right_mid());
+        assert_eq!(edge_route(None, None, src, Rect { x: 300.0, y: 0.0, w: 172.0, h: 90.0 }).from, src.right_mid());
+    }
+
+    #[test]
+    fn every_kind_names_its_ports_by_its_ways() {
+        let mk = |kind: &str, data: Value| NodeDoc { id: "x".into(), kind: kind.into(), data, ..Default::default() };
+        let agent = mk(
+            "agent",
+            json!({"routes": [
+                {"id": "caminho_1", "description": "texto em inglês"},
+                {"id": "caminho_2", "description": "pedido urgente com prazo curto e cliente importante"},
+                {"id": "caminho_3", "description": "  "}
+            ]}),
+        );
+        let cases: Vec<(NodeDoc, Vec<String>)> = vec![
+            (agent.clone(), vec!["texto em inglês".into(), "pedido urgente com prazo curto e cliente importante".into(), "caminho 3".into(), tr("else").into()]),
+            (mk("agent", json!({})), vec![String::new()]),
+            (mk("condition", json!({"conditions": [{"id": "sim", "data": {"field": "var:tipo", "operator": "equals", "value": "fatura"}}]})), vec!["sim".into(), tr("no").into()]),
+            (mk("condition", json!({"conditions": [{"id": "a", "data": {}}, {"id": "b", "data": {}}]})), vec!["a".into(), "b".into(), tr("no").into()]),
+            (mk("decide", json!({"route": "r", "questions": {"r": {"type": "choice", "criteria": {"fatura": "x", "agenda": null}}}})), vec!["agenda".into(), "fatura".into(), tr("low confidence").into()]),
+            (mk("decide", json!({"route": "r", "questions": {"r": {"type": "noul"}}})), vec![tr("yes").into(), tr("no").into(), tr("low confidence").into()]),
+            (mk("approval", json!({})), vec![tr("approved").into(), tr("denied").into()]),
+            (mk("for_each", json!({"items": "var:anexos"})), vec![tr("all done").into(), tr("empty list").into()]),
+            (mk("parallel", json!({})), vec![tr("all at once").into()]),
+            (mk("join", json!({})), vec![String::new()]),
+            (mk("system_action", json!({})), vec![String::new()]),
+            (mk("wait", json!({"seconds": 60})), vec![String::new()]),
+            (mk("end", json!({})), vec![]),
+        ];
+        for (n, labels) in cases {
+            let ports = out_ports(&n);
+            // one port per way out, in the same order, with the way the connections keep
+            assert_eq!(ports.iter().map(|p| p.handle.clone()).collect::<Vec<_>>(), ways(&n), "{}", n.kind);
+            assert_eq!(ports.iter().map(|p| p.label.clone()).collect::<Vec<_>>(), labels, "{}", n.kind);
+            // every port says what it does; a named one starts its tip with its whole name
+            for p in &ports {
+                assert!(!p.tip.trim().is_empty(), "{} {:?}", n.kind, p.handle);
+                if !p.label.is_empty() {
+                    assert!(p.tip.starts_with(&p.label), "{} {:?}", n.kind, p.handle);
+                }
+            }
+            assert_eq!(named_ports(&n), ports.len() > 1 || n.kind == "parallel", "{}", n.kind);
+            assert_eq!(port_points(&n, Rect { x: 0.0, y: 0.0, w: 172.0, h: 150.0 }).len(), ports.len(), "{}", n.kind);
+        }
+        // "follow every way": said above a condition's rows when it is on (the engine follows several ways only
+        // there; an agent takes the one way it chose)
+        let mut all = mk("condition", json!({"conditions": [{"id": "a"}, {"id": "b"}], "multiple_ways": true}));
+        assert_eq!(ports_caption(&all), Some(tr("follow every way")));
+        all.data["multiple_ways"] = json!(false);
+        assert_eq!(ports_caption(&all), None);
+        let mut agent_all = agent.clone();
+        agent_all.data["multiple_ways"] = json!(true);
+        assert_eq!(ports_caption(&agent_all), None);
+        // a way the person renamed is called by its name when it has no "when to follow it"
+        let renamed = mk("agent", json!({"routes": [{"id": "urgente", "label": "urgente", "description": ""}, {"id": "caminho_2", "description": ""}]}));
+        assert_eq!(out_ports(&renamed).iter().map(|p| p.label.clone()).collect::<Vec<_>>(), vec!["urgente".to_string(), "caminho 2".into(), tr("else").into()]);
+        // a score's levels by its legend ("score N" for a level without one), the legend in the tip
+        let score = mk("decide", json!({"route": "q", "questions": {"q": {"type": "score", "criteria": ["baixa", "", "alta"]}}}));
+        let ps = out_ports(&score);
+        assert_eq!(ps.iter().map(|p| p.label.clone()).collect::<Vec<_>>(), vec!["baixa".to_string(), kalango_i18n::trf("score {n}", &[("n", "2".into())]), "alta".into(), tr("low confidence").into()]);
+        // (levels counted from 1, as a person reads them: the third is level 3 of 3)
+        let third = kalango_i18n::trf("Followed when the score is level {n} of {total}: {legend}", &[("n", "3".into()), ("total", "3".into()), ("legend", "baixa ·  · alta".into())]);
+        assert!(ps[2].tip.ends_with(&third), "{}", ps[2].tip);
+        assert!(!ps.iter().any(|p| p.label == "0" || p.label == "1" || p.label == "2"));
+        // an approval's "denied" is also the way when the time to decide runs out (the engine's "não" on expiry)
+        assert!(out_ports(&mk("approval", json!({})))[1].tip.contains(tr("Followed when you deny or the time to decide runs out")));
+        // a connection's label is its port's name
+        assert_eq!(way_name(&agent, Some("caminho_1")), "texto em inglês");
+        assert_eq!(way_name(&mk("approval", json!({})), Some("não")), tr("denied"));
+        assert_eq!(way_name(&mk("condition", json!({"conditions": [{"id": "sim"}]})), Some(ELSE_HANDLE)), tr("no"));
+        assert_eq!(way_name(&mk("parallel", json!({})), None), "");
+    }
+
+    #[test]
+    fn a_long_port_name_is_cut_and_the_tip_keeps_it_whole() {
+        assert_eq!(short_label("texto em inglês", PORT_LABEL_CHARS), "texto em inglês");
+        let long = "pedido urgente com prazo curto e cliente importante";
+        let s = short_label(long, PORT_LABEL_CHARS);
+        // (at most the room it has: a space where it is cut goes)
+        assert!(s.chars().count() <= PORT_LABEL_CHARS && s.chars().count() >= PORT_LABEL_CHARS - 2, "{s}");
+        assert_eq!(s, "pedido urgente com…");
+        assert!(s.ends_with('…'));
+        assert!(long.starts_with(s.trim_end_matches('…')));
+        // (accents count as one character each, and the cut never lands inside one)
+        assert_eq!(short_label("ação àçãõ éíóú ãããããããã", 10).chars().count(), 10);
+        // (a space before the cut goes)
+        assert_eq!(short_label("abcd efgh", 6), "abcd…");
+        let agent = NodeDoc { id: "a".into(), kind: "agent".into(), data: json!({"routes": [{"id": "c1", "description": long}]}), ..Default::default() };
+        let p = &out_ports(&agent)[0];
+        assert_eq!(p.label, long);
+        assert!(p.tip.contains(long), "the tip has the whole text");
+        // (the row on the card shows the cut name, in the place its port sits)
+        assert_eq!(short_label(&p.label, PORT_LABEL_CHARS), s);
+    }
+
+    #[test]
+    fn a_port_connects_its_own_way() {
+        let mut f = FlowDoc::from_json(&json!({"nodes": [
+            {"id": "c", "type": "condition", "position": {"x": 0, "y": 0}, "data": {"conditions": [{"id": "sim", "data": {}}]}},
+            {"id": "p", "type": "parallel", "position": {"x": 0, "y": 0}, "data": {}},
+            {"id": "a", "type": "end", "position": {"x": 0, "y": 0}, "data": {}},
+            {"id": "b", "type": "end", "position": {"x": 0, "y": 0}, "data": {}}
+        ], "edges": []}));
+        // "não" first, though "sim" is free
+        assert!(f.connect_way("c", Some(Some(ELSE_HANDLE)), "a"));
+        assert_eq!(f.edges, vec![EdgeDoc { source: "c".into(), target: "a".into(), handle: Some(ELSE_HANDLE.into()) }]);
+        // a named way goes to one block: dragged again, it moves
+        assert!(f.connect_way("c", Some(Some(ELSE_HANDLE)), "b"));
+        assert_eq!(f.edges, vec![EdgeDoc { source: "c".into(), target: "b".into(), handle: Some(ELSE_HANDLE.into()) }]);
+        assert!(!f.connect_way("c", Some(Some("nada")), "a"), "a way the block does not have");
+        // the default way fans out
+        assert!(f.connect_way("p", Some(None), "a") && f.connect_way("p", Some(None), "b"));
+        assert!(!f.connect_way("p", Some(None), "b"), "already there");
+        assert_eq!(f.edges.iter().filter(|e| e.source == "p").count(), 2);
+        // a port without a name: the first way free
+        assert!(f.connect_way("c", None, "a"));
+        assert!(f.edges.iter().any(|e| e.source == "c" && e.target == "a" && e.handle.as_deref() == Some("sim")));
+    }
+
+    /// Dragging a block anywhere (behind the one before it included) changes its place and nothing else: the
+    /// connections, their ways and every other field stay as they were.
+    #[test]
+    fn dragging_a_block_never_changes_the_connections() {
+        let flow = FlowDoc::from_json(&json!({"nodes": [
+            {"id": "a", "type": "agent", "position": {"x": 0, "y": 0}, "data": {"routes": [{"id": "r1", "description": "urgente"}]}},
+            {"id": "c", "type": "condition", "position": {"x": 228, "y": 0}, "data": {"conditions": [{"id": "sim", "data": {}}]}},
+            {"id": "f", "type": "for_each", "position": {"x": 228, "y": 200}, "data": {"items": "var:anexos"}},
+            {"id": "p", "type": "approval", "position": {"x": 228, "y": 400}, "data": {}},
+            {"id": "l", "type": "system_action", "position": {"x": 456, "y": 400}, "data": {"tool": "calendario.criar_evento"}},
+            {"id": "e", "type": "end", "position": {"x": 456, "y": 0}, "data": {}}
+        ], "edges": [
+            {"source": "a", "target": "c", "sourceHandle": "r1"},
+            {"source": "a", "target": "e"},
+            {"source": "c", "target": "f", "sourceHandle": "sim"},
+            {"source": "c", "target": "e", "sourceHandle": ELSE_HANDLE},
+            {"source": "f", "target": "p"},
+            {"source": "f", "target": "e", "sourceHandle": EMPTY_LIST},
+            {"source": "p", "target": "l", "sourceHandle": "sim"}
+        ]}));
+        assert_eq!(flow.edges.len(), 7);
+        let places = [(-400.0, 400.0), (0.0, 400.0), (228.0, -300.0), (-100.0, -100.0), (900.0, 900.0), (240.0, 410.0), (228.0, 400.0), (0.0, 0.0)];
+        for id in ["a", "c", "f", "p", "l", "e"] {
+            for (x, y) in places {
+                let mut moved = flow.clone();
+                moved.move_nodes(&[(id.to_string(), x, y)], &[]);
+                assert_eq!(moved.edges, flow.edges, "{id} at {x},{y}");
+                let n = moved.node(id).unwrap();
+                assert_eq!((n.x, n.y), (x, y));
+                // (and the rest of the flow is what it was)
+                let mut back = moved.clone();
+                back.node_mut(id).unwrap().x = flow.node(id).unwrap().x;
+                back.node_mut(id).unwrap().y = flow.node(id).unwrap().y;
+                assert_eq!(back, flow, "{id} at {x},{y}");
+                // the drawn route of each connection still leaves by its source's out port and enters its target's in port
+                let rect = |k: &str| {
+                    let n = moved.node(k).unwrap();
+                    Rect { x: n.x, y: n.y, w: node_width(&n.kind), h: 120.0 }
+                };
+                for e in &moved.edges {
+                    let (s, t) = (rect(&e.source), rect(&e.target));
+                    let r = edge_route(moved.node(&e.source), e.handle.as_deref(), s, t);
+                    assert!(r.from_side == Side::Right || r.from_side == Side::Bottom, "{id} at {x},{y}: {e:?}");
+                    assert!(r.to_side == Side::Left || r.to_side == Side::Top, "{id} at {x},{y}: {e:?}");
+                    assert!((r.from.0 - (s.x + s.w)).abs() < 1e-9 || r.from == s.bottom_mid(), "{id} at {x},{y}: {e:?} leaves its source");
+                    assert!(r.to == t.left_mid() || r.to == t.top_mid(), "{id} at {x},{y}: {e:?} enters its target");
+                }
+            }
+        }
     }
 
     #[test]
@@ -1991,9 +2574,14 @@ mod tests {
         assert_eq!(hit_node(&rects, (120.0, 60.0)), Some("b"), "the top one");
         assert_eq!(hit_node(&rects, (10.0, 10.0)), Some("a"));
         assert_eq!(hit_node(&rects, (500.0, 10.0)), None);
-        assert_eq!(hit_port(&rects, (173.0, 46.0), 7.0), Some("a"));
-        assert_eq!(hit_port(&rects, (186.0, 141.0), 7.0), Some("b"), "the bottom port");
-        assert_eq!(hit_port(&rects, (50.0, 50.0), 7.0), None);
+        let ports = vec![
+            ("a".to_string(), vec![((172.0, 45.0), None)]),
+            ("c".to_string(), vec![((272.0, 100.0), Some("sim".to_string())), ((272.0, 120.0), Some(ELSE_HANDLE.to_string()))]),
+        ];
+        assert_eq!(hit_port(&ports, (173.0, 46.0), 7.0), Some(("a".to_string(), None)));
+        assert_eq!(hit_port(&ports, (271.0, 121.0), 7.0), Some(("c".to_string(), Some(ELSE_HANDLE.to_string()))), "each row's own port");
+        assert_eq!(hit_port(&ports, (271.0, 99.0), 7.0), Some(("c".to_string(), Some("sim".to_string()))));
+        assert_eq!(hit_port(&ports, (50.0, 50.0), 7.0), None);
     }
 
     #[test]
