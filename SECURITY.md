@@ -36,14 +36,4 @@ Interessam em especial:
 
 ## Versões cobertas
 
-O projeto ainda não tem versões publicadas. Até a primeira, só o ramo `main` recebe correções.
-
-| Versão | Recebe correções |
-|---|---|
-| `main` | Sim |
-
----
-
-**English.** Please do not report security issues in public. Use GitHub's private vulnerability reporting
-(Security tab → Report a vulnerability). We acknowledge reports within
-5 business days and coordinate disclosure with you.
+Só a versão mais recente (0.1.x, prévia técnica) e o ramo `main` recebem correções.

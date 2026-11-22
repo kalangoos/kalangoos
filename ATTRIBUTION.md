@@ -64,6 +64,8 @@ as licenças junto.
 | GTK 4, VTE (GTK 4), Poppler (GLib), GStreamer | Interface, terminal, PDF, mídia (bibliotecas do sistema, ligadas dinamicamente) | LGPL-2.1-or-later; LGPL-3.0-or-later; GPL-2.0-or-later; LGPL-2.1-or-later |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | Executa os modelos locais | MIT |
 | [LFM3](https://huggingface.co/LiquidAI) (Liquid AI), em GGUF | Modelos locais padrão (texto, visão, áudio), baixados na primeira vez | LFM Open License v1.0 (licença própria, não OSI: conferir os termos antes de embutir os modelos na imagem) |
+| Kalango Remote (repositório próprio, na ISO) | Acesso remoto; derivado do [RustDesk](https://github.com/rustdesk/rustdesk) | AGPL-3.0 |
+| Kalango Audio (repositório próprio, na ISO) | Captura, tratamento e gravação de som | GPL-3.0-or-later |
 | [Moli](https://github.com/lexmount/moli) | Navegador sem tela dos agentes, isolado pelo `kalangod` | Apache-2.0 |
 | Programa eBPF `crates/kalangod/ebpf/guarda.bpf.c` | Regras no kernel | Declara `GPL` ao kernel (exigência dos ganchos LSM) |
 | Ubuntu LTS e o kernel Linux | Base do sistema | As de cada pacote; kernel GPL-2.0 |

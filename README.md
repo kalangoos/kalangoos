@@ -6,13 +6,14 @@
   <img alt="Rust" src="https://img.shields.io/badge/Rust-GTK%204%20·%20niri-A5A1E2?style=flat-square&logo=rust&logoColor=white">
   <img alt="Base: Ubuntu LTS" src="https://img.shields.io/badge/base-Ubuntu%20LTS-E5C98C?style=flat-square">
   <img alt="Licença: GPL-3.0-or-later" src="https://img.shields.io/badge/licen%C3%A7a-GPL--3.0--or--later-8ED2C3?style=flat-square">
-  <img alt="Estado: em desenvolvimento" src="https://img.shields.io/badge/estado-em%20desenvolvimento-EFA2A6?style=flat-square">
+  <img alt="Estado: prévia técnica 0.1.0" src="https://img.shields.io/badge/estado-pr%C3%A9via%20t%C3%A9cnica%200.1.0-EFA2A6?style=flat-square">
   <a href="https://github.com/kalangoos/kalangoos/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/kalangoos/kalangoos/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
 <p align="center">
   <a href="#o-que-é">O que é</a> ·
   <a href="#onde-estamos">Onde estamos</a> ·
+  <a href="docs/NOTAS-0.1.0.md">Notas da 0.1.0</a> ·
   <a href="#como-é-feito">Como é feito</a> ·
   <a href="#rodar-a-sessão-de-desenvolvimento">Rodar</a> ·
   <a href="ROADMAP.md">Roteiro</a> ·
@@ -21,9 +22,12 @@
 </p>
 
 > [!IMPORTANT]
-> **O KalangoOS está em desenvolvimento e ainda não tem imagem para instalar.** Hoje o desktop, os apps e os
-> agentes rodam numa sessão de desenvolvimento (um compositor dentro de uma janela) e numa máquina virtual. Não
-> use em um computador com dados que você não pode perder.
+> **O KalangoOS 0.1.0 é uma prévia técnica.** Há uma ISO instalável (x86_64, UEFI), montada e testada numa máquina
+> virtual pela esteira de lançamento: a sessão ao vivo abre com o instalador, o motor do instalador grava num disco virtual vazio (a etapa gráfica "Modelos de IA" não é exercitada pelo teste) e o
+> sistema instalado liga na sessão. Mas ela ainda não foi validada em hardware de verdade (a matriz NVIDIA, AMD e
+> Intel está incompleta), então **não instale em um computador com dados que você não pode perder**: use uma
+> máquina virtual ou um computador de teste. As limitações conhecidas estão em
+> [docs/LANCAMENTO.md](docs/LANCAMENTO.md) e as notas da versão em [docs/NOTAS-0.1.0.md](docs/NOTAS-0.1.0.md).
 
 ## O que é
 
@@ -36,21 +40,26 @@ arriscado e pode ser desfeito.
 - **Nada irreversível sem você.** Ações arriscadas pedem aprovação numa tela desenhada pelo sistema, que o agente
   não consegue imitar; cada ação entra na Linha do tempo, com desfazer e ponto de restauração.
 - **Local por padrão.** O modelo padrão (LFM3, da Liquid AI) roda no seu computador pelo llama.cpp. Nuvem só com
-  a sua permissão.
-- **Regras impostas pelo kernel.** eBPF LSM, Landlock, seccomp e cgroups, sem módulo de kernel próprio: as
-  atualizações do kernel do Ubuntu continuam funcionando.
+  a sua permissão. A ISO da prévia não leva o modelo: o instalador (etapa "Modelos de IA") e a Central de Apps o
+  baixam, de uma fonte que você escolhe (o catálogo público, um servidor privado ou uma pasta).
+- **Regras impostas pelo kernel.** eBPF LSM, Landlock, seccomp e cgroups, sem módulo de kernel próprio. A ISO
+  leva um kernel 7.3.4 compilado pelo projeto (configuração em `kernel/`); ele não recebe as atualizações do kernel do Ubuntu.
 - **Um desktop próprio.** Shell em Rust e GTK 4 sobre o compositor [niri](https://github.com/YaLTeR/niri), apps
   do próprio sistema e um único Design System, nos temas escuro e claro.
 
 ## Onde estamos
 
-| Frente | Situação |
+| Frente | Situação na 0.1.0 |
 |---|---|
-| Shell (barra, dock, barras laterais, área de trabalho, bloqueio) | Funciona na sessão de desenvolvimento, com testes automáticos |
-| Apps do sistema (Arquivos, Configurações, Terminal, Editor, Calculadora, Central de agentes…) | Vários prontos; outros em andamento |
-| `kalangod` e agentes (`kalango-agente` com LFM3 local) | Funcionam; validados numa VM com o kernel do KalangoOS |
-| Tela de entrada, instalador e primeiro uso | Telas e motor prontos; o instalador ainda não grava num disco de verdade |
-| Imagem instalável (disco ou ISO) | **Ainda não existe** — é o próximo passo ([ROADMAP.md](ROADMAP.md)) |
+| Imagem instalável (ISO) | Existe. A esteira de lançamento a monta, liga a sessão ao vivo numa VM, instala num disco virtual vazio e liga o sistema instalado; só então a anexa ao rascunho da versão |
+| Instalador e primeiro uso | O motor do instalador grava num disco virtual vazio no teste da esteira; as telas, inclusive a etapa "Modelos de IA" (catálogo público, servidor privado ou pasta), existem, mas o teste não as exercita |
+| Shell e niri com patches (barra, dock, barras laterais, área de trabalho, bloqueio, janelas e espaços) | Funcionam, com testes automáticos na sessão e na VM |
+| Apps do sistema (Arquivos, Configurações, Terminal, Editor, Calculadora, Central de agentes…) | Vários prontos; outros em andamento ([docs/telas.md](docs/telas.md)) |
+| `kalangod` (aprovação, desfazer, Linha do tempo, níveis de poder) | Funciona; as regras do kernel (eBPF LSM, Landlock, seccomp, cgroups) valem com o kernel do KalangoOS |
+| Agentes locais (`kalango-agente`, LFM3 via llama.cpp) e gestão de contexto | Funcionam; o modelo de decisão d1 (opcional, baixado à parte) responde nos blocos "Decidir" dos Fluxos |
+| Kalango Remote e Kalango Audio | Vêm na ISO (repositórios próprios, em commits fixos) |
+| Kalango VirtualDesk e Kalango Fluxos | Repositórios próprios, **fora da ISO** da prévia: o `kalangod` já tem as ferramentas `vm.*` e o shell tem as telas (Sandbox, editor de fluxo); o serviço de fluxos é de um repositório privado |
+| Hardware real, acessibilidade, inglês | **Pendentes**: matriz de hardware incompleta, sem certificação de acessibilidade, interface só em português |
 
 ## Como é feito
 
@@ -117,18 +126,22 @@ and operate the system and its apps, and everything they do is visible, asks for
 can be undone.
 
 > [!IMPORTANT]
-> KalangoOS is in development. **There is no installable image yet**: the desktop, apps and agents run in a
-> development session (a compositor inside a window) and in a virtual machine.
+> **KalangoOS 0.1.0 is a technical preview.** There is an installable ISO (x86_64, UEFI), built and tested in a
+> virtual machine by the release workflow: the live session boots with the installer, the installer engine writes to an
+> empty virtual disk (the graphical "AI models" step is not exercised by the test) and the installed system boots into its session. It has not been validated on real hardware yet (the
+> NVIDIA, AMD and Intel matrix is incomplete), so use a virtual machine or a test computer, not one with data you
+> cannot lose. See [docs/NOTAS-0.1.0.md](docs/NOTAS-0.1.0.md) for the release notes and known limitations.
 
 - **Agents that act.** They operate the system through `kalangod`, our privileged service that speaks MCP, with
   four power levels and kernel-enforced rules (eBPF LSM, Landlock, seccomp, cgroups; no out-of-tree module).
 - **Nothing irreversible without you.** Risky actions ask for approval on a screen drawn by the system; every action
   goes to an undoable timeline.
-- **Local first.** The default model (Liquid AI's LFM3) runs on your machine through llama.cpp.
+- **Local first.** The default model (Liquid AI's LFM3) runs on your machine through llama.cpp. The preview ISO
+  does not ship a model: the installer's "AI models" step and the app center download it from a source you choose.
 - **Its own desktop.** A Rust and GTK 4 shell on the [niri](https://github.com/YaLTeR/niri) compositor, with the
   system's own apps and one design system.
 
 The docs and the UI are in Brazilian Portuguese first; English comes next ([ROADMAP.md](ROADMAP.md), phase 6).
-Build and run steps are above; contributions are welcome in Portuguese or English ([CONTRIBUTING.md](CONTRIBUTING.md)).
+Build and run steps are above (to try the ISO in a VM, see [docs/NOTAS-0.1.0.md](docs/NOTAS-0.1.0.md)); contributions are welcome in Portuguese or English ([CONTRIBUTING.md](CONTRIBUTING.md)).
 The code is licensed under the GNU GPL, version 3 or later ([LICENSE](LICENSE)); the KalangoOS name, mascot and
 logos are the project's brand and are not covered by it ([LICENSE-brand.txt](LICENSE-brand.txt)).
