@@ -127,6 +127,63 @@ Agrupadas por domínio. Cada ferramenta declara o efeito (leitura, escreve, dest
 | Sistema | atualização, ponto de restauração, recuperação |
 | Comando livre | executar qualquer comando como root (só no nível 3) |
 
+### 3.3.1 Criar agentes e fluxos pelo chat (contrato)
+
+As ferramentas `agentes.criar`, `agentes.editar`, `fluxos.criar` e `fluxos.editar` (`crates/kalangod/src/tools/plataforma.rs`
+e `plataforma_contrato.rs`) são usadas por um modelo pequeno, então o formato exato está no esquema que ele lê e o
+servidor perdoa o que é seguro perdoar. Criar ou editar continua perguntando sempre à pessoa, que vê o que vai existir.
+
+- **Agente:** `{name, description?, kind: assistant|sequential|parallel|loop, config: {instruction, tools: [{name, permission:
+  free|ask|never}], sub_agents?}}`. O `id` é opcional ao criar: nasce do nome (minúsculas ASCII com hífens, até 40
+  caracteres; `-2`, `-3` se já existe, conferido com `agents.list`; se a lista não puder ser lida, um final aleatório
+  com nota). Um `id` que não é texto ou não é válido vira esse slug e o resultado traz a nota (`ajustes`). Ferramenta
+  dada só pelo nome, ou com `permission` nula, fica "perguntar". Um assistente sem instruções usa a descrição; sem as
+  duas, erro. `sub_agents` são objetos `{agent_id, mode}` num assistente e ids simples numa equipe. Para editar, o `id`
+  é obrigatório. Formas fora do esperado (`tools: [1]`, `config` que não é objeto…) são erro claro, nunca pânico.
+- **Mudar um agente:** parte do agente como ele está (lido com `agents.get`): só os campos enviados são trocados e tudo o
+  que a pessoa já tem (modelo, `allow_cloud`, sandbox, ícone…) fica como está. Só `name`, `description`, `kind` e
+  `config.{instruction, tools, sub_agents, member_instruction, max_iterations}` podem ser enviados; qualquer outro
+  campo é recusado com um erro que diz isso. A aprovação traz uma linha `campo: antigo → novo` para cada campo que muda.
+- **O que segue:** ao criar, só `id`, `name`, `description`, `kind` e `config.{instruction, tools, sub_agents,
+  member_instruction, max_iterations}`; o resto (`model`, `allow_cloud`, `sandbox`, `icon`…) fica de fora, com nota. Num
+  fluxo, só `nodes` e `edges` (`limits`, `inputs` e `input_map` ficam de fora) e, por bloco, `id`, `type`, `data`,
+  `title`, `position` e `parent` (este só quando aponta para um bloco `sandbox`); `disabled` e chaves desconhecidas
+  saem com nota. No máximo 200 blocos e 500 conexões; uma conexão que não é objeto sai com nota.
+- **Mudar um fluxo** troca o fluxo inteiro (o serviço grava o grafo novo no lugar do antigo): `limits`, `inputs`,
+  `input_map` e o estado "desligado" de cada bloco do fluxo antigo não são mantidos, e a aprovação diz quais eram.
+- **Fluxo:** `{nodes: [{id, type, data}], edges: [{source, target, sourceHandle?}]}`. A execução começa no primeiro
+  bloco a que nada leva (ponha-o primeiro) e todo bloco precisa ser alcançado por conexões, como a plataforma exige. Os 19
+  tipos válidos (com o propósito e o `data` mínimo de cada um) estão na descrição da ferramenta, junto de um fluxo
+  completo de exemplo; a lista bate com a paleta do editor (`crates/kalango-shell/src/fluxo_modelo.rs`), e um teste
+  confere. Vale só esses tipos: se a tarefa precisa de algo sem bloco (escutar o navegador ao vivo), usa-se o mais
+  próximo e a pessoa é avisada.
+- **Saídas:** `condition` tem uma saída por id de condição e a do "senão", `sourceHandle: "bottom-handle"` (o servidor
+  aceita `else`; e uma condição com uma só condição e duas conexões sem saída nomeada fica com a condição na primeira e o
+  senão na segunda, com nota); `approval` tem `sim` e `não`; `decide` tem `true`, `false` e `pouca_confianca` (ou as chaves de
+  `choice` / os índices de `score`); `for_each` tem `empty`. Uma saída que o bloco não tem é erro, com a lista das que tem.
+- **Tolerância do servidor:** `id` de bloco ausente (`n1`, `n2`…), `position` ausente (grade da esquerda para a direita),
+  conexões com `from`/`to` e pontas com espaços, conexões ausentes (blocos ligados em sequência, quando não há
+  ramificação) e conexões para blocos que não existem (ficam de fora, com nota). Um `type` inexistente devolve a lista
+  válida e o tipo mais próximo, para o modelo acertar na segunda tentativa.
+- **Dados que faltam:** só cinco blocos ganham o valor inicial do editor, com nota dizendo exatamente isso, porque o
+  vazio deles não faz nada: `message`, `notify`, `ask` (mensagem), `set_variables` e `wait` (60 s). Tudo o que
+  executa, escreve ou a plataforma recusa vazio (`agent_id`, `flow_id`, `template`, `entry`, `tool`, `out`, `file`, a
+  pergunta de `decide`, as condições de `condition`) nunca é preenchido: o erro diz o que falta e dá um exemplo.
+- **A aprovação mostra tudo o que roda ou escreve, inteiro**, uma linha por campo e sem quebras de linha nem caracteres
+  invisíveis (um texto do modelo não consegue forjar uma linha da prévia). Um campo que executa (instruções,
+  `member_instruction`, argumentos, mensagens, `out`…) com mais de 1500 caracteres, ou um item com mais de 24000, é
+  recusado com "longo demais para ser mostrado: encurte"; nada é cortado. Os argumentos de uma ação de sistema saem uma
+  linha por chave. Por bloco: `tool` e `arguments` de uma ação de sistema, `agent_id` e `message`, `flow_id`,
+  `template`, `network`, `on_end` e `entry` da sandbox, o `out` (arquivo que será escrito) e o `text` de `speak`, o `file`
+  (vazio em `describe_image` diz que tira uma captura da tela), as condições, o nome do bloco separado dos dados e,
+  por fim as outras chaves de `data`, com valor. Depois vêm as conexões, e o item aprovado (o id incluído) é o aplicado, guardado
+  por chamador (usuário e regra) por dez minutos e usado uma só vez.
+- **O que nunca é afrouxado:** a ferramenta e os argumentos de um `system_action`, as permissões das ferramentas do
+  agente e o teto do criador (a plataforma recorta de novo ao aplicar) continuam como a pessoa e a plataforma decidiram.
+- **Testes:** funções puras em `plataforma_contrato.rs` e `plataforma.rs`; cenários com o modelo real em
+  `crates/kalango-agente/tests/criar.rs` (só o serviço da plataforma é um dublê, em `tests/fixtures/`, que porta as
+  verificações do serviço real; `KALANGO_CRIAR_REAL=<kalango-fluxosd>` roda os mesmos cenários no serviço real).
+
 ### 3.4 Níveis de poder
 
 | Nível | O que permite | Como é concedido |

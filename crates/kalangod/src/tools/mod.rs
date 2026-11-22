@@ -9,6 +9,7 @@ pub mod navegador;
 pub mod live_browser;
 pub mod gpu;
 pub mod plataforma;
+pub mod plataforma_contrato;
 pub mod maquinas;
 pub mod web;
 pub mod tela;
