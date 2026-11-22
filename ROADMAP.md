@@ -21,6 +21,7 @@ pela esteira de lançamento (veja [CHANGELOG.md](CHANGELOG.md) e [docs/NOTAS-0.1
 | 6 | **Hardware real**: matriz NVIDIA, AMD e Intel, a ISO com o modelo local quando as licenças forem revistas | Próximo |
 | 7 | **Kalango Audio nos fluxos e nos agentes**: ferramentas `audio.*`, blocos "Áudio · capturar" e gatilho ao vivo por transcrição (sem passar por um arquivo) | Ideia; detalhes abaixo |
 | 8 | **Suporte remoto com o Kalango Remote**: máquinas salvas, consultar (só leitura) e agir (com aprovação) por fluxos e agentes | Ideia; detalhes abaixo |
+| 9 | **Gatilho de entrada pela internet** (como o webhook do n8n): uma URL pública gerada, ou um domínio próprio apontado para um túnel da Cloudflare, que dispara um fluxo | Ideia; detalhes abaixo |
 
 ## Fases
 
@@ -66,6 +67,32 @@ faz nada depois que ela abre. A ideia é integrá-los de forma nativa, na ordem 
 Cada passo passa pelas mesmas verificações dos demais: testes com o modelo real, revisão de segurança às cegas e uma
 captura contra o desenho no Design System antes de entrar.
 
+### Gatilho de entrada pela internet
+
+Hoje o gatilho "Webhook local" só recebe chamadas deste computador. A ideia é um gatilho de entrada pela internet, como o
+webhook do n8n: algo de fora (um serviço, um formulário, outro computador) chama uma URL e um fluxo roda. O
+`cloudflared` que o Kalango Remote já usa para compartilhar a tela dá o caminho:
+
+- **URL gerada, sem conta.** Um túnel rápido da Cloudflare dá um endereço aleatório e temporário (`*.trycloudflare.com`),
+  bom para testar e para uso eventual. O endereço muda a cada vez que o túnel abre.
+- **Domínio próprio.** Para um endereço fixo, a pessoa cria um túnel nomeado na Cloudflare e aponta um domínio dela para
+  ele. O token do túnel vai para o cofre do sistema; o KalangoOS roda o `cloudflared` como serviço da pessoa e liga o
+  túnel ao receptor local de gatilhos. Um túnel serve vários gatilhos, cada um com o seu caminho.
+- **Um receptor mínimo, só dele.** Um servidor HTTP pequeno, preso a uma porta local, que só aceita os caminhos dos gatilhos
+  ligados, com limite de tamanho do corpo e de pedidos por minuto. Responde na hora com um número de execução; o fluxo roda
+  em seguida (e, se o gatilho pedir, devolve o resultado).
+- **Segurança, porque isso abre uma porta para o mundo.** Abrir um túnel é uma decisão da pessoa e pede aprovação, com um
+  indicador sempre visível enquanto ele estiver aberto e um botão de fechar. Cada gatilho tem um segredo próprio e
+  assinatura do pedido (HMAC, com data para barrar repetição), caminho impossível de adivinhar e liga/desliga individual;
+  como opção, a lista de quem pode chamar (Cloudflare Access). O corpo que chega é conteúdo externo: passa pela defesa de
+  contaminação e nunca vira argumento de uma ferramenta que age no sistema sem a aprovação de sempre. Tudo vai para a Linha
+  do tempo, e um interruptor geral derruba todos os túneis.
+- **Privacidade, dita com clareza.** O tráfego passa pela Cloudflare. Quem não quiser isso fica no webhook local; outros
+  túneis (Tailscale Funnel, por exemplo) entram depois como adaptadores.
+
+Passa pelas mesmas verificações dos demais: testes com um servidor de verdade e o modelo real, revisão de segurança às cegas
+e captura contra o desenho antes de entrar.
+
 Numeração e canais: [docs/LANCAMENTO.md](docs/LANCAMENTO.md).
 
 ## Decisões em aberto
@@ -79,7 +106,8 @@ Numeração e canais: [docs/LANCAMENTO.md](docs/LANCAMENTO.md).
 **English summary.** Next steps: real hardware (the NVIDIA, AMD and Intel matrix), the
 rest of the screens, then AG-UI 1.0 between the agent and the interface. Planned ideas, with no date: Kalango Audio
 and Kalango Remote as native parts of flows and agents (a live audio source and trigger; a remote-support flow that first
-only reads from the machines you can reach, then acts with approval). Version 0.1.0 is a technical preview: it
+only reads from the machines you can reach, then acts with approval), and an internet-facing trigger like n8n's
+webhook, through a Cloudflare tunnel (a generated URL or your own domain). Version 0.1.0 is a technical preview: it
 has an installable ISO that the release workflow builds and tests in a VM (live session, installer, installed system
 boots), the shell on a patched niri, `kalangod` and local agents. Real-hardware validation is still pending; see
 [CHANGELOG.md](CHANGELOG.md).
