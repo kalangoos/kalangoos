@@ -21,6 +21,33 @@
 3. **Motor de agentes**: separação entre instrução e dado, orçamento, permissões por agente.
 4. **Interface**: aprovações e indicadores desenhados pelo sistema; "pausar tudo".
 
+### Dado local no endereço da web
+
+Uma chamada que pode levar texto para a rede (ferramentas `web.*`, conectores, e comandos que trazem um endereço
+`http(s)://…`) não pode levar para fora um dado lido neste computador (arquivo, sistema, tela, memória) que a pessoa
+não escreveu. O segredo não precisa aparecer inteiro e sozinho para ser barrado. O motor monta candidatos a segredo a
+partir do conteúdo local: cada token e suas partes, sequências de dígitos que atravessam separadores (cartão
+`4111 1111 1111 1111`, CPF `123.456.789-09`, telefone, `58213-9` como `582139`), o token sem separadores, e-mails e
+palavras longas (para as formas codificadas) e janelas de 24 caracteres de tokens muito longos (chaves, JWT, PEM).
+Cada candidato é procurado no endereço normalizado: percent-encoding até não mudar mais (também `%uXXXX`),
+entidades HTML (`&#53;`, `&#x35;`), caracteres parecidos (NFKC: dígitos e letras de largura total), caracteres de
+largura zero removidos, sem diferenciar maiúsculas e acentos, colado a outros caracteres (`/conta-58213-9`,
+`58213.evil.example`, `https://58213@host`, `x58213y`), em base64 (3 alinhamentos, alfabeto padrão e seguro para URL,
+com e sem preenchimento) e em hex.
+
+Para não barrar chamadas comuns: um número precisa de 4 dígitos e não ser ano (1900 a 2100), data ou versão
+(`v1.2.3`); porta não é dado; uma palavra com número (`ubuntu24`, `sha256sum`, `python312`, `utf8mb4`) não é segredo
+(sem separadores exige 8 caracteres com metade de dígitos, ou 12); um número maior que contém o trecho não conta
+(`/item/14821` não leva o PIN `4821`); o que a pessoa escreveu é dela; um site que páginas ou buscas já mostraram pode
+ser visitado; as formas codificadas precisam de pelo menos 5 caracteres de origem e 6 de saída.
+
+Limites que a regra não cobre (inerentes a quem só vê o endereço): texto invertido, rot13, base32/base58, XOR,
+caracteres de ruído intercalados no meio do segredo, segredo dividido entre parâmetros ou rótulos de domínio,
+base64 em minúsculas num rótulo de DNS, e o que vai fora do endereço (corpo de POST, fragmento). O resto da defesa
+(aprovação, nível de poder, rede bloqueada para ferramentas isoladas) continua valendo.
+A regra está em `crates/kalango-agente/src/defesa.rs` (`glued_secret`) e é testada por funções puras e com o modelo
+real (`tests/web.rs`).
+
 ## Processo
 
 - Divulgação responsável em `kalangoos.com/seguranca` (a publicar), com resposta em até 5 dias úteis.
