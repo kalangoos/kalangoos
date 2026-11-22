@@ -17,6 +17,7 @@ libc = "0.2"
 toml = "0.8"
 # the App Center reads the Flatpak remotes' AppStream catalogs
 quick-xml = "0.41"
+kalango-modelos = { path = "../kalango-modelos" }
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 kalango-movimento = { path = "../kalango-movimento" }
 kalango-i18n = { path = "../kalango-i18n" }

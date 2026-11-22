@@ -9,7 +9,7 @@
 //!   kalangod tela pessoa|parar|estado                         controle da tela por um agente (niri e o shell chamam)
 //!   kalangod ferramentas                                      ferramentas disponíveis para este processo
 //!   kalangod conector testar|rodar|entrar MANIFESTO           conector MCP de terceiros (local isolado ou remoto)
-//!   kalangod cofre guardar|apagar NOME | cofre listar         segredos dos conectores (chaveiro do sistema)
+//!   kalangod cofre guardar|ler|apagar NOME | cofre listar     segredos dos conectores e do download de modelos (chaveiro do sistema)
 //!
 //! O soquete padrão é /run/kalango/mcp.sock; KALANGOD_SOCKET muda isso.
 
@@ -136,6 +136,17 @@ fn main() {
             .map(|v| println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default())),
         ["cofre", "guardar", nome] => cofre::read_secret_stdin().and_then(|v| cofre::put(nome, &v)).map(|onde| println!("{}", trf("'{name}' saved ({place})", &[("name", nome.to_string()), ("place", onde.to_string())]))),
         ["cofre", "apagar", nome] => cofre::delete(nome).map(|ok| println!("{}", if ok { trf("'{name}' deleted", &[("name", nome.to_string())]) } else { trf("'{name}' did not exist", &[("name", nome.to_string())]) })),
+        // (only the models' download token can be read back this way: other secrets are not handed out by the command line)
+        ["cofre", "ler", nome] => {
+            if !cofre::READABLE.contains(nome) {
+                Err(trf("'{name}' cannot be read this way", &[("name", nome.to_string())]))
+            } else {
+                cofre::get(nome).and_then(|v| v.ok_or_else(|| trf("'{name}' did not exist", &[("name", nome.to_string())]))).map(|v| {
+                    print!("{v}");
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                })
+            }
+        }
         ["cofre", "listar"] => {
             for n in cofre::list() {
                 println!("{n}");

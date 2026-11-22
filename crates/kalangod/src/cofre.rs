@@ -86,6 +86,9 @@ pub fn put(nome: &str, valor: &str) -> Result<&'static str, String> {
     }
 }
 
+/// The secrets `kalangod cofre ler` may print: the token of the models' private server, nothing else.
+pub const READABLE: &[&str] = &["kalango.modelos.token"];
+
 pub fn get(nome: &str) -> Result<Option<String>, String> {
     let nome = valid(nome)?;
     Ok(match modo() {

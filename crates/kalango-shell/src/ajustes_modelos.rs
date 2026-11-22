@@ -522,6 +522,10 @@ impl ModelsTab {
         crate::central::posicao_debug_sempre("ajustes adicionar provedor", adicionar.upcast_ref());
         topo.append(&adicionar);
         col.append(&topo);
+        // where the models come from (design "Ajustes · Fonte dos modelos")
+        let fonte = crate::modelos_fonte::SourceCard::new();
+        fonte.root.set_margin_top(14);
+        col.append(&fonte.root);
 
         // the new provider (inline, under the intro)
         let form = gtk::Revealer::new();

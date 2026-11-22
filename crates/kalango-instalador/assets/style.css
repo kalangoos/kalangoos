@@ -13,6 +13,7 @@ window.instalador { background: #16171B; border: 1px solid #26272F; border-radiu
 .inst-passo-linha { background: #3A3B47; min-height: 1px; }
 .inst-titulo { font-family: "Ubuntu", "Inter", sans-serif; font-size: 26px; font-weight: 700; color: #E2E2E6; }
 .inst-sub { font-size: 12px; color: #8E8F99; }
+.inst-sub.grande { font-size: 13px; }
 .inst-sub-verde { font-size: 12px; color: #8ED2C3; }
 .inst-sub-verde.fraca { color: #EFA2A6; }
 .inst-texto { font-size: 13px; color: #E2E2E6; }
@@ -22,11 +23,11 @@ window.instalador { background: #16171B; border: 1px solid #26272F; border-radiu
 button.inst-linha-botao { all: unset; border-radius: 4px; outline: 1.5px solid transparent; outline-offset: -1.5px; }
 button.inst-linha-botao:hover { background: alpha(#FFFFFF, 0.03); }
 button.inst-linha-botao:focus-visible { outline-color: @k_accent; }
-button.inst-escolha, button.inst-disco { all: unset; background: #1C1D23; border: 1px solid #26272F; border-radius: 6px; padding: 14px 16px; outline: 2px solid transparent; outline-offset: 2px;
+button.inst-escolha, button.inst-disco, button.inst-fonte { all: unset; background: #1C1D23; border: 1px solid #26272F; border-radius: 6px; padding: 14px 16px; outline: 2px solid transparent; outline-offset: 2px;
   transition: border-color 160ms ease-out, background 160ms ease-out; }
-button.inst-escolha:hover, button.inst-disco:hover { background: #20212A; }
-button.inst-escolha:checked, button.inst-disco:checked { background: #22232E; border-color: @k_accent; }
-button.inst-escolha:focus-visible, button.inst-disco:focus-visible { outline-color: @k_accent; }
+button.inst-escolha:hover, button.inst-disco:hover, button.inst-fonte:hover { background: #20212A; }
+button.inst-escolha:checked, button.inst-disco:checked, button.inst-fonte:checked { background: #22232E; border-color: @k_accent; }
+button.inst-escolha:focus-visible, button.inst-disco:focus-visible, button.inst-fonte:focus-visible { outline-color: @k_accent; }
 .inst-escolha-icone { background: #2A2B35; border-radius: 6px; color: #B9BAC4; }
 .inst-escolha-titulo { font-size: 14px; font-weight: 600; color: #E2E2E6; }
 dropdown.inst-seletor > button { background: #1A1B21; border: 1px solid #26272F; border-radius: 4px; box-shadow: none; padding: 0 10px; min-height: 30px; font-size: 12px; color: #E2E2E6; }
@@ -81,7 +82,46 @@ button.inst-seguir:hover { background: shade(@k_accent, 1.06); }
 button.inst-seguir:disabled { opacity: 0.5; }
 button.inst-seguir.perigo { background: #EFA2A6; }
 button.inst-seguir:focus-visible { outline-color: @k_accent; }
+/* the AI models' step (design "Instalador · Modelos de IA") */
+button.inst-fonte { padding: 12px 14px; }
+button.inst-fonte:checked .inst-escolha-icone { background: alpha(@k_accent, 0.22); color: @k_accent; }
+scrolledwindow.inst-rolagem, scrolledwindow.inst-rolagem > viewport { background: transparent; }
+.inst-modelos-pagina { padding: 0 0 18px 0; }
+.inst-sub-rot { font-size: 12px; color: #B9BAC4; }
+.inst-forte { font-size: 12px; font-weight: 600; color: #E2E2E6; }
+.inst-forte.ruim { color: @k_coral; }
+.inst-modelo { font-size: 12px; color: #B9BAC4; }
+.inst-mono { font-family: "Ubuntu Mono", "DejaVu Sans Mono", monospace; }
+.inst-modelos { padding: 6px 12px; }
+.inst-linha-modelo { min-height: 32px; }
+.inst-linha-modelo .apagado { opacity: 0.5; }
+.inst-totais { padding: 0 2px; }
+button.inst-botao { all: unset; background: #24252D; border-radius: 4px; padding: 0 12px; min-height: 34px; font-size: 12px; font-weight: 600; color: #E2E2E6; outline: 2px solid transparent; outline-offset: 1px; }
+button.inst-botao:hover { background: #2A2B35; }
+button.inst-botao:disabled { opacity: 0.5; }
+button.inst-botao:focus-visible { outline-color: @k_accent; }
+.inst-aviso { border-radius: 6px; padding: 9px 14px; border: 1px solid transparent; }
+.inst-aviso.info, .inst-aviso.seguro { background: #1C1D23; border-color: #26272F; }
+.inst-aviso.ok { background: alpha(@k_teal, 0.12); }
+.inst-aviso.erro { background: alpha(@k_red, 0.14); }
+.inst-aviso.aviso { background: alpha(@k_gold, 0.10); }
+.inst-aviso.info image { color: #8E8F99; }
+.inst-aviso.seguro image { color: @k_teal; }
+.inst-aviso.ok image { color: @k_teal; }
+.inst-aviso.erro image { color: @k_red; }
+.inst-aviso.aviso image { color: @k_gold; }
+.inst-aviso-titulo { font-size: 13px; font-weight: 600; color: #E2E2E6; }
+.inst-aviso-titulo.simples { font-size: 12px; font-weight: 400; color: #B9BAC4; }
+.inst-aviso-detalhe { font-size: 12px; color: #8E8F99; }
+button.inst-aviso-acao { all: unset; background: alpha(#FFFFFF, 0.06); border-radius: 4px; padding: 0 12px; min-height: 30px; font-size: 12px; font-weight: 600; color: #E2E2E6; outline: 2px solid transparent; outline-offset: 1px; }
+button.inst-aviso-acao:hover { background: alpha(#FFFFFF, 0.10); }
+button.inst-aviso-acao:focus-visible { outline-color: @k_accent; }
+.inst-chip { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 4px; background: #2A2B35; color: #8E8F99; }
+.inst-chip.bom { background: alpha(@k_teal, 0.18); color: @k_teal; }
+.inst-chip.aviso { background: alpha(@k_gold, 0.16); color: @k_gold; }
+.inst-chip.ruim { background: alpha(@k_red, 0.2); color: @k_coral; }
+entry.inst-campo image { color: #8E8F99; }
 /* help to see: high contrast */
 window.instalador.alto-contraste { background: #000000; border-color: #FFFFFF; }
-window.instalador.alto-contraste .inst-lateral, window.instalador.alto-contraste .inst-cartao, window.instalador.alto-contraste button.inst-escolha, window.instalador.alto-contraste button.inst-disco { background: #000000; border-color: #FFFFFF; }
+window.instalador.alto-contraste .inst-lateral, window.instalador.alto-contraste .inst-cartao, window.instalador.alto-contraste button.inst-escolha, window.instalador.alto-contraste button.inst-disco, window.instalador.alto-contraste button.inst-fonte { background: #000000; border-color: #FFFFFF; }
 window.instalador.alto-contraste .inst-sub, window.instalador.alto-contraste .inst-contagem, window.instalador.alto-contraste .inst-passo { color: #FFFFFF; }

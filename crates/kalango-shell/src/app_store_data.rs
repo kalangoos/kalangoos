@@ -16,7 +16,6 @@ use gtk::glib;
 use kalango_i18n::{n_, tr};
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -438,37 +437,11 @@ pub fn autonomy_text(a: &str) -> &'static str {
 
 // ------------------------------------------------------------------------------------------------ models
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub struct ModelFile {
-    pub url: String,
-    pub nome: String,
-    pub bytes: u64,
-}
+pub use kalango_modelos::catalog::{ModelEntry, ModelFile};
 
-/// A model of the catalog: its files (the weights and, for voice and vision, the projector).
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub struct ModelEntry {
-    pub id: String,
-    pub nome: String,
-    pub descricao: String,
-    /// "texto", "voz" or "visao"
-    #[serde(default)]
-    pub tipo: String,
-    pub arquivos: Vec<ModelFile>,
-}
-
-impl ModelEntry {
-    pub fn bytes(&self) -> u64 {
-        self.arquivos.iter().map(|f| f.bytes).sum()
-    }
-    /// The weights' file (not the projector).
-    pub fn main_file(&self) -> Option<&ModelFile> {
-        self.arquivos.iter().find(|f| !f.nome.contains("mmproj")).or(self.arquivos.first())
-    }
-}
-
+/// The catalog with each file's SHA-256 (a catalog the engine cannot read counts as empty).
 pub fn model_catalog() -> Vec<ModelEntry> {
-    data_file("modelos.json").and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    data_file("modelos.json").and_then(|t| kalango_modelos::catalog::parse_catalog(&t).ok()).unwrap_or_default()
 }
 
 /// Where the models are (the person's, the system's) and where a download goes (the person's).
@@ -573,49 +546,26 @@ pub struct Transfer {
     pub cancel: Arc<AtomicBool>,
 }
 
-/// Downloads a model's files into `dir` (each through a ".part" file, renamed when whole). `file://` sources are
-/// copied (a local mirror). Off the interface's thread.
+/// Downloads a model's files into `dir` from the catalog's own addresses, through the verifying engine (".part" files,
+/// resumed; size and SHA-256 checked before a file is kept). Off the interface's thread.
 pub fn download(files: &[ModelFile], dir: &Path, t: &Transfer) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let mut base = 0u64;
-    for f in files {
-        let dest = dir.join(&f.nome);
-        if dest.is_file() {
-            base += f.bytes;
-            t.done.store(base, Ordering::Relaxed);
-            continue;
-        }
-        let part = dir.join(format!("{}.part", f.nome));
-        let mut reader: Box<dyn Read> = match f.url.strip_prefix("file://") {
-            Some(p) => Box::new(std::fs::File::open(p).map_err(|e| format!("{p}: {e}"))?),
-            None => Box::new(ureq::get(&f.url).call().map_err(|e| e.to_string())?.into_reader()),
-        };
-        let mut out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
-        let mut buf = vec![0u8; 1 << 16];
-        let mut got = 0u64;
-        loop {
+    let ctl = kalango_modelos::download::Control::default();
+    let t2 = t.clone();
+    let r = std::thread::scope(|sc| {
+        let h = sc.spawn(|| kalango_modelos::download::download_files(files, dir, &kalango_modelos::download::Source::Default, &ctl, &kalango_modelos::download::Options::default(), &mut |e| {
+            if let kalango_modelos::download::Event::Progress { done, .. } = e {
+                t2.done.store(done, Ordering::Relaxed);
+            }
+        }));
+        while !h.is_finished() {
             if t.cancel.load(Ordering::Relaxed) {
-                drop(out);
-                let _ = std::fs::remove_file(&part);
-                return Err("cancelado".into());
+                ctl.cancel.store(true, Ordering::Relaxed);
             }
-            let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
-            if n == 0 {
-                break;
-            }
-            out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-            got += n as u64;
-            t.done.store(base + got, Ordering::Relaxed);
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        out.flush().map_err(|e| e.to_string())?;
-        if f.bytes > 0 && got != f.bytes {
-            let _ = std::fs::remove_file(&part);
-            return Err(format!("{}: {got} de {} bytes", f.nome, f.bytes));
-        }
-        std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
-        base += got;
-    }
-    Ok(())
+        h.join().unwrap_or(Err(kalango_modelos::download::DownloadError::Io("download thread".into())))
+    });
+    r.map_err(|e| format!("{e:?}"))
 }
 
 #[cfg(test)]
@@ -715,19 +665,4 @@ dominios = ["github.com"]
         assert_eq!(c[2].2, Tone::Network);
     }
 
-    #[test]
-    fn downloads_a_local_mirror_through_a_part_file() {
-        let d = std::env::temp_dir().join(format!("kalango-loja-teste-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        let src = d.join("fonte.gguf");
-        std::fs::write(&src, vec![7u8; 200_000]).unwrap();
-        let files = vec![ModelFile { url: format!("file://{}", src.display()), nome: "m.gguf".into(), bytes: 200_000 }];
-        let t = Transfer::default();
-        download(&files, &d.join("modelos"), &t).unwrap();
-        assert_eq!(std::fs::metadata(d.join("modelos/m.gguf")).unwrap().len(), 200_000);
-        assert!(!d.join("modelos/m.gguf.part").exists());
-        assert_eq!(t.done.load(Ordering::Relaxed), 200_000);
-        let _ = std::fs::remove_dir_all(&d);
-    }
 }

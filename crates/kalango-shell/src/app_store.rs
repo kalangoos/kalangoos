@@ -156,6 +156,7 @@ pub struct AppStore {
     agents: Section,
     apps: Section,
     models: Section,
+    downloads: Rc<crate::modelos_fonte::Downloads>,
     updates: Section,
     system_updates: gtk::Box,
     empty: gtk::Label,
@@ -401,9 +402,11 @@ impl AppStore {
         let agents = Section::new(tr("Trending agents"), AGENT_MIN, "agentes");
         let apps = Section::new(tr("Essential apps"), CARD_MIN, "apps");
         let models = Section::new(tr("Local models"), CARD_MIN, "modelos");
+        let downloads = crate::modelos_fonte::Downloads::new();
         let updates = Section::new(tr("Updates"), CARD_MIN, "atualizacoes");
         updates.more.set_label(tr("Update all"));
         let system_updates = caixa(Orientation::Horizontal, 10, "loja-nota");
+        page.append(&downloads.root);
         for s in [&agents, &apps, &models, &updates] {
             page.append(&s.root);
         }
@@ -432,7 +435,7 @@ impl AppStore {
         window.set_child(Some(&root));
 
         let s = Rc::new(AppStore {
-            window, shell: Rc::downgrade(shell), rail, search, hero, hero_art, chips_row, chips, agents, apps, models, updates, system_updates, empty,
+            window, shell: Rc::downgrade(shell), rail, search, hero, hero_art, chips_row, chips, agents, apps, models, downloads, updates, system_updates, empty,
             page: Cell::new("descobrir"), category: Cell::new(0), width: Cell::new(0), catalog: RefCell::new(Rc::new(Vec::new())), catalog_state: Cell::new(0),
             shelf: RefCell::default(), agent_list: RefCell::default(), model_list: RefCell::default(), flatpaks: RefCell::default(), user_remotes: RefCell::default(),
             pending_updates: RefCell::default(), jobs: RefCell::default(), bars: RefCell::default(), ticking: Cell::new(false), refresh_pending: RefCell::default(),
@@ -740,7 +743,9 @@ impl AppStore {
         if !cat.is_empty() {
             return vec![];
         }
-        self.model_list.borrow().iter().filter(|m| q.is_empty() || m.nome.to_lowercase().contains(&q) || m.descricao.to_lowercase().contains(&q)).cloned().collect()
+        // (on the models' page the five kinds are the downloads' rows above)
+        let only_others = self.page.get() == "modelos";
+        self.model_list.borrow().iter().filter(|m| !(only_others && crate::modelos_fonte::is_slot(&m.id))).filter(|m| q.is_empty() || m.nome.to_lowercase().contains(&q) || m.descricao.to_lowercase().contains(&q)).cloned().collect()
     }
 
     // ------------------------------------------------------------------------------------------ the page
@@ -826,6 +831,7 @@ impl AppStore {
             self.models.more.set_visible(discover && q.is_empty());
         }
         self.models.root.set_visible(show_models && counts.2 > 0);
+        self.downloads.root.set_visible(page == "modelos" && q.is_empty());
         // updates
         let show_updates = page == "atualizacoes";
         self.updates.clear();

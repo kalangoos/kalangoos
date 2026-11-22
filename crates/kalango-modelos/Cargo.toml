@@ -1,0 +1,19 @@
+[package]
+name = "kalango-modelos"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+description = "KalangoOS · where the AI models come from: catalog with checksums, the chosen source, and a verifying download engine"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+sha2 = "0.10"
+url = "2"
+libc = "0.2"
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+[dev-dependencies]
+tempfile = "3"

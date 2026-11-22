@@ -9,6 +9,9 @@
 //! Debug (KALANGO_INSTALADOR_DEBUG): "debug instalador: …" lines and the controls' places.
 
 mod discos;
+mod modelos_logica;
+mod modelos_ui;
+mod volume;
 mod motor;
 
 use discos::{Disk, Mode, Plan};
@@ -64,7 +67,7 @@ fn lugar(nome: &str, w: &impl IsA<gtk::Widget>) {
     });
 }
 
-const PASSOS: &[&str] = &[kalango_i18n::n_("Welcome"), kalango_i18n::n_("Disk"), kalango_i18n::n_("Account"), kalango_i18n::n_("Installation")];
+const PASSOS: &[&str] = &[kalango_i18n::n_("Welcome"), kalango_i18n::n_("Disk"), kalango_i18n::n_("Account"), kalango_i18n::n_("AI models"), kalango_i18n::n_("Installation")];
 
 const DICAS: &[(&str, &str)] = &[
     (kalango_i18n::n_("Ask in your own words"), kalango_i18n::n_("“find the October invoice” — the search bar answers with the file, or does it.")),
@@ -78,6 +81,9 @@ struct Instalador {
     janela: gtk::ApplicationWindow,
     passo: Cell<usize>,
     paginas: Vec<(gtk::Box, Animavel)>,
+    modelos: Rc<modelos_ui::Modelos>,
+    raiz: gtk::Box,
+    estreito: bool,
     marcas: Vec<(gtk::Box, gtk::Label)>,
     titulo: gtk::Label,
     sub: gtk::Label,
@@ -133,7 +139,8 @@ impl Instalador {
     fn new(app: &gtk::Application) -> Rc<Instalador> {
         let janela = gtk::ApplicationWindow::new(app);
         janela.set_title(Some(tr("Install KalangoOS")));
-        janela.set_default_size(1040, 660);
+        let estreito = estreita();
+        janela.set_default_size(largura(estreito), 660);
         janela.set_resizable(false);
         janela.add_css_class("instalador");
         let nada = gtk::Box::new(Orientation::Horizontal, 0);
@@ -169,6 +176,8 @@ impl Instalador {
         esq.append(&base);
         let alca = gtk::WindowHandle::new();
         alca.set_child(Some(&esq));
+        // (a narrow window, as the design draws it, has no left side)
+        alca.set_visible(!estreito);
         raiz.append(&alca);
         // the right: the steps
         let dir = caixa(Orientation::Vertical, 0, "inst-direita");
@@ -478,7 +487,7 @@ impl Instalador {
         p4.append(&barra);
         let lista = caixa(Orientation::Vertical, 2, "inst-cartao");
         let mut etapas = Vec::new();
-        for (id, nome_e) in [("disco", tr("Prepare the disk")), ("copiar", tr("Copy the system")), ("drivers", tr("Install graphics drivers")), ("modelo", tr("Download the local model")), ("final", tr("Finish"))] {
+        for (id, nome_e) in [("disco", tr("Prepare the disk")), ("copiar", tr("Copy the system")), ("drivers", tr("Install graphics drivers")), ("modelo", tr("Record where the AI models come from")), ("final", tr("Finish"))] {
             let r = caixa(Orientation::Horizontal, 10, "inst-etapa");
             let marca = gtk::Stack::new();
             marca.set_size_request(16, 16);
@@ -514,7 +523,11 @@ impl Instalador {
         let dica = Animavel::new(&dica_card);
         p4.append(&dica);
 
-        let paginas: Vec<(gtk::Box, Animavel)> = [p1, p2, p3, p4].into_iter().map(|p| {
+        // ---- 4 · the AI models' source (the installer only records the choice)
+        let modelos = modelos_ui::Modelos::new(&janela, estreito);
+        let p_modelos = caixa(Orientation::Vertical, 0, "");
+        p_modelos.append(&modelos.root);
+        let paginas: Vec<(gtk::Box, Animavel)> = [p1, p2, p3, p_modelos, p4].into_iter().map(|p| {
             let a = Animavel::new(&p);
             a.set_vexpand(true);
             (p, a)
@@ -524,7 +537,7 @@ impl Instalador {
             a.set_visible(false);
         }
         let i = Rc::new(Instalador {
-            janela, passo: Cell::new(0), paginas, marcas, titulo, sub, voltar, contagem, seguir,
+            janela, passo: Cell::new(0), paginas, modelos, raiz: raiz.clone(), estreito, marcas, titulo, sub, voltar, contagem, seguir,
             instalar, idioma, idiomas: RefCell::default(), teclado, teclados: RefCell::default(), rede,
             discos: RefCell::default(), disco: Cell::new(0), discos_box, modo_ao_lado, modo_apagar, manual, divisao, divisao_txt, fracao: Cell::new(0.6), cripto,
             nome, usuario, usuario_tocado: Cell::new(false), computador, senha, senha2, forca, forca_txt, confere, sem_senha, digital, avatar: RefCell::default(),
@@ -534,6 +547,42 @@ impl Instalador {
         i.ligar(&experimentar, &rede_b, &contraste, &leitor, &escolher_foto, &av_letra);
         i.ler_sistema();
         i.ir(0);
+        // session tests and captures: start on a step, with a source filled in ("KALANGO_INSTALADOR_MODELOS=1|https://…")
+        if debug() {
+            if let Some(p) = std::env::var("KALANGO_INSTALADOR_PASSO").ok().and_then(|p| p.parse::<usize>().ok()) {
+                i.ir(p.min(3));
+            }
+            if let Some(dest) = std::env::var_os("KALANGO_INSTALADOR_CAPTURA") {
+                // (the window's own pixels to a PNG after a while, then it ends: session checks and design comparisons)
+                let w = Rc::downgrade(&i);
+                let ms: u64 = std::env::var("KALANGO_INSTALADOR_CAPTURA_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
+                glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || {
+                    if let Some(i) = w.upgrade() {
+                        let j = &i.janela;
+                        let pa = gtk::WidgetPaintable::new(Some(j));
+                        let s = gtk::Snapshot::new();
+                        pa.snapshot(&s, j.width() as f64, j.height() as f64);
+                        if let (Some(n), Some(r)) = (s.to_node(), j.native().and_then(|n| n.renderer())) {
+                            let _ = r.render_texture(&n, None).save_to_png(&dest);
+                        }
+                    }
+                    std::process::exit(0);
+                });
+            }
+            if let Ok(t) = std::env::var("KALANGO_INSTALADOR_MARCAR") {
+                i.modelos.depurar_marcar(&t.split(',').map(|x| x == "1").collect::<Vec<_>>());
+            }
+            if std::env::var_os("KALANGO_INSTALADOR_TESTAR").is_some() {
+                let w = Rc::downgrade(&i);
+                glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || if let Some(i) = w.upgrade() { i.modelos.depurar_testar() });
+            }
+            if let Some((f, v)) = std::env::var("KALANGO_INSTALADOR_MODELOS").ok().as_deref().and_then(|t| t.split_once('|').map(|(a, b)| (a.to_string(), b.to_string()))) {
+                i.modelos.depurar_preencher(f.parse().unwrap_or(0), &v);
+                if let Ok(t) = std::env::var("KALANGO_INSTALADOR_TOKEN") {
+                    i.modelos.depurar_token(&t);
+                }
+            }
+        }
         i
     }
 
@@ -548,6 +597,10 @@ impl Instalador {
         lugar("instalar", &self.instalar);
         lugar("continuar", &self.seguir);
         lugar("voltar", &self.voltar);
+        let w = Rc::downgrade(self);
+        *self.modelos.mudou.borrow_mut() = Some(Box::new(move || if let Some(i) = w.upgrade() { i.confirmar.set(false); i.rodape() }));
+        let w = Rc::downgrade(self);
+        *self.modelos.voltar_disco.borrow_mut() = Some(Box::new(move || if let Some(i) = w.upgrade() { i.ir(1) }));
         // the network: the session's settings (or NetworkManager's editor)
         rede_b.connect_clicked(|_| {
             let shell = glib::find_program_in_path("kalango-shell").is_some();
@@ -882,20 +935,21 @@ impl Instalador {
 
     fn rodape(&self) {
         let p = self.passo.get();
-        self.voltar.set_visible(p > 0 && p < 3);
-        self.contagem.set_text(&trf("{n} of 4", &[("n", (p + 1).to_string())]));
+        self.voltar.set_visible(p > 0 && p < 4);
+        self.contagem.set_text(&trf("{n} of 5", &[("n", (p + 1).to_string())]));
         self.seguir.remove_css_class("perigo");
         let (label, visivel, sensivel) = match p {
             0 if !self.instalar.is_active() => (tr("Try it").to_string(), true, true),
             0 => (tr("Continue").to_string(), true, true),
             1 => (tr("Continue").to_string(), true, !self.discos.borrow().is_empty()),
-            2 if self.confirmar.get() => {
+            3 if self.confirmar.get() => {
                 self.seguir.add_css_class("perigo");
                 let discos = self.discos.borrow();
                 let d = discos.get(self.disco.get()).map(|d| d.title()).unwrap_or_default();
                 (if self.modo_apagar.is_active() { trf("Confirm: erase the {disk}", &[("disk", d)]) } else { trf("Confirm: install on the {disk}", &[("disk", d)]) }, true, true)
             }
-            2 => (tr("Install").to_string(), true, self.validar()),
+            2 => (tr("Continue").to_string(), true, self.validar()),
+            3 => (tr("Continue").to_string(), true, self.modelos.pode_continuar()),
             _ if self.terminou.get() => (tr("Restart now").to_string(), true, true),
             _ => (String::new(), false, false),
         };
@@ -932,23 +986,34 @@ impl Instalador {
                 t.add_css_class(cls);
             }
             if let Some(l) = n.first_child().and_downcast::<gtk::Label>() {
-                l.set_text(if k < p { "✓" } else { &["1", "2", "3", "4"][k] });
+                l.set_text(if k < p { "✓" } else { &["1", "2", "3", "4", "5"][k] });
+            }
+            if self.estreito {
+                t.set_visible(k == p);
             }
         }
         let (t, s) = match p {
             0 => (tr("Welcome to KalangoOS"), tr("You can try it without installing anything, or install it now.")),
             1 => (tr("Where to install?"), ""),
             2 => (tr("Who will use it?"), tr("This will be the administrator's account. Other people can be added later.")),
+            3 => (tr("Where do the AI models come from?"), if self.estreito { tr("They don't ship inside the installer. Choose the source and which to download.") } else { tr("They don't ship inside the installer. Choose the source and which to download; the downloads start after first use.") }),
             _ => (tr("Installing KalangoOS"), tr("You can keep using the computer. We'll tell you when it's done.")),
         };
         self.titulo.set_text(t);
         self.sub.set_text(s);
+        self.sub.set_wrap(true);
+        if p == 3 { self.sub.add_css_class("grande") } else { self.sub.remove_css_class("grande") }
         if p == 1 {
             self.fill_disks();
         }
         if p == 2 {
             self.nome.grab_focus();
         }
+        if p == 3 {
+            self.modelos.definir_capacidade(self.capacidade());
+        }
+        // the models' step is taller (the design's 800 px) when the screen has the room
+        self.raiz.set_size_request(largura(self.estreito), altura(p == 3));
         self.rodape();
         if debug() {
             eprintln!("debug instalador: passo {}", p + 1);
@@ -963,16 +1028,16 @@ impl Instalador {
                 }
                 self.janela.close();
             }
-            2 if !self.confirmar.get() => {
-                if !self.validar() {
+            3 if !self.confirmar.get() => {
+                if !self.modelos.pode_continuar() {
                     return;
                 }
                 // a second click confirms what will happen to the disk
                 self.confirmar.set(true);
                 self.rodape();
             }
-            2 => self.instalar_agora(),
-            3 if self.terminou.get() => {
+            3 => self.instalar_agora(),
+            4 if self.terminou.get() => {
                 if debug() {
                     eprintln!("debug instalador: reiniciar");
                 } else {
@@ -983,6 +1048,13 @@ impl Instalador {
             }
             p => self.ir(p + 1),
         }
+    }
+
+    /// Bytes KalangoOS will have: the part given to it beside another system, else the whole disk.
+    fn capacidade(&self) -> u64 {
+        let discos = self.discos.borrow();
+        let Some(d) = discos.get(self.disco.get()) else { return 0 };
+        if self.modo_ao_lado.is_active() && self.modo_ao_lado.parent().is_some_and(|p| p.get_visible()) { (d.size as f64 * self.fracao.get()) as u64 } else { d.size }
     }
 
     fn plano(&self) -> Plan {
@@ -1005,6 +1077,8 @@ impl Instalador {
             autologin: self.sem_senha.is_active(),
             fingerprint_later: self.digital.is_active(),
             avatar: self.avatar.borrow().clone(),
+            models: self.modelos.escolha().0,
+            models_token: String::new(),
         }
     }
 
@@ -1016,7 +1090,7 @@ impl Instalador {
         let _ = std::fs::create_dir_all(&dir);
         let caminho = dir.join("plano-instalacao.json");
         let _ = std::fs::write(&caminho, serde_json::to_string_pretty(&plano).unwrap_or_default());
-        self.ir(3);
+        self.ir(4);
         let exe = std::env::current_exe().unwrap_or_else(|_| "kalango-instalador".into());
         let real = std::env::var("KALANGO_INSTALADOR_REAL").as_deref() == Ok("1");
         let mut cmd = if real {
@@ -1034,6 +1108,8 @@ impl Instalador {
         if let Some(mut sin) = filho.stdin.take() {
             use std::io::Write;
             let _ = writeln!(sin, "{}", plano.password);
+            // (the access token, if any, on a line of its own: never in the plan file nor on the command line)
+            let _ = writeln!(sin, "{}", self.modelos.escolha().1.map(|t| t.expose().to_string()).unwrap_or_default());
         }
         let out = filho.stdout.take();
         let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -1075,15 +1151,18 @@ impl Instalador {
                 marca.or_else(|| ["NVIDIA", "AMD", "Intel"].iter().find(|m| l.contains(*m)).map(|m| m.to_string()))
             })
         });
-        let modelo = std::fs::read_dir(glib::user_data_dir().join("kalango/modelos")).ok().map(|d| d.flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum::<u64>()).filter(|n| *n > 0);
+        let n_modelos = p.models.escolhidos.len();
+        let fonte = match p.models.fonte {
+            kalango_modelos::config::SourceKind::Padrao => trf("public catalog · {n} models", &[("n", n_modelos.to_string())]),
+            kalango_modelos::config::SourceKind::Servidor => trf("private server · {n} models", &[("n", n_modelos.to_string())]),
+            kalango_modelos::config::SourceKind::Pasta => trf("folder · {n} models", &[("n", n_modelos.to_string())]),
+            kalango_modelos::config::SourceKind::Depois => tr("later, from the App Center").to_string(),
+        };
         let textos = [
             if p.encrypt { trf("{size} encrypted", &[("size", tamanho)]) } else { tamanho },
             String::new(),
             placa.map(|m| trf("{card} card found", &[("card", m)])).unwrap_or_else(|| tr("none needed").to_string()),
-            match modelo {
-                Some(n) => trf("optional · {size} · can wait", &[("size", discos::human(n))]),
-                None => tr("optional · can come later").to_string(),
-            },
+            fonte,
             tr("boot menu and account").to_string(),
         ];
         for ((_, _, _, v), t) in self.etapas.iter().zip(textos) {
@@ -1129,7 +1208,7 @@ impl Instalador {
         self.barra_valor.set((self.barra_valor.get().0, total));
         self.progresso_pct.set_text(&format!("{:.0}%", total * 100.0));
         let falta = (1.0 - total) * 6.0;
-        self.progresso_txt.set_text(&format!("{} · {}", [tr("preparing the disk"), tr("copying the system"), tr("graphics drivers"), tr("the local model"), tr("finishing")][k],
+        self.progresso_txt.set_text(&format!("{} · {}", [tr("preparing the disk"), tr("copying the system"), tr("graphics drivers"), tr("the AI models' source"), tr("finishing")][k],
             if falta >= 1.0 { trf("about {n} min left", &[("n", format!("{falta:.0}"))]) } else { tr("almost there").to_string() }));
         for (j, (r, marca, n, val)) in self.etapas.iter().enumerate() {
             if j < k || (j == k && (estado == "feito" || estado == "pulado")) {
@@ -1209,6 +1288,33 @@ impl Instalador {
             glib::ControlFlow::Continue
         });
     }
+}
+
+/// Is the screen too narrow for the full window (the design's narrow variant has no left side)?
+/// KALANGO_INSTALADOR_ESTREITO=1 forces it (session tests and captures).
+fn estreita() -> bool {
+    if let Some(v) = std::env::var_os("KALANGO_INSTALADOR_ESTREITO") {
+        return v == "1";
+    }
+    saida().is_some_and(|(w, _)| w < 1100)
+}
+
+/// The compositor output's size in logical pixels.
+fn saida() -> Option<(i32, i32)> {
+    let m = gdk::Display::default()?.monitors().item(0)?.downcast::<gdk::Monitor>().ok()?;
+    let g = m.geometry();
+    Some((g.width(), g.height()))
+}
+
+fn largura(estreito: bool) -> i32 {
+    let max = saida().map(|(w, _)| w - 40).unwrap_or(1040);
+    if estreito { 560.min(max) } else { 1040.min(max) }
+}
+
+/// The window's height: 660 px, or the design's 800 on the models' step, never more than the output allows.
+fn altura(alta: bool) -> i32 {
+    let max = saida().map(|(_, h)| h - 40).unwrap_or(800);
+    (if alta { 800 } else { 660 }).min(max)
 }
 
 fn gio_list(f: &gtk::FileFilter) -> gtk::gio::ListStore {
@@ -1313,6 +1419,15 @@ fn mapa_claro() -> Vec<(String, String)> {
 }
 
 static CLARO: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// A colour of the dark sheet as the theme shows it, as "#RRGGBB".
+fn tema_hex(hex: &str) -> String {
+    if *CLARO.get().unwrap_or(&false) {
+        mapa_claro().into_iter().find(|(d, _)| d.eq_ignore_ascii_case(hex)).map(|(_, l)| l).unwrap_or_else(|| hex.to_string())
+    } else {
+        hex.to_string()
+    }
+}
 
 /// A colour of the dark sheet as the theme shows it, for cairo (0 – 1 each).
 fn rgb(hex: &str) -> (f64, f64, f64) {

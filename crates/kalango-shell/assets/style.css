@@ -3556,3 +3556,34 @@ button.fx-tabela-menos:hover { background: alpha(@k_realce, 0.06); }
 entry.erro { border-color: @k_coral; }
 button.fx-link-botao { background: none; border: none; box-shadow: none; padding: 0 4px; min-height: 24px; }
 label.fx-link { font-size: 12px; font-weight: 600; color: @k_accent; }
+
+/* the AI models' source (designs "Central de Apps · downloads de modelos", "Ajustes · Fonte dos modelos", "Alterar a fonte") */
+.mf-pagina { padding: 0 0 8px 0; }
+.mf-titulo { font-size: 15px; font-weight: 600; color: @k_text; }
+.mf-nome { font-size: 13px; font-weight: 600; color: @k_text; }
+.mf-sub { font-size: 12px; color: @k_muted; }
+.mf-detalhe { font-size: 12px; color: @k_text2; }
+.mf-linha { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 14px; }
+.mf-cartao { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 0 0 4px 0; }
+.mf-cab { padding: 12px 14px; }
+.mf-token { padding: 8px 14px; margin: 0 8px 4px 8px; background: @k_field; border-radius: 4px; }
+.mf-linha-pequena { padding: 9px 14px; border-top: 1px solid @k_border; }
+.mf-tile { background: alpha(@k_teal, 0.11); border-radius: 6px; }
+.mf-cartao .mf-tile { background: alpha(@k_realce, 0.06); }
+progressbar.mf-barra trough { min-height: 4px; background: alpha(@k_realce, 0.08); border-radius: 2px; border: none; box-shadow: none; }
+progressbar.mf-barra progress { min-height: 4px; background: @k_accent; border-radius: 2px; border: none; box-shadow: none; }
+progressbar.mf-barra.cinza progress { background: @k_muted; }
+progressbar.mf-barra.ruim progress { background: @k_red; }
+.mf-aviso { border-radius: 6px; padding: 10px 14px; background: @k_surface; border: 1px solid transparent; }
+.mf-aviso.ok { background: alpha(@k_teal, 0.12); }
+.mf-aviso.erro { background: alpha(@k_red, 0.14); }
+.mf-aviso.aviso { background: alpha(@k_gold, 0.10); }
+.mf-aviso.info { border-color: @k_border; }
+.mf-aviso-titulo { font-size: 13px; font-weight: 600; color: @k_text; }
+.mf-aviso-detalhe { font-size: 12px; color: @k_muted; }
+.mf-dialogo { background: @k_surface; border: 1px solid @k_border; border-radius: 8px; }
+.mf-dialogo-corpo { padding: 24px; }
+button.mf-fonte { background: @k_field; border: 1px solid @k_border; border-radius: 6px; box-shadow: none; padding: 12px 14px; }
+button.mf-fonte:checked { background: alpha(@k_accent, 0.10); border-color: @k_accent; }
+entry.mf-campo { background: @k_field; border: 1px solid @k_border; border-radius: 4px; box-shadow: none; min-height: 34px; padding: 0 10px; color: @k_text; }
+entry.mf-campo:focus-within { border-color: @k_accent; }

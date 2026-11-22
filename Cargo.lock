@@ -1199,9 +1199,26 @@ version = "0.1.0"
 dependencies = [
  "gtk4",
  "kalango-i18n",
+ "kalango-modelos",
  "kalango-movimento",
  "serde",
  "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "kalango-modelos"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml 0.8.23",
+ "ureq",
+ "url",
 ]
 
 [[package]]
@@ -1222,6 +1239,7 @@ dependencies = [
  "gtk4",
  "gtk4-layer-shell",
  "kalango-i18n",
+ "kalango-modelos",
  "kalango-movimento",
  "kalango-sons",
  "landlock",

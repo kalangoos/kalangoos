@@ -243,6 +243,8 @@ fn finish(c: &Ctx, p: &Plan, esp: &str, boot: Option<&str>, root: &str) -> Resul
     }
     // the first session opens the first use (designs "Primeiro uso"); it also sets up the fingerprint when asked here
     write_file(c, &format!("/home/{}/.config/kalango/primeiro-uso.json", p.user), &format!("{{\"feito\": false, \"impressao_digital\": {}}}\n", p.fingerprint_later))?;
+    // the private models server's access token, for the first session to move into the vault
+    stage_models_token(c, p)?;
     // the model copied before the account existed, the face, the first use's file: all the person's
     c.chroot(&["chown", "-R", &format!("{0}:{0}", p.user), &format!("/home/{}", p.user)], None)?;
     if p.autologin {
@@ -280,6 +282,26 @@ fn finish(c: &Ctx, p: &Plan, esp: &str, boot: Option<&str>, root: &str) -> Resul
     Ok(())
 }
 
+/// `/etc/kalango/modelos.toml`: the source and the chosen models (no secret in it).
+fn record_models_source(c: &Ctx, p: &Plan) -> Result<(), String> {
+    write_file(c, kalango_modelos::config::SYSTEM_PATH, &p.models.to_toml())
+}
+
+/// The token of a private server: a hand-off file in the new user's own folder (0600, the folder 0700), which the first
+/// session's shell moves into the vault and deletes. The root-run engine cannot write the user's vault itself.
+fn stage_models_token(c: &Ctx, p: &Plan) -> Result<(), String> {
+    if p.models.fonte != kalango_modelos::config::SourceKind::Servidor || p.models_token.is_empty() {
+        return Ok(());
+    }
+    if !c.real {
+        say(json!({"comando": format!("guardar o token do servidor de modelos em {TARGET}/home/{}/.local/share/{} (valor omitido)", p.user, kalango_modelos::vault::STAGING_REL)}));
+        return Ok(());
+    }
+    // (bound to the server's origin: the token never goes to another address)
+    let origin = p.models.server().map_err(|e| format!("{e:?}"))?.origin();
+    kalango_modelos::vault::write_staging(std::path::Path::new(&format!("{TARGET}/home/{}", p.user)), &origin, &kalango_modelos::Secret::new(p.models_token.clone())).map(|_| ()).map_err(|e| e.to_string())
+}
+
 fn write_file(c: &Ctx, path: &str, text: &str) -> Result<(), String> {
     if !c.real {
         say(json!({"comando": format!("escrever {TARGET}{path}"), "conteudo": text}));
@@ -315,6 +337,15 @@ pub fn run(plan_path: &str) -> i32 {
     let mut pw = String::new();
     let _ = std::io::stdin().read_line(&mut pw);
     p.password = pw.trim_end_matches('\n').to_string();
+    // the access token of a private models server, on the second line (never in the plan file): empty when none
+    let mut tok = String::new();
+    let _ = std::io::stdin().read_line(&mut tok);
+    p.models_token = tok.trim_end_matches('\n').to_string();
+    // (before anything touches a disk: a source the system would reject is refused here)
+    if let Err(e) = p.models.validate() {
+        say(json!({"erro": trf("the AI models' source is not valid ({why})", &[("why", format!("{e:?}"))])}));
+        return 2;
+    }
     let root = std::fs::read_to_string("/proc/self/status").unwrap_or_default().lines().any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(1) == Some("0"));
     let c = Ctx { real: root && std::env::var("KALANGO_INSTALADOR_REAL").as_deref() == Ok("1"), fast: std::env::var_os("KALANGO_INSTALADOR_RAPIDO").is_some() };
     say(json!({"modo": if c.real { "real" } else { "simulado" }, "disco": p.disk, "como": format!("{:?}", p.mode)}));
@@ -352,6 +383,8 @@ pub fn run(plan_path: &str) -> i32 {
         } else {
             step("modelo", "pulado", 1.0, tr("later, from Settings"));
         }
+        // where the AI models come from: recorded here, downloaded by the installed system after the first start
+        record_models_source(&c, &p)?;
         c.pause(800);
         finish(&c, &p, &esp, boot.as_deref(), &root)?;
         step("final", "feito", 1.0, "");
@@ -372,6 +405,18 @@ pub fn run(plan_path: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_models_source_is_written_without_any_token() {
+        use kalango_modelos::config::{Config, SourceKind};
+        let p = Plan { models: Config { fonte: SourceKind::Servidor, servidor: Some("https://modelos.example.org/k".into()), escolhidos: vec!["lfm3-1.7b".into()], ..Default::default() }, models_token: "tok-secret-123".into(), ..Default::default() };
+        let t = p.models.to_toml();
+        assert!(t.contains("fonte = \"servidor\"") && t.contains("escolhidos = [\"lfm3-1.7b\"]"));
+        assert!(!t.contains("tok-secret-123"));
+        // the plan file the window writes carries neither the password nor the token
+        let j = serde_json::to_string(&p).unwrap();
+        assert!(!j.contains("tok-secret-123"));
+    }
 
     #[test]
     fn the_installed_system_keeps_the_install_consoles() {

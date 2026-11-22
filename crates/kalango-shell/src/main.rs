@@ -25,6 +25,7 @@ mod agent_sandbox;
 mod agent_settings;
 mod app_store;
 mod app_store_data;
+mod modelos_fonte;
 mod apps;
 #[allow(dead_code)] // the screens of the agents center use it as they land
 mod fluxos;
@@ -517,6 +518,9 @@ impl Shell {
                 Some(p) => app_store::open_page(self, p),
                 None => app_store::open(self, (args.len() > 1).then(|| args[1..].join(" "))),
             },
+            // the models' source card of Settings, alone in a window (session tests: it does not need the flows service);
+            // `modelos-fonte alterar` also opens the dialog that changes it
+            Some("modelos-fonte") => modelos_fonte::open_card_window(args.get(1).map(String::as_str) == Some("alterar")),
             Some("calendario") => calendar_app::open(self),
             Some("ajuda") => help_app::open(self, (args.len() > 1).then(|| args[1..].join(" "))),
             // a picture of the screen for the agent's "Ver a tela" (as describing the screen: no notice, and the person's
@@ -647,6 +651,8 @@ fn iniciar(app: &gtk::Application) -> Rc<Shell> {
     let display = gdk::Display::default().expect("o shell precisa de uma sessão Wayland");
     // windows shown again give their focus anew (else their text field never reaches the input method)
     text_focus::watch(app);
+    // the AI models: the installer's token to the vault, and what was chosen there to download
+    modelos_fonte::start_background();
     // the style sheet in the person's theme (dark, light or by the hour; the accent; the corners)
     tema::iniciar(&display);
     // a lista de protocolos do compositor pode ainda não ter chegado: sincroniza e confere de novo antes de desistir
