@@ -62,7 +62,10 @@ fn model_up() {
 fn setup() -> Env {
     model_up();
     let dir = tempfile::tempdir().unwrap();
-    let area = dir.path().join("area");
+    // the test's home is the temporary folder (config `home`, as in kalangod's own tests: kalangod resolves `~` by
+    // passwd otherwise) and the area is inside its Documentos, a work folder: changes there are the engine's own
+    // question ("uma-vez/sempre/negar"), not the system screen's, which asks about anything outside the work folders
+    let area = dir.path().join("Documentos/area");
     std::fs::create_dir_all(&area).unwrap();
     std::fs::write(area.join("orcamento.txt"), "Orçamento de novembro: 1200 reais.").unwrap();
     std::fs::write(area.join("lista.txt"), "pão, leite, café").unwrap();
@@ -71,6 +74,7 @@ fn setup() -> Env {
     let sock = dir.path().join("mcp.sock");
     let cfg = dir.path().join("kalangod.toml");
     std::fs::write(&cfg, format!(r#"
+home = "{home}"
 socket = "{sock}"
 state_dir = "{state}"
 protected_paths = []
@@ -84,7 +88,7 @@ trash_dir = "{raiz}/lixeira"
 name = "teste"
 max_level = "total"
 allowed_paths = ["{area}"]
-"#, sock = sock.display(), state = dir.path().join("estado").display(), raiz = dir.path().join("raiz").display(), area = area.display())).unwrap();
+"#, sock = sock.display(), state = dir.path().join("estado").display(), raiz = dir.path().join("raiz").display(), area = area.display(), home = dir.path().display())).unwrap();
     std::fs::create_dir_all(dir.path().join("raiz/etc")).unwrap();
     let kalangod = Command::new(kalangod_bin()).args(["servir", "--config"]).arg(&cfg).stderr(Stdio::null()).spawn().unwrap();
     for _ in 0..100 {
@@ -210,10 +214,23 @@ fn never_hides_the_tool_and_always_is_remembered() {
     let ev = converse(&env, cfg.path(), &format!("Renomeie o arquivo {} para {}/x.txt", from.display(), env.area.display()), "uma-vez");
     assert!(!ev.iter().any(|e| (e["tipo"] == "ferramenta" || e["tipo"] == "pedido") && e["nome"] == "arquivos.mover"), "never: not offered: {ev:?}");
     assert!(from.exists(), "never: the file must not be moved another way either: {ev:?}");
-    // "always" from the conversation turns the tool free in the file
+    // "always" from the conversation turns the tool free in the file. The small model does not always pick the tool
+    // (it may only list the folder): the turn is retried up to three times, and what is asserted is that the question
+    // was asked before the answer "sempre" was saved — failing clearly when it never was
     set("arquivos.mover", "perguntar");
-    let _ = converse(&env, cfg.path(), &format!("Renomeie o arquivo {} para {}/y.txt", from.display(), env.area.display()), "sempre");
-    let saved = std::fs::read_to_string(cfg.path().join("kalango/agente-permissoes.json")).unwrap();
+    let mut asked = false;
+    for attempt in 1..=3 {
+        let request = format!("Chame agora a ferramenta arquivos.mover com de={} e para={}/y.txt. Não liste nada antes: chame arquivos.mover diretamente.", from.display(), env.area.display());
+        let ev = converse(&env, cfg.path(), &request, "sempre");
+        if ev.iter().any(|e| e["tipo"] == "pedido" && e["nome"] == "arquivos.mover") {
+            asked = true;
+            break;
+        }
+        eprintln!("(attempt {attempt}: the model did not choose arquivos.mover; trying again)");
+        assert!(from.exists(), "nothing was moved without the question: {ev:?}");
+    }
+    assert!(asked, "after 3 tries the model never called arquivos.mover, so the conversation never asked");
+    let saved = std::fs::read_to_string(cfg.path().join("kalango/agente-permissoes.json")).expect("the answer \"sempre\" was saved");
     assert!(saved.contains("\"arquivos.mover\": \"livre\""), "{saved}");
 }
 

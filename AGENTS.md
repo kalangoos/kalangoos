@@ -77,6 +77,10 @@ cargo test --workspace --locked --exclude kalango-agente
 cargo test -p kalango-agente --bins --locked        # os testes de tests/ precisam do modelo local
 sessao/rodar.sh                                     # a sessão numa janela
 sessao/testar.sh                                    # a suíte da sessão (demorada)
+# testes de GTK (precisam de KALANGO_TESTE_GTK=1 e de uma tela): o GTK só vale na thread que o iniciou (gtk4 rt.rs),
+# então cada um roda sozinho, um filtro por execução:
+KALANGO_TESTE_GTK=1 xvfb-run -a cargo test -p kalango-shell --bin kalango-shell -- --test-threads=1 release_tests
+KALANGO_TESTE_GTK=1 xvfb-run -a cargo test -p kalango-shell --bin kalango-shell -- --test-threads=1 closing_the_window_stops_the_listening
 ```
 
 Formatação: o `rustfmt.toml` vale para código novo, mas não reformate arquivos inteiros num pull request até a

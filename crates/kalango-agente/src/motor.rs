@@ -226,10 +226,18 @@ impl Escopo {
 }
 
 /// Whether the conversation asks the person before a call: when its permission says "ask", except the actions
-/// kalangod asks on the system approval screen itself — acting on the screen (the window and minutes) and changing a
-/// file that runs at login (with the diff and never "always": the conversation's card has an "always").
+/// kalangod asks on the system approval screen itself — acting on the screen (the window and minutes), changing a
+/// file that runs at login and changing anything outside the folders agents work in (with the diff and never
+/// "always": the conversation's card has an "always"). The person is asked once either way.
 fn conversation_asks(perm: Perm, tool: &str, kalangod_asks_startup: bool) -> bool {
     perm == Perm::Ask && !(tool.starts_with("tela.") && tool != "tela.ver") && !kalangod_asks_startup
+}
+
+/// Whether kalangod is asked if it will ask the person itself before this call (`kalango/inicio`): any tool that
+/// changes something, not only `arquivos.*` — kalangod's gate also covers `vm.pastas` and `vm.copiar_arquivo` (and
+/// answers false for what it does not gate). A reading tool never is.
+fn may_be_asked_by_kalangod(read_only: bool) -> bool {
+    !read_only
 }
 
 /// A permission under an autonomy: "sempre" asks before anything that changes; "autonomo" does not ask (never
@@ -954,9 +962,10 @@ impl Agent {
                 }
                 // the person's permission for this tool (read now: a change applies at once); acting on the screen is
                 // asked once, by kalangod, on the system's approval screen (the window, the minutes)
-                // a file that runs at login: kalangod asks on the system approval screen, with the exact diff and no
-                // "always" (the conversation's card has one), so it is not asked here too
-                let kalangod_asks = name.starts_with("arquivos.") && !tool.read_only && self.kalangod.asks_for_startup_file(&name, &call.arguments);
+                // a file that runs at login, or anything outside the folders agents work in: kalangod asks on the system
+                // approval screen, with the exact diff and no "always" (the conversation's card has one), so it is not
+                // asked here too
+                let kalangod_asks = may_be_asked_by_kalangod(tool.read_only) && self.kalangod.asks_for_startup_file(&name, &call.arguments);
                 if conversation_asks(self.perm(tool), &name, kalangod_asks) {
                     self.next_ask += 1;
                     let id = self.next_ask;
@@ -1459,6 +1468,15 @@ pub fn screen_text(raw: &str, described: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_changing_tool_asks_kalangod_whether_it_will_ask_and_reading_ones_do_not() {
+        assert!(super::may_be_asked_by_kalangod(false), "vm.pastas, vm.copiar_arquivo and arquivos.* all change something");
+        assert!(!super::may_be_asked_by_kalangod(true));
+        // when kalangod asks (vm.pastas outside the work folders too), the conversation does not ask the same question
+        assert!(!super::conversation_asks(super::Perm::Ask, "vm.pastas", true));
+        assert!(super::conversation_asks(super::Perm::Ask, "vm.pastas", false));
+    }
+
     #[test]
     fn tool_ids_become_words() {
         let t = |k: &'static str| kalango_i18n::tr(k).to_string();

@@ -1228,6 +1228,6 @@ mod tests {
 
     #[test]
     fn the_five_kinds_are_the_installers() {
-        assert!(is_slot("lfm3-1.7b") && is_slot("d1-2b") && !is_slot("qwen3-8b"));
+        assert!(is_slot("lfm3-1.7b") && is_slot("d1-2b") && !is_slot("qwen3-8b") && !is_slot("d1-omni-2b"));
     }
 }
