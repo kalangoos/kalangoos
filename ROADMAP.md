@@ -90,6 +90,21 @@ webhook do n8n: algo de fora (um serviço, um formulário, outro computador) cha
 - **Privacidade, dita com clareza.** O tráfego passa pela Cloudflare. Quem não quiser isso fica no webhook local; outros
   túneis (Tailscale Funnel, por exemplo) entram depois como adaptadores.
 
+**Riscos entendidos e aceitos.** O projeto sabe que um gatilho de entrada pela internet abre uma porta e decidiu
+aceitar os riscos abaixo, cada um com a sua mitigação, que faz parte do que precisa estar pronto antes de o gatilho
+entrar:
+
+| Risco | Mitigação prevista |
+|---|---|
+| Qualquer pessoa na internet pode tentar chamar a URL | Caminho impossível de adivinhar, segredo e assinatura (HMAC) por gatilho, liga/desliga individual, lista de quem pode chamar como opção (Cloudflare Access) |
+| Repetir ou falsificar um pedido | Assinatura com data e identificador de uso único, janela curta, pedido repetido recusado |
+| Abuso e negação de serviço | Limite de tamanho do corpo e de pedidos por minuto, fila de execuções limitada, os limites de passos e de agentes que cada fluxo já tem |
+| O corpo do pedido trazer instruções escondidas para o agente | O corpo é conteúdo externo: passa pela defesa de contaminação e nunca vira argumento de uma ferramenta que age no sistema sem a aprovação de sempre; um fluxo disparado de fora roda com o nível mais baixo, salvo aprovação prévia e explícita da pessoa |
+| Depender da Cloudflare (o tráfego passa por ela; disponibilidade; os termos do túnel rápido não dão garantia) | Dito na tela de ligar o túnel; o webhook local continua existindo; outros provedores entram depois como adaptadores |
+| Vazamento do token do túnel nomeado | Vai para o cofre do sistema, nunca para a conversa nem para um log; a tela mostra quando foi criado e deixa apagar; a revogação é feita na Cloudflare |
+| Cadeia de suprimentos do `cloudflared` | Binário fixado por versão e soma, como o Kalango Remote já faz; atualização revisada |
+| Esquecer o túnel aberto | Indicador sempre visível, interruptor geral e, para o túnel rápido, fechamento automático depois de um tempo sem uso (a pessoa ajusta) |
+
 Passa pelas mesmas verificações dos demais: testes com um servidor de verdade e o modelo real, revisão de segurança às cegas
 e captura contra o desenho antes de entrar.
 
