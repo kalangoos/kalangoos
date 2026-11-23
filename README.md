@@ -74,7 +74,7 @@ crates/
   kalango-movimento/    as molas das animações
   kalango-i18n/         as traduções (pt-BR hoje)
 sessao/                 a sessão: niri, patches do niri, arquivos da imagem, suíte de testes da sessão
-design/tokens/          cores, movimento e medidas exportados do Design System
+design/tokens/          cores, movimento e medidas (cópia; fonte em kalangoos/design)
 openspec/               a especificação, fase por fase
 docs/                   visão, arquitetura, segurança, requisitos, plano
 ```

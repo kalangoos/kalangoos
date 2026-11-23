@@ -46,14 +46,15 @@ Uma distribuição Linux (base Ubuntu LTS) em que agentes de IA operam o sistema
 | `crates/kalango-aprovacao`, `kalango-entrada`, `kalango-instalador` | Tela de aprovação, tela de entrada (greetd), instalador |
 | `crates/kalango-movimento`, `kalango-i18n` | Molas das animações; traduções |
 | `sessao/` | Sessão de desenvolvimento (niri aninhado), patches do niri, arquivos da imagem (`dist/`), a suíte `testar.sh` |
-| `design/tokens/` | Tokens exportados do Design System |
+| `design/tokens/` | Tokens exportados do Design System (fonte e contribuições: [kalangoos/design](https://github.com/kalangoos/design)) |
 | `openspec/` | Especificação por fases |
 | `docs/` | Visão, arquitetura, segurança, requisitos, plano |
 
 ## Não negociáveis
 
-- **Design primeiro.** Toda tela, ou mudança visível, existe no Design System (FigCraft) antes do código, e a
-  implementação bate com ele — compare capturas lado a lado, ampliadas, inclusive o alinhamento de cada ícone.
+- **Design primeiro.** Toda tela, ou mudança visível, existe no Design System (FigCraft) antes do código — fonte e PRs em
+  [kalangoos/design](https://github.com/kalangoos/design) — e a implementação bate com ele: compare capturas lado a lado,
+  ampliadas, inclusive o alinhamento de cada ícone.
 - **Nenhuma tela de outro sistema.** Nada de apps ou telas do GNOME, Yaru ou Adwaita: os apps do sistema são do
   KalangoOS. A folha de estilo para apps de terceiros é só um recurso de reserva.
 - **Telas que se ajustam ao espaço**: colunas que cabem, conteúdo que rola, painéis que cedem. Tamanhos de janela
