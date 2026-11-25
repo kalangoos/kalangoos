@@ -1864,7 +1864,7 @@ mod tests {
         }
         // installed: Flatpak exports its desktop entry, and the app's own icon is used
         std::fs::create_dir_all(pessoa.join("applications")).unwrap();
-        std::fs::write(pessoa.join("applications/ai.storyteller.anicraft.desktop"), "[Desktop Entry]\nType=Application\nName=AniCraft\nExec=anicraft\nIcon=ai.storyteller.anicraft\n").unwrap();
+        std::fs::write(pessoa.join("applications/ai.storyteller.anicraft.desktop"), "[Desktop Entry]\nType=Application\nName=AniCraft\nExec=sh\nIcon=ai.storyteller.anicraft\n").unwrap();
         let info = desktop_do_app("ai.storyteller.anicraft", &[pessoa, sistema]).expect("exported entry");
         assert!(info.icon().is_some());
     }
