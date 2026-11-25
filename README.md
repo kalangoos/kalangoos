@@ -6,14 +6,14 @@
   <img alt="Rust" src="https://img.shields.io/badge/Rust-GTK%204%20·%20niri-A5A1E2?style=flat-square&logo=rust&logoColor=white">
   <img alt="Base: Ubuntu LTS" src="https://img.shields.io/badge/base-Ubuntu%20LTS-E5C98C?style=flat-square">
   <img alt="Licença: GPL-3.0-or-later" src="https://img.shields.io/badge/licen%C3%A7a-GPL--3.0--or--later-8ED2C3?style=flat-square">
-  <img alt="Estado: prévia técnica 0.1.0" src="https://img.shields.io/badge/estado-pr%C3%A9via%20t%C3%A9cnica%200.1.0-EFA2A6?style=flat-square">
+  <img alt="Estado: prévia técnica 0.1.1" src="https://img.shields.io/badge/estado-pr%C3%A9via%20t%C3%A9cnica%200.1.1-EFA2A6?style=flat-square">
   <a href="https://github.com/kalangoos/kalangoos/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/kalangoos/kalangoos/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
 <p align="center">
   <a href="#o-que-é">O que é</a> ·
   <a href="#onde-estamos">Onde estamos</a> ·
-  <a href="docs/NOTAS-0.1.0.md">Notas da 0.1.0</a> ·
+  <a href="docs/NOTAS-0.1.1.md">Notas da 0.1.1</a> ·
   <a href="#como-é-feito">Como é feito</a> ·
   <a href="#rodar-a-sessão-de-desenvolvimento">Rodar</a> ·
   <a href="ROADMAP.md">Roteiro</a> ·
@@ -22,12 +22,12 @@
 </p>
 
 > [!IMPORTANT]
-> **O KalangoOS 0.1.0 é uma prévia técnica.** Há uma ISO instalável (x86_64, UEFI), montada e testada numa máquina
+> **O KalangoOS 0.1.1 é uma prévia técnica.** Há uma ISO instalável (x86_64, UEFI), montada e testada numa máquina
 > virtual pela esteira de lançamento: a sessão ao vivo abre com o instalador, o motor do instalador grava num disco virtual vazio (a etapa gráfica "Modelos de IA" não é exercitada pelo teste) e o
 > sistema instalado liga na sessão. Mas ela ainda não foi validada em hardware de verdade (a matriz NVIDIA, AMD e
 > Intel está incompleta), então **não instale em um computador com dados que você não pode perder**: use uma
 > máquina virtual ou um computador de teste. As limitações conhecidas estão em
-> [docs/LANCAMENTO.md](docs/LANCAMENTO.md) e as notas da versão em [docs/NOTAS-0.1.0.md](docs/NOTAS-0.1.0.md).
+> [docs/LANCAMENTO.md](docs/LANCAMENTO.md) e as notas da versão em [docs/NOTAS-0.1.1.md](docs/NOTAS-0.1.1.md).
 
 ## O que é
 
@@ -126,11 +126,11 @@ and operate the system and its apps, and everything they do is visible, asks for
 can be undone.
 
 > [!IMPORTANT]
-> **KalangoOS 0.1.0 is a technical preview.** There is an installable ISO (x86_64, UEFI), built and tested in a
+> **KalangoOS 0.1.1 is a technical preview.** There is an installable ISO (x86_64, UEFI), built and tested in a
 > virtual machine by the release workflow: the live session boots with the installer, the installer engine writes to an
 > empty virtual disk (the graphical "AI models" step is not exercised by the test) and the installed system boots into its session. It has not been validated on real hardware yet (the
 > NVIDIA, AMD and Intel matrix is incomplete), so use a virtual machine or a test computer, not one with data you
-> cannot lose. See [docs/NOTAS-0.1.0.md](docs/NOTAS-0.1.0.md) for the release notes and known limitations.
+> cannot lose. See [docs/NOTAS-0.1.1.md](docs/NOTAS-0.1.1.md) for the release notes and known limitations.
 
 - **Agents that act.** They operate the system through `kalangod`, our privileged service that speaks MCP, with
   four power levels and kernel-enforced rules (eBPF LSM, Landlock, seccomp, cgroups; no out-of-tree module).
