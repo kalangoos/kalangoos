@@ -27,19 +27,23 @@ CSS gerado dos tokens.
 
 Cada página existe em português e em inglês, pré-renderizada (`src/routes.json` tem os caminhos):
 
-| Página | pt-BR | en |
+| Página | pt-BR | outros (en, es, fr, de, zh, ja) |
 |---|---|---|
-| Início (landing, desenhada no FigCraft) | `/` | `/en/` |
-| Baixar e instalar, com somas de verificação | `/baixar/` | `/en/download/` |
-| Segurança e privacidade | `/seguranca/` | `/en/security/` |
-| Documentação | `/documentacao/` | `/en/docs/` |
-| Notas da versão 0.1.0 | `/notas/0-1-0/` | `/en/notes/0-1-0/` |
-| Contribuir | `/contribuir/` | `/en/contribute/` |
-| Área de membros (`noindex`, fora do sitemap) | `/membros/` | `/en/members/` |
+| Início | `/` | `/<lang>/` |
+| Baixar | `/baixar/` | `/<lang>/download/` |
+| Segurança | `/seguranca/` | `/<lang>/security/` |
+| Documentação | `/documentacao/` | `/<lang>/docs/` |
+| Notas 0.1.0 | `/notas/0-1-0/` | `/<lang>/notes/0-1-0/` |
+| Contribuir | `/contribuir/` | `/<lang>/contribute/` |
+| Membros (`noindex`) | `/membros/` | `/<lang>/members/` |
+
+Idiomas publicados: ver `src/locales.json`. Prefixos: `en`, `es`, `fr`, `de`, `it`, `ru`, `zh` (zh-Hans), `ja`. Para adicionar um idioma: entrada em `locales.json`, `src/content/<id>.json` (mesmas chaves que pt-BR), `npm run locales`.
+
+Os arquivos de locale novos partem do inglês e vão sendo traduzidos (mesma estrutura); revise o texto nativo quando puder. O seletor e o `hreflang` já os publicam.
 | 404 (bilíngue) | `/404.html` | |
 
 Também saem `sitemap.xml` (com `hreflang`) e `robots.txt`. As páginas que não são o início usam blocos de conteúdo
-(`pages.*` nos dois JSON; os tipos de bloco estão em `src/sections/SubPages.tsx`) com os mesmos componentes do início.
+(`pages.*` nos dois JSON; os tipos de bloco estão em `src/sections/SubPages.tsx`), com o menu e o rodapé do início.
 O desenho do início está no FigCraft; as outras páginas ainda não têm quadros próprios no Design System.
 
 ## Área de membros (`/membros/`, `/en/members/`)
@@ -94,9 +98,22 @@ workflow `pages.yml` roda `npm ci` e `npm run build` na raiz e publica o `dist/`
 ```sh
 git clone https://github.com/kalangoos/kalangoos.github.io.git pages && cd pages    # um clone limpo, do main
 git switch -c site-0-1-0
-rsync -a --delete --exclude .git --exclude .github --exclude node_modules --exclude dist /caminho/do/kalangoos/site/ ./
+rsync -a --delete --exclude .git --exclude .github --exclude node_modules --exclude dist \
+  --exclude public/video/tour-dark.webm --exclude public/video/tour-light.webm /caminho/do/kalangoos/site/ ./
 # --exclude .github: o .github/workflows/pages.yml existe só no repositório do Pages; sem isso o --delete o apaga
+# --exclude public/video/tour-*.webm: os dois vídeos do tour passam de 5 MB, o limite por arquivo do repositório
+# kalangoos/kalangoos, e ficam só no repositório do Pages; sem isso o --delete os apaga
 git status        # confira: arquivos velhos (design-tokens/…) devem aparecer como removidos; o worker/ e os tests/ agora fazem parte do site/
+```
+
+### Quando o site foi editado direto no repositório do Pages
+
+Se alguém mexeu no `kalangoos.github.io` (traduções, telas, vídeos), traga essas mudanças de volta para cá antes de
+copiar de novo no sentido contrário, ou o `--delete` desfaz o trabalho:
+
+```sh
+rsync -a --delete --exclude .git --exclude .github --exclude node_modules --exclude dist --exclude .codegraph \
+  --exclude public/video/tour-dark.webm --exclude public/video/tour-light.webm /caminho/do/pages/ /caminho/do/kalangoos/site/
 ```
 
 Nunca copie por cima de uma cópia local com ramos antigos (como `membros-e-barra-alta`, que não foi publicado e já foi trazido para cá): o
@@ -123,7 +140,7 @@ outro endereço, troque `origin` em `src/routes.json` (o `og:image` também usa 
 
 ## Verificações
 
-- `npm run build` confere que `en.json` tem as chaves de `pt-BR.json`, faz o typecheck (site e Worker), roda os testes
+- `npm run build` confere que cada locale publicado espelha `pt-BR.json`, faz o typecheck (site e Worker), roda os testes
   (`npm test`) e pré-renderiza. A pré-renderização falha se o `VITE_AUTH_URL` não for vazio nem `https://auth.kalangoos.com`.
 - Pedidos a terceiros: as páginas do site não fazem nenhum (fontes de pacotes `@fontsource/*`, OFL, no
   `ATTRIBUTION.md`; sem scripts de análise; os links externos são `<a>` para o GitHub). Com o login ligado, **toda**
@@ -135,29 +152,29 @@ outro endereço, troque `origin` em `src/routes.json` (o `og:image` também usa 
 
 ## Conteúdo
 
-Todo o texto está em `src/content/pt-BR.json` e `src/content/en.json`, com a mesma estrutura (o TypeScript
+Todo o texto está em `src/content/<locale>.json` (lista em `src/locales.json`), com a mesma estrutura (o TypeScript
 reclama se faltar uma chave no inglês). Cada afirmação tem origem no repositório: `docs/VISAO.md`,
 `docs/PLANO.md`, `docs/ARQUITETURA.md`, `docs/SEGURANCA.md`, `docs/REQUISITOS.md`, `docs/LANCAMENTO.md`,
 `docs/LICENCAS.md` e `docs/telas.md`. O que é plano aparece como "planejado" ou "a confirmar".
 
-As capturas são da sessão de teste (`target/captura/`, com dados de teste). Antes de trocar ou acrescentar uma,
-leia todo o texto dela: nada de nomes reais, nomes de rede Wi-Fi, e-mails, caminhos `/home/...` ou notificações de
-apps reais. Ficaram de fora, por isso: `sessao-instalador.png` (nome de rede com nome de pessoa),
-`sessao-avisos.png` (nome de pessoa numa notificação), `sessao-controles.png` (o mesmo nome de rede),
-`sessao-aprovacao.png`, `sessao-voz.png` e `sessao-sugestao-layout.png` (cartão de erro e o chamador de teste).
+As telas da página inicial são quadros do Design System do KalangoOS (`design/KalangoOS-DesignSystem.figcraft`,
+exportados com `figcraft-cli export --node <id>`), em `public/img/ds/` (1920×1080 e uma cópia de 960, `<nome>.webp`
+no escuro e `<nome>-light.webp` no claro, cada uma do quadro do tema claro do próprio DS). Os vídeos (`public/video/`)
+são feitos no Remotion só com esses quadros: câmera, transições, cursor e anéis de destaque, sem interface nova. As
+legendas e os textos alternativos descrevem o que o quadro mostra; a galeria avisa que são telas do design.
 
 ## Estrutura
 
 ```
 site/
   index.html, en/index.html     páginas (meta, Open Graph, tema antes da pintura)
-  src/content/*.json            texto em pt-BR e inglês
-  src/sections/                 seções da página
+  src/content/*.json            texto em vários idiomas (pt-BR, en, es, fr, de, it, ru, zh-Hans, ja)
+  src/landing/                  a página inicial (Landing v3), o menu e o rodapé de todas as páginas, vídeos
+  src/sections/                 blocos das outras páginas
   src/members/                  área de membros: página, documentação, especificação, quadro, Markdown, rotas
   worker/                       serviço de login (Cloudflare Worker): código, README do desenho, SETUP, wrangler.toml
   tests/                        testes de unidade (node --test): quadro, repositório, rotas, Worker
-  src/components/               barra (a barra superior do sistema), dock, painel do agente, aprovação,
-                                capturas, ampliação, laboratório de molas, ícones
+  src/components/               barra superior e conta (área de membros), capturas, ícones
   src/styles/tokens.css         GERADO de design/tokens/tokens.json (npm run tokens)
   src/styles/motion.css         GERADO: as molas do Design System em CSS linear() (npm run springs)
   src/lib/icons.generated.ts    ícones simbólicos exportados do FigCraft (componentes sym/*)
@@ -166,11 +183,11 @@ site/
   scripts/                      geração de tokens, molas, imagens, Open Graph e a pré-renderização
 ```
 
-Cada tela também foi capturada com o sistema no tema claro (a mesma sessão de teste, com o `tema.json` em
-`"claro"`): o site mostra a captura do tema da página (`<nome>.webp` no escuro, `<nome>-light.webp` no claro). As duas
+Cada tela tem a versão do tema escuro e a do claro: o site mostra a do tema da página (`<nome>.webp` no escuro,
+`<nome>-light.webp` no claro). As duas
 ficam no HTML pré-renderizado e o CSS esconde a do outro tema, pelo `data-theme` do botão ou pelo
 `prefers-color-scheme` do sistema, então a troca funciona também sem JavaScript; a escondida é `loading="lazy"` com
-`display: none`, e o navegador não a baixa. A tela "Tema claro" (Aparência) é a mesma nos dois temas.
+`display: none`, e o navegador não a baixa.
 
 Regenerar as imagens: `KALANGO_CAPTURES=<repo>/target/captura/ KALANGO_CAPTURES_CLARO=<pasta da rodada clara>/
 python3 scripts/prepare-images.py` e
@@ -178,10 +195,10 @@ python3 scripts/prepare-images.py` e
 
 ## Decisões de design
 
-- **O site é a área de trabalho do sistema:** o cabeçalho é a barra superior (com a ilha mostrando a situação do
-  projeto), a navegação é a dock única (um item por seção, a grade abre todas), as seções aparecem como janelas e
-  cartões sobre o papel de parede, e o herói mostra o painel do agente montado com os componentes reais
-  (rotulado como ilustração) ao lado de uma captura real.
+- **Página de produto (Landing v3 · Produto):** faixa de aviso, menu fixo (que desfoca e encolhe ao rolar), herói
+  centrado com o logo e o tour em vídeo, destaques com clipes, capturas em abas, baixar, notas, comunidade, apoio e
+  rodapé completo, em painéis de cantos arredondados. As outras páginas públicas usam o mesmo menu e rodapé; a
+  área de membros mantém a barra superior do sistema.
 - **Logo em destaque:** o logo principal (mascote e nome) abre o herói, grande (216 px; 150 no celular; o mínimo da
   marca é 96 px), sempre sobre o fundo liso: a regra da marca pede só a versão de uma cor sobre papel de parede, então
   o papel de parede fica atrás da captura, que flutua sobre o céu do sistema. No claro, o logo do tema claro.
