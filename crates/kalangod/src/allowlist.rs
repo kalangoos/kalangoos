@@ -875,22 +875,69 @@ pub fn prune_caches(st: &crate::server::State) -> Vec<String> {
 /// GIO and pixbuf modules from elsewhere — GTK 4 does not load `GTK_MODULES`, which a desktop sets for accessibility)
 /// unless listed (a development session preloads its layer-shell library), or a tracer attached.
 pub fn tampered(pid: i32, allowed_env: &[String]) -> Option<String> {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    if traced(&status) {
-        return Some("TracerPid".into());
+    match inspect(pid, allowed_env, false) {
+        Check::Tampered(why) => Some(why),
+        Check::Clean => None,
+        // what could not be looked at is not clean: it is refused (and said)
+        Check::Unchecked(why) => {
+            eprintln!("kalangod: ambiente do processo {pid} não conferido ({why})");
+            Some(format!("unchecked: {why}"))
+        }
     }
-    let env = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-    loader_vars(&env, allowed_env)
+}
+
+/// What looking at a process found.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Check {
+    Clean,
+    Tampered(String),
+    /// The environment could not be read (kalangod is not root and the process is not dumpable): neither clean nor
+    /// tampered. A caller that must be sure refuses it.
+    Unchecked(String),
+}
+
+/// Looks at a process for a tracer and for loader variables not in `allowed_env`. `strict` also takes the variables
+/// that make a program load code or plugins from elsewhere without being a library path (Vulkan layers, PipeWire and
+/// GStreamer plugins, GL drivers, EGL vendors, GTK modules): the Remote runs with none of them, while the person's
+/// shell may carry some a desktop sets.
+pub fn inspect(pid: i32, allowed_env: &[String], strict: bool) -> Check {
+    let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
+        return Check::Unchecked("status".into());
+    };
+    if traced(&status) {
+        return Check::Tampered("TracerPid".into());
+    }
+    let env = match std::fs::read(format!("/proc/{pid}/environ")) {
+        Ok(e) => e,
+        Err(e) => return Check::Unchecked(format!("environ: {e}")),
+    };
+    match loader_vars_in(&env, allowed_env, strict) {
+        Some(v) => Check::Tampered(v),
+        None => Check::Clean,
+    }
 }
 
 fn traced(status: &str) -> bool {
     status.lines().find_map(|l| l.strip_prefix("TracerPid:")).map(|v| v.trim() != "0").unwrap_or(true)
 }
 
+const LOADER_VARS: [&str; 6] = ["LD_PRELOAD=", "LD_AUDIT=", "LD_LIBRARY_PATH=", "GIO_EXTRA_MODULES=", "GIO_MODULE_DIR=", "GDK_PIXBUF_MODULE_FILE="];
+const PLUGIN_VARS: [&str; 19] = [
+    "VK_LAYER_PATH=", "VK_ADD_LAYER_PATH=", "SPA_PLUGIN_DIR=", "GST_PLUGIN_PATH=", "LIBGL_DRIVERS_PATH=",
+    "__EGL_VENDOR_LIBRARY_FILENAMES=", "GTK_PATH=", "GTK_MODULES=", "GIO_MODULE_DIR=",
+    "LIBVA_DRIVERS_PATH=", "GST_PLUGIN_PATH_1_0=", "GST_PLUGIN_SYSTEM_PATH=", "GST_PLUGIN_SYSTEM_PATH_1_0=", "GCONV_PATH=",
+    "PIPEWIRE_MODULE_DIR=", "VK_ICD_FILENAMES=", "VK_DRIVER_FILES=", "GBM_BACKENDS_PATH=", "GDK_PIXBUF_MODULEDIR=",
+];
+
+#[cfg(test)]
 fn loader_vars(env: &[u8], allowed_env: &[String]) -> Option<String> {
-    env.split(|b| *b == 0).map(|kv| String::from_utf8_lossy(kv).into_owned())
-        .find(|kv| ["LD_PRELOAD=", "LD_AUDIT=", "LD_LIBRARY_PATH=", "GIO_EXTRA_MODULES=", "GIO_MODULE_DIR=", "GDK_PIXBUF_MODULE_FILE="].iter().any(|k| kv.starts_with(k))
-            && !kv.ends_with('=') && !allowed_env.contains(kv))
+    loader_vars_in(env, allowed_env, false)
+}
+
+fn loader_vars_in(env: &[u8], allowed_env: &[String], strict: bool) -> Option<String> {
+    env.split(|b| *b == 0).map(|kv| String::from_utf8_lossy(kv).into_owned()).find(|kv| {
+        (LOADER_VARS.iter().chain(if strict { PLUGIN_VARS.iter() } else { [].iter() })).any(|k| kv.starts_with(k)) && !kv.ends_with('=') && !allowed_env.contains(kv)
+    })
 }
 
 #[cfg(test)]
@@ -1029,6 +1076,16 @@ mod tests {
         assert_eq!(loader_vars(b"HOME=/h\0LD_PRELOAD=\0", &[]), None);
         assert!(loader_vars(b"GIO_EXTRA_MODULES=/tmp/evil\0", &[]).is_some());
         assert_eq!(loader_vars(b"GTK_MODULES=gail:atk-bridge\0", &[]), None);
+        // the Remote's list also has the variables that load plugins, layers and drivers from elsewhere
+        for v in ["LIBVA_DRIVERS_PATH=/tmp/x", "GST_PLUGIN_PATH_1_0=/tmp/x", "GST_PLUGIN_SYSTEM_PATH=/tmp/x", "GST_PLUGIN_SYSTEM_PATH_1_0=/tmp/x", "GCONV_PATH=/tmp/x", "PIPEWIRE_MODULE_DIR=/tmp/x", "VK_ICD_FILENAMES=/tmp/x.json", "VK_DRIVER_FILES=/tmp/x.json", "GBM_BACKENDS_PATH=/tmp/x", "GDK_PIXBUF_MODULEDIR=/tmp/x", "VK_LAYER_PATH=/tmp/x", "VK_ADD_LAYER_PATH=/tmp/x", "SPA_PLUGIN_DIR=/tmp/x", "GST_PLUGIN_PATH=/tmp/x", "LIBGL_DRIVERS_PATH=/tmp/x", "__EGL_VENDOR_LIBRARY_FILENAMES=/tmp/x.json", "GTK_PATH=/tmp/x", "GTK_MODULES=evil", "GIO_MODULE_DIR=/tmp/x"] {
+            let env = format!("HOME=/h\0{v}\0");
+            assert_eq!(loader_vars_in(env.as_bytes(), &[], true).as_deref(), Some(v), "{v}");
+            assert_eq!(loader_vars_in(env.as_bytes(), &[v.to_string()], true), None, "{v} allowed");
+        }
+        assert_eq!(loader_vars_in(b"GTK_MODULES=gail\0", &[], false), None, "the person's shell may carry what a desktop sets");
+        // a process that cannot be looked at (gone, or its environment is not readable) is not "clean" for anyone
+        assert!(tampered(i32::MAX, &[]).is_some_and(|w| w.starts_with("unchecked")));
+        assert!(matches!(inspect(i32::MAX, &[], false), Check::Unchecked(_)));
     }
 
     #[test]

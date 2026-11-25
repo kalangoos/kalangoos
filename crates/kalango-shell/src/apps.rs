@@ -303,6 +303,12 @@ pub(crate) fn redraw_icons_at(scale: f64) {
 
 pub fn abrir(app: &App) -> Result<(), String> {
     let ctx = gtk::gdk::Display::default().map(|d| d.app_launch_context());
+    // the shell runs with LD_PRELOAD=libgtk4-layer-shell and its apps do not need it (and the Remote's permission is refused
+    // for anything preloaded): what the shell preloaded does not pass on to the apps it opens
+    if let Some(c) = &ctx {
+        c.unsetenv("LD_PRELOAD");
+        c.unsetenv("LD_AUDIT");
+    }
     app.info.launch(&[], ctx.as_ref()).map_err(|e| e.to_string())?;
     record_use(&app.id);
     Ok(())
@@ -507,5 +513,20 @@ mod icon_tests {
         assert_eq!(c.get(&"c"), Some(3));
         c.insert("c", 4); // the same key again replaces, nothing is let go
         assert_eq!((c.len(), c.get(&"a"), c.get(&"c")), (2, Some(1), Some(4)));
+    }
+
+    // The shell runs with LD_PRELOAD=libgtk4-layer-shell.so.0 (the image's script) and the apps it opens must not: kalangod
+    // refuses the Remote for anything preloaded, and no app needs the shell's layer-shell library. A source check: the
+    // launch itself needs a display and an installed app.
+    #[test]
+    fn what_the_shell_preloaded_does_not_pass_to_the_apps_it_opens() {
+        let src = include_str!("apps.rs");
+        let from = src.find("pub fn abrir").expect("abrir");
+        let body = &src[from..from + src[from..].find("\n}\n").expect("end of abrir")];
+        let launch = body.find("app.info.launch").expect("the launch");
+        for var in ["LD_PRELOAD", "LD_AUDIT"] {
+            let call = body.find(&format!("unsetenv(\"{var}\")")).unwrap_or_else(|| panic!("abrir must unset {var}"));
+            assert!(call < launch, "{var} is unset before the app is launched");
+        }
     }
 }

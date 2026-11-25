@@ -1,0 +1,56 @@
+name: Teste em hardware real
+description: Contar como o KalangoOS se comportou num computador de verdade (use o imagem/validar-hardware.sh).
+labels: ["hardware"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado por testar! Rode `imagem/validar-hardware.sh` na sessão ao vivo (veja docs/VALIDACAO-HARDWARE.md) e cole o `resumo.md` abaixo.
+        O script troca MACs, IPs, números de série, UUIDs, usuário, nome do computador e redes Wi-Fi por marcadores, mas **leia o resumo antes de colar**.
+        Não anexe a pasta inteira sem ler: ela é texto puro e você pode apagar o que quiser.
+  - type: dropdown
+    id: gpu
+    attributes:
+      label: Fabricante da placa de vídeo
+      options:
+        - NVIDIA
+        - AMD
+        - Intel
+        - Mais de uma (híbrido)
+        - Outra
+    validations:
+      required: true
+  - type: input
+    id: modelo
+    attributes:
+      label: Modelo do computador e da placa de vídeo
+      description: Por exemplo "notebook X, RTX 4060". Modelo, nunca número de série.
+    validations:
+      required: true
+  - type: dropdown
+    id: resultado
+    attributes:
+      label: Resultado geral
+      options:
+        - Funcionou
+        - Funcionou com problemas
+        - Não ligou a sessão
+        - Não ligou o pendrive
+    validations:
+      required: true
+  - type: textarea
+    id: resumo
+    attributes:
+      label: Resumo do script (resumo.md)
+      description: Cole o texto do resumo.md como está; a tabela aparece formatada na issue.
+    validations:
+      required: true
+  - type: textarea
+    id: manual
+    attributes:
+      label: O que você testou à mão
+      description: Entrar na conta, Wi-Fi, som, monitor externo, Remote entre dois computadores, suspender. Diga o que funcionou e o que não.
+  - type: textarea
+    id: outros
+    attributes:
+      label: Mais alguma coisa

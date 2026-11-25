@@ -19,6 +19,8 @@
 #   KALANGO_IMAGEM_ISO=1 imagem/construir.sh     a ISO para instalar (target/iso/kalangoos.iso): sem conta nenhuma;
 #                                         liga ao vivo (casper) e abre o instalador; BIOS e UEFI
 set -euo pipefail
+# (NetworkManager-wait-online.service fica mascarado, no hook mais abaixo: nada na imagem espera "rede no ar" e, num
+# computador com porta de cabo sem cabo, ele falhava depois de ~60 s e segurava o boot da sessão ao vivo)
 # (what this script makes goes into the system as root's: no group or other write, whatever the builder's own umask
 # — with 002 the layer's folders came out 775 and, copied over the base, left /usr and /usr/bin group-writable)
 umask 022
@@ -146,7 +148,9 @@ if [ "${KALANGO_IMAGEM_SEM_APPS:-0}" != 1 ]; then
            /usr/lib/x86_64-linux-gnu/libvpx.so.9 2>/dev/null | head -1 || true)
   [ -n "$VPX" ] || { echo "falta a libvpx.so.9 (a do Ubuntu 24.04, com que o núcleo do Kalango Remote foi compilado)"; exit 1; }
   cp -L "$VPX" "$C/usr/lib/kalango/remote/"
-  printf '#!/bin/sh\nexec env LD_LIBRARY_PATH=/usr/lib/kalango/remote /usr/lib/kalango/remote/kalango-remote "$@"\n' > "$C/usr/bin/kalango-remote"
+  # (o shell que abre o app pelo dock tem LD_PRELOAD=libgtk4-layer-shell: o kalangod recusaria o Remote com ele; o app
+  # não precisa dele, e o script tira esse e o LD_AUDIT do ambiente)
+  printf '#!/bin/sh\nexec env -u LD_PRELOAD -u LD_AUDIT LD_LIBRARY_PATH=/usr/lib/kalango/remote /usr/lib/kalango/remote/kalango-remote "$@"\n' > "$C/usr/bin/kalango-remote"
   chmod 755 "$C/usr/bin/kalango-remote"
   d usr/share/applications
   cat > "$C/usr/share/applications/os.kalango.Remote.desktop" <<'DESK'
@@ -354,6 +358,7 @@ env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME="$HOME" TMPDIR="$W" /usr/bin/mmde
   --customize-hook='chroot "$1" systemctl enable greetd.service NetworkManager.service bluetooth.service ntpd-rs.service || true' \
   --customize-hook='chroot "$1" systemctl set-default graphical.target' \
   --customize-hook='chroot "$1" systemctl mask getty@tty1.service autovt@tty1.service' \
+  --customize-hook='chroot "$1" systemctl mask NetworkManager-wait-online.service' \
   --customize-hook='[ ! -x "$1/usr/bin/glib-compile-schemas" ] || chroot "$1" glib-compile-schemas /usr/share/glib-2.0/schemas' \
   --customize-hook='chroot "$1" update-initramfs -u -k all' \
   --customize-hook='ln -sf ../usr/lib/os-release "$1/etc/os-release"; rm -f "$1"/etc/update-motd.d/*; rm -f "$1"/etc/legal; : > "$1/etc/motd"' \
