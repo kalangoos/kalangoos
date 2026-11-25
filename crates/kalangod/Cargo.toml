@@ -23,6 +23,7 @@ base64 = "0.22"
 getrandom = "0.2"
 kalango-i18n = { path = "../kalango-i18n" }
 kalango-d1 = { path = "../kalango-d1" }
+kalango-craft = { path = "../kalango-craft" }
 pdf-extract = "0.12.1"
 
 [package.metadata]

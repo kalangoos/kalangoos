@@ -78,6 +78,7 @@ mod idle;
 mod notification_policy;
 mod clipboard;
 mod clipboard_watch;
+mod criativos;
 mod paste_keys;
 mod voice_mode;
 mod configuracoes_entrada;
@@ -938,6 +939,8 @@ fn iniciar(app: &gtk::Application) -> Rc<Shell> {
     removable_media::start();
     // the file chooser of every app (the portal's FileChooser)
     portal::start();
+    // the creative apps' automatic updates (Central de Apps; background, applied when the app is closed)
+    criativos::agendar();
     // polkit asks the shell for the admin password (its authentication agent; not in the development session)
     polkit_agent::start();
     privacy_now::start();

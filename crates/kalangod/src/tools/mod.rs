@@ -15,6 +15,7 @@ pub mod flow_draft;
 pub mod maquinas;
 pub mod web;
 pub mod tela;
+pub mod craft;
 
 use crate::peer::Peer;
 use crate::policy::{CallerRule, Config, Effect, Level};
@@ -73,6 +74,7 @@ pub fn all() -> Vec<Tool> {
     v.extend(gpu::tools());
     v.extend(tela::tools());
     v.extend(plataforma::tools());
+    v.extend(craft::tools());
     v.extend(gatilho_internet::tools());
     v
 }

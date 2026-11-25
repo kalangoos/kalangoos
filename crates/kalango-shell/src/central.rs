@@ -453,6 +453,8 @@ impl Central {
         paginas.add_named(&uso.raiz, Some("uso"));
         let ajustes = crate::central_ajustes::Ajustes::new(shell, largura);
         paginas.add_named(&ajustes.raiz, Some("ajustes"));
+        // Ajustes › Apps › a creative app (criativos.rs, design 346774)
+        paginas.add_named(&crate::criativos::ajustes_app().raiz, Some("app-criativo"));
         let conversas = crate::central_conversas::Conversas::new(shell, largura);
         paginas.add_named(&conversas.raiz, Some("conversas"));
         let novo_agente = crate::new_agent::NewAgentPage::new();
@@ -797,10 +799,15 @@ impl Central {
     }
 
     pub fn pagina(self: &Rc<Self>, id: &str) {
+        // ("app-criativo:<app>": a creative app's settings, a page of Ajustes)
+        let (id, app_criativo) = match id.strip_prefix("app-criativo:") {
+            Some(a) => ("app-criativo", Some(a.to_string())),
+            None => (id, None),
+        };
         // (the new agent's page belongs to Agents on the rail)
         let novo = id == "novo-agente";
         let fluxo = id == "fluxo";
-        let id_trilho = if novo || id == "instalar-agente" || id == "agente" { "agentes" } else if fluxo { "rotinas" } else { id };
+        let id_trilho = if novo || id == "instalar-agente" || id == "agente" { "agentes" } else if fluxo { "rotinas" } else if id == "app-criativo" { "ajustes" } else { id };
         let Some((pid, nome, _, true)) = PAGINAS.iter().find(|p| p.0 == id_trilho) else { return };
         // ("again" only while the window is on screen: a closed window reopened on this page starts as its band wants
         // — suite run 53, §80 found the list opened as if the rail's button had been pressed)
@@ -852,6 +859,11 @@ impl Central {
             "conversas" => self.conversas.mostrar(),
             "uso" => self.uso.render(),
             "ajustes" => self.ajustes.recarregar(),
+            "app-criativo" => {
+                if let Some(a) = &app_criativo {
+                    crate::criativos::ajustes_app().mostrar(a);
+                }
+            }
             "agentes" => self.agentes.reload(),
             _ => {}
         }

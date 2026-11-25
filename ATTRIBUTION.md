@@ -41,6 +41,7 @@ a marca do projeto e **não** entram na licença do código.
 | Caminho | Origem | Licença |
 |---|---|---|
 | `crates/kalango-shell/assets/emoji-pt.tsv` | Nomes e palavras-chave dos emojis em português, montados a partir do [Unicode CLDR](https://github.com/unicode-org/cldr-json) (anotações) e do `emoji-test.txt` do Unicode | Unicode License v3 (`Unicode-3.0`); texto em `NOTICE` |
+| `crates/kalango-craft/catalogo/artcraft-release.gpg` e `crates/kalango-craft/src/testes/filmcraft-0.20.1.signature-1` | Chave pública de assinatura dos lançamentos do projeto Craft (github.com/storytold) e uma assinatura de um lançamento dele, usada só para conferir os downloads dos Apps criativos e nos testes. Nenhum app, nome ou logo do projeto vai neste repositório | Chave e assinatura públicas do projeto; sem licença própria declarada |
 
 ## Legado (origem a confirmar)
 

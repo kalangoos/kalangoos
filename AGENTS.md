@@ -31,8 +31,10 @@ para pessoas. O `CLAUDE.md` só aponta para cá.
 
 Dependências e recursos com identificadores SPDX desta lista: `MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`,
 `ISC`, `Zlib`, `0BSD`, `Unlicense`, `Unicode-3.0`, `MPL-2.0`, `CDLA-Permissive-2.0`, `OFL-1.1`, `Ubuntu-font-1.0`,
-`CC0-1.0`, `CC-BY-4.0`. Bibliotecas do sistema ligadas dinamicamente (GTK, VTE, Poppler, GStreamer) e o niri
-(GPL-3.0-or-later) já estão aceitos. Qualquer outra: pergunte. O `deny.toml` confere as crates na CI.
+`CC0-1.0`, `CC-BY-4.0`, `BSL-1.0`, `MIT-0`. Bibliotecas do sistema ligadas dinamicamente (GTK, VTE, Poppler, GStreamer) e o niri
+(GPL-3.0-or-later) já estão aceitos. `BSL-1.0` (Boost) e `MIT-0` entraram em 25/11/2026, por decisão do
+mantenedor, ao integrar os Apps criativos (`docs/APPS-CRIATIVOS.md`): são permissivas como a MIT (a MIT-0 nem pede o
+aviso). Qualquer outra: pergunte. O `deny.toml` confere as crates na CI.
 
 ## O que é o projeto
 

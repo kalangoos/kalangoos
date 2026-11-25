@@ -1,0 +1,18 @@
+[package]
+name = "kalango-craft"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+description = "KalangoOS · Apps criativos (projeto Craft): catálogo, verificação das assinaturas, instalação pelo Flatpak, níveis das ferramentas para os agentes e cliente MCP"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+sha2 = "0.10"
+base64 = "0.22"
+libc = "0.2"
+kalango-i18n = { path = "../kalango-i18n" }
+tempfile = "3"
+

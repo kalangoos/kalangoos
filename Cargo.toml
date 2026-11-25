@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/kalangod", "crates/kalango-tela", "crates/kalango-aprovacao", "crates/kalango-shell", "crates/kalango-movimento", "crates/kalango-i18n", "crates/kalango-agente", "crates/kalango-entrada", "crates/kalango-instalador", "crates/kalango-sons", "crates/kalango-modelos", "crates/kalango-d1"]
+members = ["crates/kalangod", "crates/kalango-tela", "crates/kalango-aprovacao", "crates/kalango-shell", "crates/kalango-movimento", "crates/kalango-i18n", "crates/kalango-agente", "crates/kalango-entrada", "crates/kalango-instalador", "crates/kalango-sons", "crates/kalango-modelos", "crates/kalango-d1", "crates/kalango-craft"]
 # a tela de aprovação e o shell precisam do GTK4 e do gtk4-layer-shell (poc/setup-deps.sh); o padrão compila só o kalangod
 default-members = ["crates/kalangod", "crates/kalango-agente"]
 

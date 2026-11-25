@@ -107,6 +107,8 @@ struct Ui {
     comando: Label,
     /// the muted lines under the command (a folder's summary, where an install writes)
     detalhe: Label,
+    /// a creative app's request (design 346477): O quê / Para onde / Formato / Por quê
+    campos: gtk::Grid,
     escopo: Label,
     rodape: Label,
     erro: Label,
@@ -428,6 +430,7 @@ impl Ui {
         self.diff.set_visible(false);
         self.comando.set_visible(true);
         self.detalhe.set_visible(false);
+        self.campos.set_visible(false);
         self.sempre.set_label(tr("Always"));
         self.sempre.set_tooltip_text(Some(tr("Allow, and do not ask again for this exact request (it can be taken back in Agents)")));
         self.negar.set_label(tr("Deny"));
@@ -466,6 +469,54 @@ impl Ui {
                 }
                 None => self.sempre.set_visible(false),
             }
+            self.mostrar_comum(p);
+            return;
+        }
+        // a creative app's tool (design 36, 346477): which app, what it does, where it writes, the level and why;
+        // driving the window or an unknown tool: approval, never "always"
+        if nivel == "craft" {
+            let c = &p["cartao"];
+            let app = c["app"].as_str().unwrap_or("").to_string();
+            let aprovar = c["nivel"] == "aprovar";
+            self.risco.set_text(if aprovar { tr("High risk") } else { tr("Medium risk") });
+            self.risco.set_css_classes(&["risco", if aprovar { "alto" } else { "medio" }]);
+            let verbo = c["verbo"].as_str().unwrap_or("").to_string();
+            let nivel_txt = if aprovar { tr("asks for approval") } else { tr("asks to confirm") };
+            let classe = c["classe"].as_str().unwrap_or("").to_string();
+            self.frase.set_text(&format!("{}\n{}", trf("{agent} wants to {verb} {app}", &[("agent", agente.clone()), ("verb", verbo), ("app", app.clone())]),
+                trf("Level: {class} → {asks}", &[("class", classe), ("asks", nivel_txt.to_string())])));
+            while let Some(x) = self.campos.first_child() {
+                self.campos.remove(&x);
+            }
+            let mut linha = 0;
+            for (k, rot) in [("o_que", tr("What")), ("para_onde", tr("Where to")), ("formato", tr("Format")), ("por_que", tr("Why"))] {
+                let v = c[k].as_str().unwrap_or("");
+                if v.is_empty() {
+                    continue;
+                }
+                let kl = label(rot, "campo-nome");
+                kl.set_valign(Align::Start);
+                kl.set_hexpand(false);
+                kl.set_max_width_chars(-1);
+                self.campos.attach(&kl, 0, linha, 1, 1);
+                // (texto, nunca marcação: o que o agente escreveu aparece como escreveu)
+                let vl = label(v, "campo-valor");
+                vl.set_use_markup(false);
+                vl.set_wrap(true);
+                vl.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+                vl.set_hexpand(true);
+                self.campos.attach(&vl, 1, linha, 1, 1);
+                linha += 1;
+            }
+            self.comando.set_visible(false);
+            self.campos.set_visible(true);
+            if std::env::var_os("KALANGO_SHELL_DEBUG").is_some() {
+                eprintln!("debug aprovação: app criativo {app}: {linha} campos, caixa {}", self.campos.parent().is_some_and(|c| c.get_visible()));
+            }
+            self.escopo.set_text(c["nota"].as_str().unwrap_or(""));
+            self.aprovar.set_label(tr("Allow once"));
+            self.sempre.set_label(tr("Always for this agent"));
+            self.sempre.set_visible(!aprovar && p["no_always"] != true);
             self.mostrar_comum(p);
             return;
         }
@@ -815,6 +866,14 @@ mod platform_tests {
 fn demo_pedido() -> Value {
     // (KALANGO_APROVACAO_DEMO=pasta / instalar: the folder and the install cards, as in design page 32)
     match std::env::var("KALANGO_APROVACAO_DEMO").as_deref() {
+        // a creative app's tool that saves or exports (design 346477)
+        Ok("craft") => return json!({"id": 7, "tool": "craft.chamar", "level": "craft", "caller": "Editor de clipes (/usr/libexec/kalango/agente)",
+            "descricao": "", "efeito": "escreve", "reversivel": false, "no_always": false, "args": {"app": "filmcraft", "ferramenta": "command_run", "argumentos": {"id": "file.export"}},
+            "reason": "FilmCraft: saves, exports, imports, or reaches a file or an address", "criado": now(), "prazo_s": 120,
+            "cartao": {"app": "FilmCraft", "ferramenta": "media_export", "nivel": "confirmar", "verbo": "exportar do", "classe": "salvar e exportar",
+                "o_que": "Exportar “Destaques · episódio 42” (4 clipes, 2 min 10 s)", "para_onde": "~/Vídeos/Kalango Cast/destaques/ (pasta já permitida)",
+                "formato": "MP4 H.264 1080p", "por_que": "Você pediu: “gera os destaques da live de ontem”",
+                "nota": "Controlar a janela do FilmCraft (clicar, arrastar) pediria aprovação separada, com a d1 mostrando a confiança."}}),
         Ok("pasta") => return json!({"id": 7, "tool": "tarefas.pedir_pasta", "level": "pasta", "caller": "Assistente (/usr/libexec/kalango/agente)",
             "descricao": "", "efeito": "escreve", "reversivel": true, "no_always": false, "args": {"pasta": "~/Projetos/kalango-site"}, "reason": "", "criado": now(), "prazo_s": 120,
             "cartao": {"caminho": "~/Projetos/kalango-site", "arquivos": 214, "mais": false, "bytes": 18_874_368u64, "git": "main",
@@ -934,6 +993,12 @@ fn build(app: &Application) {
     caixa.add_css_class("caixa-comando");
     caixa.append(&comando);
     caixa.append(&detalhe);
+    let campos = gtk::Grid::new();
+    campos.add_css_class("campos");
+    campos.set_column_spacing(24);
+    campos.set_row_spacing(10);
+    campos.set_visible(false);
+    caixa.append(&campos);
     let escopo = label("", "escopo");
     let erro = label("", "erro");
     erro.set_visible(false);
@@ -1017,8 +1082,16 @@ fn build(app: &Application) {
     win.set_child(Some(&raiz));
 
     // (the box goes with the command: hidden for a startup file, where the diff takes its place)
-    comando.bind_property("visible", &caixa, "visible").sync_create().build();
-    let ui = Rc::new(Ui { win: win.clone(), risco, frase, comando, detalhe, escopo, rodape, erro, aprovar: aprovar.clone(), negar: negar.clone(), sempre: sempre.clone(),
+    // (the box shows while it holds something: the command, or a creative app's fields)
+    let mostrar_caixa = {
+        let (caixa, comando, campos) = (caixa.clone(), comando.clone(), campos.clone());
+        move || caixa.set_visible(comando.get_visible() || campos.get_visible())
+    };
+    mostrar_caixa();
+    let m = mostrar_caixa.clone();
+    comando.connect_visible_notify(move |_| m());
+    campos.connect_visible_notify(move |_| mostrar_caixa());
+    let ui = Rc::new(Ui { win: win.clone(), risco, frase, comando, detalhe, campos, escopo, rodape, erro, aprovar: aprovar.clone(), negar: negar.clone(), sempre: sempre.clone(),
         aviso, aviso_texto, diff, diff_linhas, d1, d1_faisca: spark.clone(), d1_veredito, d1_confianca, d1_motivo, d1_pedido: Cell::new(0), atual: RefCell::new(None), camada: !janela, fundo: fundo_a, cartao: cartao_a, desde: Cell::new(Instant::now()), waiting: Cell::new(0), havia: Cell::new(false) });
     aprovar.connect_clicked({ let ui = ui.clone(); move |_| ui.decidir(true, false) });
     negar.connect_clicked({ let ui = ui.clone(); move |_| ui.decidir(false, false) });
