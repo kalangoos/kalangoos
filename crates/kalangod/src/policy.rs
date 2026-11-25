@@ -84,8 +84,20 @@ pub struct Config {
     pub interface_da_pessoa: Vec<PathBuf>,
     /// Loader variables the person's interface may start with (a development session preloads its layer-shell
     /// library: `LD_PRELOAD=…`); anything else loaded into it, or a tracer, and it is not taken as the person's.
-    #[serde(default)]
+    #[serde(default = "ambiente_da_interface_padrao")]
     pub interface_ambiente_permitido: Vec<String>,
+    /// Loader variables Kalango Remote's app and core may run with: the image starts them through a script that sets
+    /// `LD_LIBRARY_PATH` to the libraries beside them. Anything else loaded into them, or a tracer, and no
+    /// permission is given (an agent or any program of the same user could otherwise run the app with its own library).
+    #[serde(default = "ambiente_do_remote_padrao")]
+    pub controle_remoto_ambiente_permitido: Vec<String>,
+    /// Folders the executable code of the Remote's app and core may be mapped from (checked as root, from
+    /// /proc/<pid>/maps: a library that hid its own `LD_PRELOAD` string is still there).
+    #[serde(default = "bibliotecas_do_remote_padrao")]
+    pub controle_remoto_bibliotecas: Vec<String>,
+    /// The agents' engine, by full path: the only program whose confidence marks are believed.
+    #[serde(default = "motor_do_agente_padrao")]
+    pub motor_do_agente: Vec<PathBuf>,
     /// Quantos pontos de restauração manter (os mais antigos são apagados).
     #[serde(default = "pontos_padrao")]
     pub pontos_max: usize,
@@ -157,24 +169,52 @@ fn controle_remoto_padrao() -> PathBuf {
     "/run/kalango/controle-remoto".into()
 }
 
+/// The kernel names a program by the file it runs, not by the script that started it: on the image `/usr/bin/kalango-shell`
+/// is a script that preloads the layer-shell library and execs `/usr/libexec/kalango/kalango-shell.bin`, and niri
+/// compares this path with `/proc/pid/exe`. With the script's path the on-screen keyboard was never allowed.
 fn controle_remoto_sempre_padrao() -> Vec<String> {
-    vec!["/usr/bin/kalango-shell teclado".into()]
+    vec!["/usr/libexec/kalango/kalango-shell.bin teclado".into()]
 }
 
+/// What the image's `kalango-shell` and `kalango-aprovacao` scripts set before exec (imagem/construir.sh).
+fn ambiente_da_interface_padrao() -> Vec<String> {
+    vec!["LD_PRELOAD=libgtk4-layer-shell.so.0".into()]
+}
+
+/// What the image's `kalango-remote` script sets before exec (imagem/construir.sh).
+fn ambiente_do_remote_padrao() -> Vec<String> {
+    vec!["LD_LIBRARY_PATH=/usr/lib/kalango/remote".into()]
+}
+
+fn bibliotecas_do_remote_padrao() -> Vec<String> {
+    vec!["/usr/lib/".into(), "/lib/".into()]
+}
+
+fn motor_do_agente_padrao() -> Vec<PathBuf> {
+    vec!["/usr/libexec/kalango/kalango-agente".into()]
+}
+
+/// The ISO installs the app in /usr/lib/kalango/remote and /usr/bin/kalango-remote is a script that execs it with the
+/// libraries beside it: the kernel then names the app by the second path, so a list with only the first never
+/// matched and no session on an installed system could show its screen.
 fn controle_remoto_apps_padrao() -> Vec<String> {
-    vec!["/usr/bin/kalango-remote".into()]
+    vec!["/usr/bin/kalango-remote".into(), "/usr/lib/kalango/remote/kalango-remote".into()]
 }
 
 fn raiz_padrao() -> PathBuf {
     "/".into()
 }
 
+/// The image's `/usr/libexec/kalango/kalango-shell` and `kalango-aprovacao` are links to scripts in /usr/bin; the
+/// programs themselves are the `.bin` files, and those are what `/proc/pid/exe` (and so the kernel's answer about the
+/// caller) names. Listing the links made `is_person_ui` and the graphical approval refuse the real shell and the real
+/// approval screen.
 fn interface_padrao() -> Vec<PathBuf> {
-    vec!["/usr/libexec/kalango/kalango-shell".into()]
+    vec!["/usr/libexec/kalango/kalango-shell.bin".into()]
 }
 
 fn aprovadores_padrao() -> Vec<PathBuf> {
-    vec!["/usr/libexec/kalango/kalango-aprovacao".into()]
+    vec!["/usr/libexec/kalango/kalango-aprovacao.bin".into()]
 }
 
 fn pontos_padrao() -> usize {
@@ -278,7 +318,10 @@ impl Config {
             login_path: None,
             aprovadores_graficos: aprovadores_padrao(),
             interface_da_pessoa: interface_padrao(),
-            interface_ambiente_permitido: vec![],
+            interface_ambiente_permitido: ambiente_da_interface_padrao(),
+            controle_remoto_ambiente_permitido: ambiente_do_remote_padrao(),
+            controle_remoto_bibliotecas: bibliotecas_do_remote_padrao(),
+            motor_do_agente: motor_do_agente_padrao(),
             callers: vec![
                 CallerRule {
                     name: "agentes-nativos".into(),
@@ -354,6 +397,33 @@ mod tests {
     #[test]
     fn levels_are_ordered() {
         assert!(Level::Observar < Level::Usuario && Level::Usuario < Level::Sistema && Level::Sistema < Level::Total);
+    }
+
+    #[test]
+    fn the_installed_remote_app_may_ask_for_the_screen() {
+        // the app as the kernel sees it on the ISO (the wrapper in /usr/bin execs this binary)
+        let cfg = Config::system_default();
+        assert!(cfg.controle_remoto_apps.iter().any(|a| a == "/usr/lib/kalango/remote/kalango-remote"));
+        assert!(cfg.controle_remoto_apps.iter().any(|a| a == "/usr/bin/kalango-remote"));
+    }
+
+    #[test]
+    fn the_defaults_name_the_programs_the_kernel_reports() {
+        let cfg = Config::system_default();
+        // the file the image's scripts exec (imagem/construir.sh: `$b.bin`), not the scripts or links to them
+        assert_eq!(cfg.interface_da_pessoa, vec![PathBuf::from("/usr/libexec/kalango/kalango-shell.bin")]);
+        assert_eq!(cfg.aprovadores_graficos, vec![PathBuf::from("/usr/libexec/kalango/kalango-aprovacao.bin")]);
+        assert_eq!(cfg.controle_remoto_sempre, vec!["/usr/libexec/kalango/kalango-shell.bin teclado".to_string()]);
+        // and the loader variables those scripts set are allowed, exactly
+        assert_eq!(cfg.interface_ambiente_permitido, vec!["LD_PRELOAD=libgtk4-layer-shell.so.0".to_string()]);
+        assert_eq!(cfg.controle_remoto_ambiente_permitido, vec!["LD_LIBRARY_PATH=/usr/lib/kalango/remote".to_string()]);
+        // the image build still makes exactly these wrappers
+        let build = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../imagem/construir.sh")).unwrap();
+        assert!(build.contains("LD_PRELOAD=libgtk4-layer-shell.so.0 /usr/libexec/kalango/%s.bin"), "construir.sh changed the wrapper: update the defaults");
+        // the Remote's script drops what the shell that launched it preloaded (the shell's own LD_PRELOAD would reach it
+        // from the dock and kalangod would refuse it) and sets only the library folder
+        assert!(build.contains("exec env -u LD_PRELOAD -u LD_AUDIT LD_LIBRARY_PATH=/usr/lib/kalango/remote /usr/lib/kalango/remote/kalango-remote"), "construir.sh: the Remote's script must unset LD_PRELOAD and LD_AUDIT");
+        assert_eq!(cfg.controle_remoto_bibliotecas, vec!["/usr/lib/".to_string(), "/lib/".to_string()]);
     }
 
     #[test]

@@ -32,9 +32,11 @@ pub struct Marks {
     streak: Mutex<std::collections::HashMap<u32, u32>>,
 }
 
-/// Only the agents' engine announces: the confidence is its own report, so nothing else is believed.
-pub fn is_engine(exe: &str) -> bool {
-    std::path::Path::new(exe).file_name().is_some_and(|n| n == "kalango-agente")
+/// Only the agents' engine announces: the confidence is its own report, so nothing else is believed. By the full path
+/// of the installed engine (the configuration lists a development session's own): a file merely named
+/// `kalango-agente` anywhere else is not it.
+pub fn is_engine(exe: &str, engines: &[std::path::PathBuf]) -> bool {
+    !exe.is_empty() && engines.iter().any(|e| e == std::path::Path::new(exe))
 }
 
 impl Marks {
@@ -99,7 +101,7 @@ pub fn validate(setting: &Setting, a: &ActionInfo, home: &str, confidence: u64, 
 
 /// Keeps the mark when it is valid; says whether it did.
 pub fn announce(st: &State, peer: &Peer, name: &str, args: &Value, confidence: u64, reason: &str) -> bool {
-    if !is_engine(&peer.exe) || st.d1_marks.refusing(peer.uid) {
+    if !is_engine(&peer.exe, &st.cfg.motor_do_agente) || st.d1_marks.refusing(peer.uid) {
         return false;
     }
     let Some(tool) = crate::tools::find(name) else { return false };
@@ -146,11 +148,16 @@ mod tests {
 
     #[test]
     fn only_the_engine_announces() {
-        assert!(is_engine("/usr/bin/kalango-agente"));
-        assert!(is_engine("/home/x/target/debug/kalango-agente"));
-        assert!(!is_engine("/usr/bin/python3"));
-        assert!(!is_engine("/tmp/kalango-agente-falso"));
-        assert!(!is_engine(""));
+        let installed = vec![std::path::PathBuf::from("/usr/libexec/kalango/kalango-agente")];
+        assert!(is_engine("/usr/libexec/kalango/kalango-agente", &installed));
+        // a program of the user's merely named like the engine is not it
+        assert!(!is_engine("/home/x/kalango-agente", &installed));
+        assert!(!is_engine("/tmp/kalango-agente", &installed));
+        assert!(!is_engine("/usr/bin/python3", &installed));
+        assert!(!is_engine("", &installed));
+        // a development session lists its own
+        let dev = vec![std::path::PathBuf::from("/home/x/target/debug/kalango-agente")];
+        assert!(is_engine("/home/x/target/debug/kalango-agente", &dev) && !is_engine("/usr/libexec/kalango/kalango-agente", &dev));
     }
 
     #[test]

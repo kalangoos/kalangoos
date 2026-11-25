@@ -36,6 +36,9 @@ restore_root = "$T/raiz"
 controle_remoto = "$T/controle-remoto"
 controle_remoto_sempre = ["$ROOT/target/$PERFIL/kalango-shell teclado"]
 controle_remoto_apps = ["${KALANGO_REMOTE_APP:-$ROOT/../kalango-remote/target/release/kalango-remote}", "$ROOT/../kalango-remote/target/debug/kalango-remote", "/usr/bin/kalango-remote"]
+# the app and its core run with the libraries of the development dependencies; the agents' engine is this tree's
+controle_remoto_ambiente_permitido = ["LD_LIBRARY_PATH=$LD_LIBRARY_PATH"]
+motor_do_agente = ["$ROOT/target/$PERFIL/kalango-agente"]
 # an agent operating the screen (tela.*): the helper kalangod starts for a session, as the person
 tela_auxiliar = "$ROOT/target/$PERFIL/kalango-tela"
 # files that run at login (agents' changes to them ask): the person's choice is in this session's settings; with a

@@ -44,6 +44,18 @@ pub fn serve(cfg: Config) -> std::io::Result<()> {
     std::fs::set_permissions(&cfg.state_dir, std::fs::Permissions::from_mode(0o700))?;
     let remote_control = crate::remote_control::RemoteControl::new(cfg.controle_remoto.clone(), cfg.controle_remoto_sempre.clone());
     let state = Arc::new(State { timeline: Arc::new(Timeline::open(&cfg.state_dir)?), approvals: Approvals::open(&cfg.state_dir), folders: crate::allowlist::Store::open(&cfg.state_dir), caches: crate::allowlist::CacheIndex::open(&cfg.state_dir), remote_control, screen: Default::default(), d1_marks: Default::default(), cfg });
+    // a Remote core that loses its protection (traced, or debuggable again) is ended and the person's Timeline says so
+    {
+        let timeline = state.timeline.clone();
+        state.remote_control.on_revoked(Box::new(move |g, why| {
+            timeline.append(crate::timeline::Entry {
+                id: 0, time: 0, caller: "kalangod".into(), uid: g.uid, pid: g.pid, tool: "controle_remoto.encerrado".into(), level: "sistema".into(),
+                args: json!({"pid": g.pid, "motivo": why}), status: "ok".into(),
+                summary: kalango_i18n::trf("remote control: the core {pid} lost its protection ({why}); the session was ended", &[("pid", g.pid.to_string()), ("why", why.to_owned())]),
+                inverse: None, restore_point: None, miniatura: None, startup: None, d1: None,
+            });
+        }));
+    }
     // the agents' grant caches: pruned now and every hour (a grant that went, unused for 30 days, over 10 GB)
     {
         let st = state.clone();
@@ -165,7 +177,7 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
             let res = match acao {
                 "permitir" => {
                     let caps: Vec<String> = params.get("capacidades").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
-                    st.remote_control.allow(peer, &st.cfg.controle_remoto_apps, pid, caps).map(|g| json!(g))
+                    st.remote_control.allow(peer, &crate::remote_control::Rules { apps: &st.cfg.controle_remoto_apps, env: &st.cfg.controle_remoto_ambiente_permitido, libs: &st.cfg.controle_remoto_bibliotecas }, pid, caps).map(|g| json!(g))
                 }
                 "revogar" => st.remote_control.revoke(peer, pid).map(|_| json!({"revogado": pid})),
                 "listar" => Ok(json!(st.remote_control.list(peer.uid))),

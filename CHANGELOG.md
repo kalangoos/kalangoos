@@ -5,6 +5,68 @@ Todas as mudanças relevantes do KalangoOS ficam aqui. O formato segue o
 [kalangoos/kalangoos](https://github.com/kalangoos/kalangoos/pulls?q=is%3Apr+is%3Amerged). As versões 0.x são
 prévias de desenvolvimento ([docs/LANCAMENTO.md](docs/LANCAMENTO.md)).
 
+## [0.1.1] — a lançar
+
+Correção de segurança e de uso da 0.1.0, achada ao testar a ISO publicada em máquinas virtuais (duas VMs, uma controlando
+a outra). **O `kalangod` desta versão exige o Kalango Remote desta versão: os dois saem juntos** (o núcleo da 0.1.0 é
+recusado por ser depurável) e o pin do Remote na esteira de lançamento sobe junto.
+
+### Corrigido
+
+- **A tela de aprovação gráfica era recusada** na imagem instalada ("a aprovação precisa ser feita por você: num terminal…"),
+  assim como o shell como interface da pessoa e o teclado na tela (`Keyboard → false` no niri): `/usr/bin/kalango-shell` e
+  `kalango-aprovacao` são scripts que executam os `.bin`, e as listas do `kalangod` (`interface_da_pessoa`,
+  `aprovadores_graficos`, `controle_remoto_sempre`) apontavam para os scripts. Agora nomeiam o programa que o kernel reporta,
+  e o `LD_PRELOAD=libgtk4-layer-shell.so.0` dos scripts é permitido exatamente.
+- **O computador controlado pelo Kalango Remote nunca mostrava a tela** na imagem instalada: o app roda como
+  `/usr/lib/kalango/remote/kalango-remote`, que não estava em `controle_remoto_apps`.
+- O script `/usr/bin/kalango-remote` tira `LD_PRELOAD` e `LD_AUDIT` do ambiente (o shell que abre o app pelo dock os tem) e o
+  shell não passa o `LD_PRELOAD` dele aos apps que abre.
+- **O código do cartão do Remote na mesma rede, no modo túnel do Cloudflare, agora é uma escolha da pessoa**: o ajuste
+  "Aceitar também conexões na mesma rede" (desligado por padrão) faz o app escutar também na rede local (`--lan`, porta
+  qualquer) enquanto compartilha, e o túnel continua; a senha e a aprovação seguem valendo. Desligado, o modo túnel escuta só
+  neste computador, como na 0.1.0 (uma porta aberta numa rede pública não é o que compartilhar pelo túnel deve fazer), e quem
+  digita o código ouve o que precisa ser ligado. Quando o app escuta na rede (esse ajuste ou "Só rede local direta"), só entram
+  endereços locais (loopback, faixas privadas e link-local; a lista de IPs do RustDesk, conferida antes da senha), e só eles
+  recebem a resposta da busca pelo código. Endereços do Tailscale e outros 100.64.0.0/10 (CGNAT) **não** contam como rede
+  local. O ajuste vale a partir do próximo compartilhamento: desligá-lo no meio de um compartilhamento não tira a proteção
+  do que já escuta na rede. Os campos "Aceitar só os aparelhos desta lista", "Endereços permitidos" e "Aceitar conexão por
+  endereço IP" ainda não funcionam e agora aparecem desativados, com "Ainda não funciona nesta versão". O antigo
+  "Preferir conexão direta na mesma rede", que não fazia nada no modo túnel, saiu. E a consulta do código vai ao endereço de
+  difusão de cada rede, não só ao da rota padrão (com duas placas ela não achava).
+- `is_engine` (marcas de confiança do d1) comparava só o nome do arquivo; agora é o caminho completo do motor instalado.
+- **Kalango Remote: o mouse de quem controla não chegava ao outro computador** (só o teclado): a área de transferência de
+  arquivos, fechada, cobria a imagem da sessão e recebia os cliques e movimentos. Já acontecia na 0.1.0.
+- Kalango Remote: com o acesso recusado pelo sistema (kalangod), o computador compartilhado não mostra mais "… está
+  controlando este computador"; a conexão é fechada e o aviso diz o motivo.
+
+### Segurança
+
+- O Remote só recebe captura, entrada e cobertura de privacidade se o app e o núcleo não puderem ser depurados nem lidos
+  pelos outros processos da pessoa (`prctl(PR_SET_DUMPABLE, 0)` logo no começo de cada um, conferido pelo `kalangod`), sem
+  depurador, sem carga de biblioteca ou plugin estranha no ambiente (`LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH` que não o do
+  script, camadas Vulkan, plugins do PipeWire e do GStreamer, módulos do GTK e do GIO…) e, como root, sem código executável
+  mapeado de fora das pastas do sistema (`/proc/<pid>/maps`).
+- A permissão **cai em até 1 s** se o núcleo deixar de ser seguro e, como o niri só olha o arquivo quando um cliente conecta,
+  o `kalangod` **encerra o núcleo** (SIGKILL, depois de conferir pid e hora de início) e registra na Linha do tempo.
+- Como root, o `kalangod` confia no que o **kernel** diz do processo, não no texto do caminho: mesmos namespaces de montagem e
+  de usuário que ele (um `bwrap` ou `unshare` monta arquivos falsos sobre `/usr/lib/kalango/remote/*`), mesmo arquivo (dispositivo e
+  inode de `/proc/<pid>/exe`), e cada mapeamento executável pelo `map_files`: do root, sem escrita de outros, de `/usr/lib/` ou
+  `/lib/`, nada `(deleted)`, e nenhuma memória anônima executável no núcleo. A conferência se repete a cada segundo.
+- Limites conhecidos, documentados em `docs/SEGURANCA.md`: a janela entre o `exec` e o `prctl` do app e do núcleo (um
+  processo que se anexa nela e solta antes do `prctl` não é visto), e o niri que identifica o cliente por pid (correção
+  planejada com pidfd).
+
+### Problemas conhecidos da 0.1.1
+
+- Áudio da sessão remota com o núcleo não depurável: não verificado (as VMs de teste não têm placa de som).
+
+### Kit de validação em hardware
+
+- `imagem/validar-hardware.sh` (relatório sem dados pessoais, com testes em `imagem/testar-validar-hardware.sh`),
+  `docs/VALIDACAO-HARDWARE.md` e o formulário de issue "Teste em hardware real".
+- A imagem mascara `NetworkManager-wait-online.service` (nada nela espera "rede no ar"; falhava depois de ~60 s sem cabo).
+
 ## [0.1.0] — 2026-11-22
 
 Primeira prévia técnica: uma ISO instalável, testada numa máquina virtual, com o shell, o `kalangod` e os agentes
