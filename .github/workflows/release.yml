@@ -187,7 +187,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kalangoos/kalango-remote
-          ref: 153c238f4824589e9b2056d35f211b2a8f03b56b
+          ref: 2d962abdd7114a9fc4d65a9a1e7b868621b33cfc
           path: apps/kalango-remote
           # (RustDesk's hbb_common is a submodule)
           submodules: true
