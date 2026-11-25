@@ -129,6 +129,9 @@ def serde_flow(f):
             fail("missing field `id`")
         if n.get("type") not in TYPES:
             fail("unknown variant `%s`, expected one of %s" % (n.get("type"), ", ".join("`%s`" % t for t in TYPES)))
+        # (`end` is a unit variant of the real `Block` enum: a map for its data is refused)
+        if n["type"] == "end" and isinstance(n.get("data"), dict):
+            fail("invalid type: map, expected unit variant Block::End")
         for k in REQUIRED.get(n["type"], []):
             if k not in (n.get("data") or {}):
                 fail("missing field `%s`" % k if n.get("data") is not None else "missing field `data`")

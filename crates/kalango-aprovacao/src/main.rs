@@ -221,7 +221,7 @@ fn capitalized(s: &str) -> String {
 
 /// Tools of the agents platform (kalangod's tools/plataforma.rs) whose approval shows a preview.
 fn is_platform_tool(tool: &str) -> bool {
-    matches!(tool, "agentes.criar" | "agentes.editar" | "fluxos.criar" | "fluxos.editar" | "ferramentas.criar_http" | "mcp.registrar")
+    matches!(tool, "agentes.criar" | "agentes.editar" | "fluxos.criar" | "fluxos.editar" | "fluxos.concluir" | "ferramentas.criar_http" | "mcp.registrar")
 }
 
 /// The preview lines as markup: the first line in bold, "· item" lines as they are, and the lines saying what was

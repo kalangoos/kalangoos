@@ -5,6 +5,24 @@ Todas as mudanças relevantes do KalangoOS ficam aqui. O formato segue o
 [kalangoos/kalangoos](https://github.com/kalangoos/kalangoos/pulls?q=is%3Apr+is%3Amerged). As versões 0.x são
 prévias de desenvolvimento ([docs/LANCAMENTO.md](docs/LANCAMENTO.md)).
 
+## [Não lançado]
+
+### Mudanças de padrão
+
+- **Fluxos pelo chat: `fluxos.criar` (o JSON inteiro) deixou de ser oferecido ao modelo por padrão.** Um fluxo novo nasce
+  só pelas ferramentas de rascunho (`fluxos.planejar`, `fluxos.adicionar_bloco`, `fluxos.ligar`, `fluxos.ajustar`,
+  `fluxos.concluir`), que leem os passos com o modelo de decisão d1 e sempre terminam na aprovação da pessoa.
+  `KALANGOD_FLUXOS_AUTORIA=classico` (só o JSON) ou `=etapas` (as duas formas) restauram o comportamento anterior;
+  `fluxos.editar` continua disponível. Detalhes e medições: [docs/FLUXOS-NO-CHAT.md](docs/FLUXOS-NO-CHAT.md).
+- **Pedidos para criar um fluxo começam por `fluxos.planejar`** (a primeira chamada do modelo é forçada) e o motor lembra
+  de chamar `fluxos.concluir` quando o modelo tenta responder com um rascunho aberto. Nada é forçado para ações que a
+  pessoa pôs em "nunca" ou desligou, e a criação continua pedindo aprovação.
+
+### Adicionado
+
+- `agentes.criar` e `agentes.editar` aceitam `output_fields` (os campos da saída estruturada de um agente), para que um
+  passo seguinte do fluxo leia cada campo.
+
 ## [0.1.1] — 2026-11-25
 
 Correção de segurança e de uso da 0.1.0, achada ao testar a ISO publicada em máquinas virtuais (duas VMs, uma controlando

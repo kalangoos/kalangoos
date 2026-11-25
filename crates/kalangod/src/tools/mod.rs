@@ -11,6 +11,7 @@ pub mod gpu;
 pub mod gatilho_internet;
 pub mod plataforma;
 pub mod plataforma_contrato;
+pub mod flow_draft;
 pub mod maquinas;
 pub mod web;
 pub mod tela;

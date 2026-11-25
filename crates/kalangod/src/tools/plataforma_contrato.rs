@@ -249,7 +249,7 @@ fn text_of(v: Option<&Value>) -> Option<&str> {
 }
 
 /// What the agent's `config` and top level may carry through this tool (a create keeps only these).
-const AGENT_KEYS: &[&str] = &["id", "name", "description", "kind", "config"];
+const AGENT_KEYS: &[&str] = &["id", "name", "description", "kind", "config", "output_fields"];
 const CONFIG_KEYS: &[&str] = &["instruction", "tools", "sub_agents", "member_instruction", "max_iterations"];
 
 fn dropped(keys: Vec<String>, make: impl Fn(String) -> String, notes: &mut Vec<String>) {
@@ -312,6 +312,52 @@ fn sub_agent_list(config: &mut Map<String, Value>, assistant: bool) -> Result<()
         out.push(if assistant { json!({"agent_id": id, "mode": mode}) } else { json!(id) });
     }
     config.insert("sub_agents".into(), Value::Array(out));
+    Ok(())
+}
+
+/// The kinds of a typed answer field (the platform's own list) and how many fields an answer has.
+const FIELD_KINDS: &[&str] = &["text", "number", "integer", "boolean", "list", "object"];
+const MAX_FIELDS: usize = 30;
+
+/// `output_fields` of an assistant: the typed answer it must give (for example `{name: "urgente", kind: "boolean"}`), which the
+/// platform checks on each answer, asking the model again when it does not fit; a later block (a condition on `content.urgente`)
+/// reads the field instead of free text. Only name, kind, required and description are kept; an agent that is not an assistant
+/// has no such answer. Nothing here widens what the agent may do.
+fn output_field_list(a: &mut Map<String, Value>, assistant: bool, notes: &mut Vec<String>) -> Result<(), String> {
+    let Some(v) = a.remove("output_fields") else { return Ok(()) };
+    let Some(list) = v.as_array() else { return Err(tr("output_fields is a list of {name, kind, required, description}").to_string()) };
+    if list.is_empty() {
+        a.insert("output_fields".into(), json!([]));
+        return Ok(());
+    }
+    if !assistant {
+        return Err(tr("only an assistant has a typed answer (output_fields); a team's answer is its last member's").to_string());
+    }
+    if list.len() > MAX_FIELDS {
+        return Err(trf("an answer has at most {max} fields", &[("max", MAX_FIELDS.to_string())]));
+    }
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for f in list {
+        let name = text_of(f.get("name")).map(str::trim).unwrap_or("");
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            return Err(trf("the field name \"{name}\" must be letters, digits and _ (not starting with a digit)", &[("name", one_line(name, 40))]));
+        }
+        if !seen.insert(name.to_string()) {
+            return Err(trf("the field \"{name}\" appears twice", &[("name", name.to_string())]));
+        }
+        let kind = text_of(f.get("kind")).unwrap_or("text");
+        if !FIELD_KINDS.contains(&kind) {
+            return Err(trf("the field \"{name}\" has kind \"{kind}\": use {kinds}", &[("name", name.to_string()), ("kind", one_line(kind, 20)), ("kinds", FIELD_KINDS.join(", "))]));
+        }
+        let mut field = json!({"name": name, "kind": kind, "required": f.get("required").and_then(Value::as_bool).unwrap_or(true)});
+        if let Some(d) = text_of(f.get("description")).filter(|d| !d.trim().is_empty()) {
+            field["description"] = json!(one_line(d, 200));
+        }
+        out.push(field);
+    }
+    notes.push(trf("the agent answers with typed fields: {names}", &[("names", out.iter().filter_map(|f| f["name"].as_str()).collect::<Vec<_>>().join(", "))]));
+    a.insert("output_fields".into(), Value::Array(out));
     Ok(())
 }
 
@@ -397,6 +443,7 @@ pub fn prepare_agent(agent: &Value, taken: Option<&HashSet<String>>, edit: bool,
     dropped(extra_config, |k| trf("left out of the agent's config (this tool does not offer it): {keys}", &[("keys", k)]), &mut notes);
     config.retain(|k, _| CONFIG_KEYS.contains(&k.as_str()));
     let assistant = kind == "assistant";
+    output_field_list(&mut a, assistant, &mut notes)?;
     tool_list(&mut config, &mut notes)?;
     sub_agent_list(&mut config, assistant)?;
     // a change: the agent as it is, with the fields sent replaced
@@ -449,7 +496,7 @@ fn position_of(n: &Map<String, Value>) -> Option<Value> {
 }
 
 /// The ways out of a block the platform gives names to (None: any, the default way).
-fn ways_of(node: &Value) -> Option<Vec<String>> {
+pub fn ways_of(node: &Value) -> Option<Vec<String>> {
     match node["type"].as_str()? {
         "condition" => {
             let mut v: Vec<String> = node["data"]["conditions"].as_array().into_iter().flatten().filter_map(|c| c["id"].as_str().map(str::to_string)).collect();
@@ -544,7 +591,12 @@ pub fn prepare_flow(flow: &Value) -> Result<(Value, Vec<String>), String> {
         let mut out = Map::new();
         out.insert("id".into(), json!(id));
         out.insert("type".into(), json!(t));
-        if let Some(d) = o.get("data").filter(|d| !d.is_null()) {
+        // an end block has no data at all (the engine refuses even an empty map): a model writes `"data": {}` for it
+        if t == "end" && o.get("data").is_some_and(|d| !d.is_null()) {
+            if o["data"].as_object().is_some_and(|d| !d.is_empty()) {
+                notes.push(trf("the end block \"{id}\" has no data: what was written for it was left out", &[("id", one_line(&id, 40))]));
+            }
+        } else if let Some(d) = o.get("data").filter(|d| !d.is_null()) {
             if !d.is_object() {
                 return Err(trf("the data of block \"{id}\" must be an object", &[("id", one_line(&id, 40))]));
             }
@@ -600,6 +652,23 @@ pub fn prepare_flow(flow: &Value) -> Result<(Value, Vec<String>), String> {
                 let example = NODE_TYPES.iter().find(|(k, _, _)| *k == t).map(|(_, _, d)| *d).unwrap_or("");
                 missing_errors.push(trf("block \"{id}\" ({type}) needs data with {keys} filled in (not empty), for example {example}", &[("id", one_line(&id, 40)), ("type", t), ("keys", lacking.join(", ")), ("example", example.to_string())]));
             }
+        }
+    }
+    // a loop's list: nothing named means the previous output (the editor's starting value); a name that is neither the
+    // output, one of its fields nor a variable is an error that says what to write (never a guess)
+    for n in nodes.iter_mut().filter(|n| n["type"] == "for_each") {
+        let id = n["id"].as_str().unwrap_or("").to_string();
+        let items = n["data"]["items"].clone();
+        let named = items.as_str().map(str::trim).filter(|i| !i.is_empty());
+        match named {
+            None if items.is_null() || items.as_str().is_some() => {
+                if let Some(d) = n["data"].as_object_mut() {
+                    d.insert("items".into(), json!("content"));
+                }
+                notes.push(trf("block \"{id}\" (for_each) named no list: it goes through the previous output (items \"content\")", &[("id", one_line(&id, 40))]));
+            }
+            Some(i) if i == "content" || i.starts_with("content.") || i.starts_with("var:") => {}
+            _ => missing_errors.push(trf("block \"{id}\" (for_each): items is \"content\" (the previous output), \"content.<field>\" or \"var:<variable>\", for example {example}", &[("id", one_line(&id, 40)), ("example", r#"{"items":"content","agent_id":"resumidor","message":"{item}"}"#.to_string())])),
         }
     }
     let snapshot = nodes.clone();
@@ -799,6 +868,7 @@ pub fn check_shown(kind: &str, item: &Value) -> Result<(), String> {
 pub fn agent_schema_text() -> String {
     "The agent, as JSON. name: text (required). description: text (optional). kind: \"assistant\" (default: one agent that talks and uses tools), \"sequential\" (a team, one after the other), \"parallel\" (a team, all at once) or \"loop\" (a team repeated until done). \
 config: {instruction: text, required for an assistant: what the agent does and how it answers; tools: [{name, permission: \"free\"|\"ask\"|\"never\"}] (may be empty: []; names are system tools such as arquivos.ler, arquivos.listar, web.ler; use \"ask\" for anything that changes things); sub_agents: [ids of agents that exist] (a team needs at least one)}. \
+Optional, for an assistant that must answer with typed fields a later block can read (a decision, a score): output_fields: [{name, kind: \"text\"|\"number\"|\"integer\"|\"boolean\"|\"list\"|\"object\", required, description}], for example [{\"name\":\"urgente\",\"kind\":\"boolean\"},{\"name\":\"motivo\",\"kind\":\"text\"}]. \
 Do NOT send an id when creating: it is made from the name (to change an agent, give its id). Only these fields are used. \
 Example: {\"name\":\"Resumidor\",\"description\":\"Resume textos\",\"kind\":\"assistant\",\"config\":{\"instruction\":\"Você resume o texto recebido em até 5 frases curtas, no idioma do texto.\",\"tools\":[]}}".into()
 }
@@ -813,7 +883,26 @@ Use ONLY these types; if the task needs something that has no block (for example
     t.push_str("Edges connect a node's output to the next node (source → target). Without sourceHandle the edge is the normal way out. A condition has one way per condition id (sourceHandle = that id) and the else way, sourceHandle \"bottom-handle\", for when no condition holds; an approval has \"sim\" and \"não\"; a decide has \"true\", \"false\" and \"pouca_confianca\"; a for_each has \"empty\" for an empty list. \
 A condition reads the field \"content\" (the previous output) or \"var:NAME\" (a variable saved with save_as); operators: equals, not_equals, contains, not_contains, starts_with, ends_with, is_defined, is_not_defined, greater_than, less_than, matches. {NAME} in a text is replaced by that variable. An agent block's agent_id is the id of an agent that exists (agentes.listar; create the agents first with agentes.criar).\n");
     t.push_str(&format!("Example (transcribe, if it says gta 6 summarize and tell a story, else end): {}", example_flow()));
+    t.push_str("\nThere is NO block that sends e-mail or messages: if the request needs that, tell the person it is not available (and offer the closest flow) instead of pretending. What does exist: a system_action with the tool web.ler reads a site; running at a time of the day is a routine of the person (Rotinas), not a block.");
     t
+}
+
+/// The JSON schema of the `fluxo` argument, for the model's server to constrain what it writes (llama.cpp turns the
+/// schema of a tool into a grammar): a block's `type` is one of the 19 types, so a made-up one cannot be written. Only
+/// that: a schema with one variant per type (each with the `data` keys it needs) was measured and made the 1.7B model
+/// pick the type that asks for the least (`end`, `join`), so `data` stays a free object and `prepare_flow` answers what
+/// a block lacks. It only narrows what the model can emit; every limit that matters (the approval, the whitelist) stays
+/// where it was.
+pub fn flow_json_schema() -> Value {
+    let types: Vec<&str> = NODE_TYPES.iter().map(|(n, _, _)| *n).collect();
+    json!({
+        "type": "object",
+        "properties": {
+            "nodes": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"id": {"type": "string"}, "type": {"enum": types}, "data": {"type": "object"}}, "required": ["id", "type"]}},
+            "edges": {"type": "array", "items": {"type": "object", "properties": {"source": {"type": "string", "minLength": 1}, "target": {"type": "string", "minLength": 1}, "sourceHandle": {"type": "string"}}, "required": ["source", "target"]}}
+        },
+        "required": ["nodes", "edges"]
+    })
 }
 
 /// A complete valid flow, the example in the tool's description (also what the tests send the platform).
@@ -989,6 +1078,53 @@ mod tests {
         // a made-up type with its prefix or capital letters is the type
         let (ok, _) = prepare_flow(&json!({"nodes": [{"id": "a", "type": "Block:For-Each", "data": {"items": "content", "agent_id": "x"}}]})).unwrap();
         assert_eq!(ok["nodes"][0]["type"], "for_each");
+    }
+
+    /// The engine's `end` is a unit variant: data written for it (even `{}`) is dropped, so the platform never sees it.
+    #[test]
+    fn an_end_block_never_carries_data() {
+        let flow = json!({"nodes": [{"id": "a", "type": "wait", "data": {"seconds": 1}}, {"id": "e", "type": "end", "data": {}}, {"id": "f", "type": "end", "data": {"x": 1}}], "edges": [{"source": "a", "target": "e"}, {"source": "a", "target": "f"}]});
+        let (f, notes) = prepare_flow(&flow).unwrap();
+        assert!(f["nodes"].as_array().unwrap().iter().filter(|n| n["type"] == "end").all(|n| n.get("data").is_none()), "{f}");
+        assert_eq!(notes.iter().filter(|n| n.contains("\"f\"")).count(), 1, "only the end block that carried something is noted: {notes:?}");
+    }
+
+    /// A loop with no list goes through the previous output (said in a note); a list that is not one of the three shapes
+    /// is an error with an example, never a guess.
+    #[test]
+    fn a_loop_without_a_list_uses_the_previous_output_and_a_wrong_list_is_refused() {
+        let flow = |items: Value| json!({"nodes": [{"id": "l", "type": "for_each", "data": {"agent_id": "resumidor", "items": items}}, {"id": "e", "type": "end"}], "edges": [{"source": "l", "target": "e"}]});
+        for blank in [json!(""), Value::Null] {
+            let (f, notes) = prepare_flow(&flow(blank)).unwrap();
+            assert_eq!(f["nodes"][0]["data"]["items"], "content");
+            assert!(notes.iter().any(|n| n.contains("for_each")), "{notes:?}");
+        }
+        for ok in ["content", "content.linhas", "var:lista"] {
+            assert!(prepare_flow(&flow(json!(ok))).is_ok(), "{ok}");
+        }
+        for bad in [json!("item_list"), json!([]), json!(3), json!({"a": 1})] {
+            let e = prepare_flow(&flow(bad.clone())).unwrap_err();
+            assert!(e.contains("content") && e.contains("resumidor"), "{bad}: {e}");
+        }
+        // the agent of a loop is still never filled in
+        assert!(prepare_flow(&json!({"nodes": [{"id": "l", "type": "for_each", "data": {"items": "content"}}]})).is_err());
+    }
+
+    /// The schema the model's server gets allows exactly the block types of the contract.
+    #[test]
+    fn the_json_schema_matches_the_contract() {
+        let schema = flow_json_schema();
+        let mut types: Vec<&str> = schema["properties"]["nodes"]["items"]["properties"]["type"]["enum"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        types.sort();
+        let mut want: Vec<&str> = NODE_TYPES.iter().map(|(n, _, _)| *n).collect();
+        want.sort();
+        assert_eq!(types, want);
+        // the example the tool shows is made of those types
+        for n in example_flow()["nodes"].as_array().unwrap() {
+            assert!(types.contains(&n["type"].as_str().unwrap()));
+        }
+        // a made-up type is not in it
+        assert!(!types.contains(&"browser") && !types.contains(&"email"));
     }
 
     /// The types the editor offers (`block:<type>` in its palette), read from the source of the shell, and the ones its
@@ -1340,5 +1476,25 @@ mod tests {
         for odd in [json!({"id": "a", "allow_cloud": false}), json!({"id": "a", "config": {"model": {"provider": "local", "model": "m"}}}), json!({"id": "a", "config": {"sandbox": {}}}), json!({"id": "a", "limits": {}}), json!({"id": "a", "system_action": "x"}), json!({"id": "a", "disabled": true})] {
             assert!(prepare_agent(&odd, None, true, Some(&old)).is_err(), "{odd}");
         }
+    }
+
+    #[test]
+    fn an_assistant_may_answer_with_typed_fields_and_nothing_else_slips_in() {
+        let ok = json!({"name": "Triagem", "config": {"instruction": "Diga se o chamado é urgente"}, "output_fields": [
+            {"name": "urgente", "kind": "boolean", "description": "o chamado é urgente", "level": "total"}, {"name": "motivo", "kind": "text", "required": false}]});
+        let (a, notes) = prepare_agent(&ok, Some(&set(&[])), false, None).unwrap();
+        assert_eq!(a["output_fields"], json!([{"name": "urgente", "kind": "boolean", "required": true, "description": "o chamado é urgente"}, {"name": "motivo", "kind": "text", "required": false}]), "only name, kind, required and description are kept");
+        assert!(notes.iter().any(|n| n.contains("urgente")));
+        for bad in [
+            json!([{"name": "1x", "kind": "text"}]), json!([{"name": "a b"}]), json!([{"name": "a", "kind": "enum"}]), json!([{"name": "a"}, {"name": "a"}]), json!("urgente"),
+            Value::Array((0..31).map(|i| json!({"name": format!("f{i}")})).collect()),
+        ] {
+            let mut a = ok.clone();
+            a["output_fields"] = bad.clone();
+            assert!(prepare_agent(&a, Some(&set(&[])), false, None).is_err(), "{bad}");
+        }
+        // a team has no typed answer of its own
+        let team = json!({"name": "Equipe", "kind": "sequential", "config": {"sub_agents": ["a"]}, "output_fields": [{"name": "x"}]});
+        assert!(prepare_agent(&team, Some(&set(&[])), false, None).is_err());
     }
 }

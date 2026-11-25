@@ -89,14 +89,29 @@ pub fn serve(cfg: Config) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The longest request line the server reads (the biggest legitimate one is a file written through a tool).
+pub const MAX_LINE: usize = 8 * 1024 * 1024;
+
 fn handle(st: Arc<State>, stream: UnixStream) -> std::io::Result<()> {
     let mut peer = Peer::from_stream(&stream)?;
     if let Some(h) = &st.cfg.home {
         peer.home = h.clone();
     }
     let mut out = stream.try_clone()?;
-    for line in BufReader::new(stream).lines() {
-        let line = line?;
+    let mut reader = BufReader::new(stream);
+    loop {
+        // a line is read up to MAX_LINE bytes: a client cannot make the privileged daemon hold more by never ending one
+        let mut buf = Vec::new();
+        let n = std::io::Read::take(&mut reader, MAX_LINE as u64 + 1).read_until(b'\n', &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        if buf.len() > MAX_LINE {
+            let r = err(Value::Null, -32600, kalango_i18n::tr("the request is too long"));
+            out.write_all(format!("{r}\n").as_bytes())?;
+            break;
+        }
+        let line = String::from_utf8_lossy(&buf).into_owned();
         if line.trim().is_empty() {
             continue;
         }
@@ -587,7 +602,7 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
         let p = Pending {
             id: 0, tool: name.into(), level: level.into(), args: args.clone(), caller: format!("{} ({})", rule.name, peer.exe), uid: peer.uid, pid: peer.pid, reason,
             descricao: kalango_i18n::tr(tool.description).into(), efeito: match tool.effect { crate::policy::Effect::Leitura => "leitura", crate::policy::Effect::Escreve => "escreve", crate::policy::Effect::Destrutiva => "destrutiva" }.into(),
-            reversivel: tool.reversible, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: None, no_always: crate::tools::gatilho_internet::asks(name), cartao
+            reversivel: tool.reversible, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: None, no_always: crate::tools::gatilho_internet::asks(name) || no_always_for(name), cartao
         };
         match st.approvals.request_with_always(p, timeout) {
             (Outcome::Approved, alternative) => (Ok(()), alternative),
@@ -642,7 +657,8 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
         Level::Sistema => approve("sistema", "mudança no sistema".into())?,
         // the agents platform: creating or changing an agent, a flow, a tool or a connector always asks, showing
         // exactly what will exist (already fitted to the creator's ceiling: no escalation)
-        _ if !st.approvals.is_standing(peer.uid, &peer.exe, name, args) && matches!(name, "agentes.criar" | "agentes.editar" | "fluxos.criar" | "fluxos.editar" | "ferramentas.criar_http" | "mcp.registrar") => {
+        // (the flow draft never takes a standing "always": what they create is not in their arguments)
+        _ if matches!(name, "fluxos.concluir") || !st.approvals.is_standing(peer.uid, &peer.exe, name, args) && matches!(name, "agentes.criar" | "agentes.editar" | "fluxos.criar" | "fluxos.editar" | "ferramentas.criar_http" | "mcp.registrar") => {
             match crate::tools::plataforma::needs_approval(peer, rule, name, args) {
                 Ok(Some(reason)) => approve("sistema", reason)?,
                 Ok(None) => {}
@@ -823,4 +839,45 @@ fn undo(st: &State, peer: &Peer, rule: &CallerRule, args: &Value, rp: Option<Str
     }
     let n = log_with(st, peer, rule, "linha_do_tempo.desfazer", Level::Sistema, &json!({"id": id}), "desfeito", &kalango_i18n::trf("undid #{id}: {action}", &[("id", id.to_string()), ("action", out.summary.clone())]), None, rp, None, mark);
     Ok((json!({"desfeito": id, "registro": n, "acao": out.summary}), kalango_i18n::trf("undid #{id}", &[("id", id.to_string())])))
+}
+
+/// Tools whose approval can never be answered "always": what they create is not in their arguments (a flow draft the
+/// server holds), so an "always" would cover whatever the next draft holds.
+pub fn no_always_for(tool: &str) -> bool {
+    tool == "fluxos.concluir"
+}
+
+#[cfg(test)]
+mod no_always_tests {
+    use super::*;
+    use crate::approval::{Approvals, Pending};
+
+    fn peer(pid: i32, uid: u32) -> crate::peer::Peer {
+        crate::peer::Peer { pid, uid, gid: uid, exe: "/usr/bin/aprovacao".into(), cgroup: String::new(), home: "/home/x".into(), passwd_home: "/home/x".into(), user: "x".into(), has_tty: true }
+    }
+
+    /// The approval of a flow draft refuses "always" when the person (or anyone) answers it, through the real approvals.
+    #[test]
+    fn the_approval_of_a_draft_refuses_always() {
+        for (tool, refused) in [("fluxos.concluir", true), ("fluxos.editar", false)] {
+            let approvals = std::sync::Arc::new(Approvals::default());
+            let p = Pending { id: 0, tool: tool.into(), level: "sistema".into(), args: serde_json::json!({"nome": "x"}), caller: "t".into(), uid: 1000, pid: 4001, reason: "r".into(), descricao: String::new(), efeito: "escreve".into(), reversivel: true, criado: 0, prazo_s: 0, exe: "/usr/bin/agente".into(), decision: None, startup: None, no_always: no_always_for(tool), cartao: None };
+            let a2 = approvals.clone();
+            let waiter = std::thread::spawn(move || a2.request(p, std::time::Duration::from_secs(20)));
+            let id = loop {
+                if let Some(p) = approvals.list().first() {
+                    break p.id;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            };
+            let r = approvals.decide(id, true, true, &peer(777, 1000), false, &[], std::time::Duration::from_secs(60));
+            assert_eq!(r.is_err(), refused, "{tool}: {r:?}");
+            // a plain yes always works (when "always" was refused the request is still pending; otherwise it was just answered)
+            if refused {
+                approvals.decide(id, true, false, &peer(777, 1000), false, &[], std::time::Duration::from_secs(60)).unwrap();
+            }
+            assert!(matches!(waiter.join().unwrap(), crate::approval::Outcome::Approved));
+            assert!(approvals.standing_for(1000).is_empty() || !refused);
+        }
+    }
 }
