@@ -536,7 +536,8 @@ impl Model {
     }
 
     /// One chat completion with the tools offered.
-    pub fn chat(&self, messages: &[Value], tools: &[Value]) -> Result<Reply, String> {
+    /// `required`: the model must call one of the tools offered (llama.cpp's `tool_choice: "required"`, a grammar).
+    pub fn chat(&self, messages: &[Value], tools: &[Value], required: bool) -> Result<Reply, String> {
         let mut body = json!({
             "messages": messages,
             // LFM3 recommended sampling for agentic use (model card)
@@ -545,6 +546,12 @@ impl Model {
         });
         if !tools.is_empty() {
             body["tools"] = json!(tools);
+            if required {
+                // a forced call is short: no reasoning before it and a ceiling, so a degenerate generation cannot run for minutes
+                body["tool_choice"] = json!("required");
+                body["chat_template_kwargs"] = json!({"enable_thinking": false});
+                body["max_tokens"] = json!(2048);
+            }
         }
         // long answers over a big context take time: up to 30 min per turn
         let v = post(&self.endpoint, "/v1/chat/completions", &body, Duration::from_secs(1800))?;

@@ -180,6 +180,27 @@ servidor perdoa o que é seguro perdoar. Criar ou editar continua perguntando se
   por chamador (usuário e regra) por dez minutos e usado uma só vez.
 - **O que nunca é afrouxado:** a ferramenta e os argumentos de um `system_action`, as permissões das ferramentas do
   agente e o teto do criador (a plataforma recorta de novo ao aplicar) continuam como a pessoa e a plataforma decidiram.
+- **Fluxos complexos com o modelo pequeno** (`flow_draft.rs`; o que funciona e o que não, medido, em
+  `docs/FLUXOS-NO-CHAT.md`): além do JSON inteiro de `fluxos.criar`, o modelo pode montar o fluxo em etapas.
+  `fluxos.planejar` recebe passos curtos em texto e o servidor mapeia cada passo para um bloco por regras fixas de
+  palavras (só blocos que não executam ferramentas do sistema: nunca `system_action`, `sandbox`, `speak` nem
+  `describe_image`, que só entram se o modelo os adicionar de propósito com `fluxos.adicionar_bloco` e a pessoa os vê
+  na aprovação; o `subflow` só nasce de um passo que nomeia o fluxo, e o nome é a palavra da pessoa, mostrada na aprovação), desenha as conexões (a condição na saída `sim`, o "senão" na `bottom-handle`, um `end` em todo ramo) e
+  diz, por bloco, o que falta (um agente, um arquivo ou um texto que o passo não nomeou **nunca** é inventado).
+  `fluxos.ajustar`, `fluxos.ligar` e `fluxos.adicionar_bloco` mexem no rascunho; `fluxos.concluir` cria. O rascunho fica
+  na memória do servidor, **por conversa** (usuário e processo que fala com o servidor), com no máximo 24 passos por
+  plano, 40 blocos, 64 KB de JSON, 8 rascunhos por usuário, 32 ao mesmo tempo e uma hora de vida (e uma linha do
+  socket do servidor tem no máximo 8 MiB). Um passo que precisa enviar e-mail ou mensagem não vira bloco (o planejador diz
+  que não está disponível); o planejador conhece palavras em português e inglês e, em outro idioma, manda montar o fluxo
+  bloco a bloco; o idioma da transcrição vem do idioma do sistema. Nada é criado antes da aprovação, que mostra o mesmo
+  texto de `fluxos.criar` (todos os blocos e conexões); a aprovação fica presa ao processo e aos blocos exatos que a
+  pessoa viu (um rascunho mudado depois, outro processo do mesmo usuário ou uma chamada sem aprovação mostrada são
+  recusados, sem preparar nada de novo) e `concluir` nunca aceita um "sempre" (a tela não oferece o botão e o servidor recusa a resposta). (Receitas com campos a preencher foram feitas e medidas, não
+  ajudaram e foram removidas.) As **sugestões** (falta um `end`, bloco sem ligação, o pedido diz "se" e não há condição)
+  aparecem no resultado e nos erros do modelo e nunca são aplicadas. O argumento `fluxo` leva um esquema JSON em que
+  `type` é um dos 19 tipos (o llama.cpp transforma o esquema em gramática: um tipo que não existe não pode ser
+  escrito); um esquema com uma variante por tipo foi medido e piorou, ver o documento. `KALANGOD_FLUXOS_AUTORIA`
+  (`classico` ou `etapas`, o padrão) escolhe se o modelo vê as ferramentas de rascunho; serve para medir.
 - **Testes:** funções puras em `plataforma_contrato.rs` e `plataforma.rs`; cenários com o modelo real em
   `crates/kalango-agente/tests/criar.rs` (só o serviço da plataforma é um dublê, em `tests/fixtures/`, que porta as
   verificações do serviço real; `KALANGO_CRIAR_REAL=<kalango-fluxosd>` roda os mesmos cenários no serviço real).

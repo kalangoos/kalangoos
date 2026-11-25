@@ -11,6 +11,7 @@
 //!   creator and its maximum level here) before the preview, and the approval lists what was removed;
 //! - everything created is marked "created by the agent" and can be undone from the timeline.
 
+use super::flow_draft as draft;
 use super::plataforma_contrato as contract;
 use super::{n_, obj, s, tr, trf, Ctx, Out, Tool};
 use crate::peer::Peer;
@@ -19,7 +20,33 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::process::Command;
 
+/// The `fluxo` argument: its text and, unless `KALANGOD_FLUXOS_SCHEMA=0` (to measure without it), the JSON schema that the
+/// model's server turns into a grammar, so that a block type that does not exist or an agent block without its agent
+/// cannot be written at all.
+fn flow_param() -> Value {
+    let mut p = if std::env::var("KALANGOD_FLUXOS_SCHEMA").is_ok_and(|v| v == "0") { json!({"type": "object"}) } else { contract::flow_json_schema() };
+    p["description"] = json!(contract::flow_schema_text());
+    p
+}
+
+/// How the model may author flows: "so-etapas" (the default: only the draft tools, which read the steps with the decision
+/// model), "etapas" (the draft tools and the one JSON of fluxos.criar) or "classico" (only the JSON). Set by `KALANGOD_FLUXOS_AUTORIA`; used to measure the draft tools against the JSON alone.
+fn authoring() -> String {
+    std::env::var("KALANGOD_FLUXOS_AUTORIA").unwrap_or_else(|_| "so-etapas".into())
+}
+
 pub fn tools() -> Vec<Tool> {
+    let mode = authoring();
+    all_tools().into_iter().filter(|t| match t.name {
+        "fluxos.planejar" | "fluxos.adicionar_bloco" | "fluxos.ligar" | "fluxos.ajustar" | "fluxos.concluir" => mode != "classico",
+        // "so-etapas": a new flow is only written through the draft (the whole-JSON way is left out), so the model cannot skip
+        // the planner and its decision-model reading by writing the JSON itself
+        "fluxos.criar" => mode != "so-etapas",
+        _ => true,
+    }).collect()
+}
+
+fn all_tools() -> Vec<Tool> {
     use Effect::*;
     use Level::*;
     let t = |name, description, level, effect, reversible, schema: fn() -> Value, run| Tool { name, description, level, effect, reversible, schema, run };
@@ -32,11 +59,21 @@ pub fn tools() -> Vec<Tool> {
         t("agentes.apagar_criado", n_("Deletes an agent, flow or tool created by an agent (used by undo)"), Usuario, Escreve, false,
             || obj(json!({"tipo": {"type": "string", "enum": ["agent", "flow", "http_tool"]}, "id": {"type": "string"}}), &["tipo", "id"]), apagar_criado),
         t("fluxos.criar", n_("Creates a flow (an automation of blocks) on the agents platform; the person approves it first"), Usuario, Escreve, true,
-            || obj(json!({"nome": {"type": "string", "description": "the flow's name"}, "fluxo": {"type": "object", "description": contract::flow_schema_text()}}), &["nome", "fluxo"]), criar_fluxo),
+            || obj(json!({"nome": {"type": "string", "description": "the flow's name"}, "fluxo": flow_param()}), &["nome", "fluxo"]), criar_fluxo),
         t("fluxos.editar", n_("Changes a flow of the agents platform (a new version); the person approves it"), Usuario, Escreve, true,
-            || obj(json!({"id": {"type": "string", "description": "the flow's id (the one fluxos.criar returned)"}, "nome": {"type": "string"}, "fluxo": {"type": "object", "description": contract::flow_schema_text()}}), &["id", "nome", "fluxo"]), editar_fluxo),
+            || obj(json!({"id": {"type": "string", "description": "the flow's id (the one fluxos.criar returned)"}, "nome": {"type": "string"}, "fluxo": flow_param()}), &["id", "nome", "fluxo"]), editar_fluxo),
         t("fluxos.executar", n_("Runs a flow of the agents platform now"), Usuario, Escreve, false,
             || obj(json!({"id": {"type": "string"}, "entrada": {"type": "string"}}), &["id"]), executar_fluxo),
+        t("fluxos.planejar", n_("Starts a flow draft from short steps, in order, in the person's words: the server turns each step into a block, draws the connections and says what is still missing; nothing is created yet (finish with fluxos.concluir). Write each step with its action word: transcrever, se …, senão …, pedir aprovação, esperar 30 segundos, para cada item, avisar, perguntar, decidir com o d1, chamar o fluxo X, rodar o agente X, mostrar mensagem, fim. There is no block that sends e-mail or messages: if a step needs that, say so to the person instead of faking it (a site can be read with a system_action of the tool web.ler; running at a time of the day is a routine of the person, not a block). Write only what the person asked, and plan at once: never ask the person for the text first, the flow gets its text as input when it runs, so do not add steps that ask for it or transcribe it. A judgment about meaning (is it spam, a complaint, urgent, praise or criticism, in some language) is one step that starts with decidir com o d1 se …; the steps after it say se for sim, … and senão, …; se contiver \"palavra\" is only a search for a literal word. Examples: [\"pedir aprovação para publicar\", \"rodar o agente publicador\"]; [\"para cada item da lista, rodar o agente resumidor\"]; [\"decidir com o d1 se a mensagem é uma reclamação\", \"se for sim, rodar o agente suporte\", \"senão, fim\"]; [\"chamar o fluxo limpeza\", \"avisar que terminou\"]"), Observar, Leitura, false,
+            || obj(json!({"passos": {"type": "array", "items": {"type": "string"}, "description": "one short sentence per step, in order; a branch is written \"se falar do gta 6, resumir\" and its other way \"senão, fim\". Example: [\"transcrever o áudio\", \"se falar do gta 6, resumir com o agente resumidor\", \"senão, fim\"]"}, "tipos": {"type": "array", "items": {"type": "string"}, "description": "filled in by the system from the person's words: leave it out"}, "pedido": {"type": "string", "description": "filled in by the system: leave it out"}}), &["passos"]), planejar_fluxo),
+        t("fluxos.adicionar_bloco", n_("Adds one block to the flow draft (any block type) and connects it after the last block, or after depois_de by the way via"), Observar, Leitura, false,
+            || obj(json!({"tipo": {"type": "string", "enum": contract::NODE_TYPES.iter().map(|(n, _, _)| *n).collect::<Vec<_>>()}, "dados": {"type": "object", "description": "the block's data, as in fluxos.criar"}, "depois_de": {"type": "string", "description": "id of the block it follows"}, "via": {"type": "string", "description": "the way out of that block (a condition's id, bottom-handle, sim, não, true, false)"}}), &["tipo"]), adicionar_bloco),
+        t("fluxos.ligar", n_("Draws a connection between two blocks of the flow draft (by the way via of the first)"), Observar, Leitura, false,
+            || obj(json!({"de": {"type": "string"}, "para": {"type": "string"}, "via": {"type": "string"}}), &["de", "para"]), ligar_blocos),
+        t("fluxos.ajustar", n_("Sets keys of one block's data in the flow draft (for example the agent_id of an agent block); the type does not change"), Observar, Leitura, false,
+            || obj(json!({"bloco": {"type": "string", "description": "the block's id (s1, s2…)"}, "dados": {"type": "object"}}), &["bloco", "dados"]), ajustar_bloco),
+        t("fluxos.concluir", n_("Creates the flow of the draft; the person sees every block and connection and approves first"), Usuario, Escreve, true,
+            || obj(json!({"nome": {"type": "string", "description": "the flow's name"}}), &["nome"]), concluir_fluxo),
         t("ferramentas.criar_http", n_("Creates an HTTP tool (an API call) on the agents platform; it asks before each call"), Usuario, Escreve, true,
             || obj(json!({"ferramenta": {"type": "object", "description": "{name, description, method, endpoint, parameters, headers, outputs, error_handling}"}}), &["ferramenta"]), criar_http),
         t("ferramentas.importar_openapi", n_("Reads an OpenAPI 3 specification (address or text) and lists the tools it could become, for the person to choose; creates nothing"), Observar, Leitura, false,
@@ -111,11 +148,13 @@ fn prepare(peer: &Peer, name: &str, a: &Value) -> Result<Prepared, String> {
             ("agent", item, notes)
         }
         "fluxos.criar" | "fluxos.editar" => {
-            let (flow, mut notes) = contract::prepare_flow(a.get("fluxo").unwrap_or(&Value::Null))?;
+            let (flow, mut notes) = contract::prepare_flow(a.get("fluxo").unwrap_or(&Value::Null)).map_err(|e| with_suggestions_of(e, a.get("fluxo")))?;
             if name == "fluxos.editar" {
                 // a change replaces the whole flow: what the old one carried beyond the blocks and connections is not kept
-                let old = a["id"].as_str().filter(|i| !i.is_empty()).and_then(|id| service(peer, "flows.get", &json!({"id": id})).ok());
-                let old = old.as_ref().map(|o| &o["flow"]);
+                // (a change is a change: an id that is missing, or that no flow has, is refused, never turned into a new flow)
+                let id = a["id"].as_str().filter(|i| !i.is_empty()).ok_or_else(|| tr("to change a flow give its id (the one fluxos.concluir returned); to make a new one use fluxos.planejar").to_string())?;
+                let old = service(peer, "flows.get", &json!({"id": id})).map_err(|_| tr("no flow with this id: to make a new flow use fluxos.planejar, to change one give the id it was created with").to_string())?;
+                let old = Some(&old["flow"]);
                 let mut gone: Vec<String> = ["limits", "inputs", "input_map"].iter().filter(|k| old.is_some_and(|o| !o[**k].is_null() && o[**k] != json!([]) && o[**k] != json!({}))).map(|k| k.to_string()).collect();
                 let off = old.and_then(|o| o["nodes"].as_array()).map_or(0, |n| n.iter().filter(|n| n["disabled"] == json!(true)).count());
                 if off > 0 {
@@ -127,11 +166,31 @@ fn prepare(peer: &Peer, name: &str, a: &Value) -> Result<Prepared, String> {
             }
             ("flow", json!({"id": a.get("id"), "name": a.get("nome"), "flow": flow}), notes)
         }
+        "fluxos.concluir" => {
+            let who = (peer.uid, peer.pid);
+            let d = DRAFTS.lock().unwrap_or_else(|e| e.into_inner()).get(who).ok_or_else(|| tr("there is no flow draft: start one with fluxos.planejar (or fluxos.adicionar_bloco)").to_string())?;
+            let (flow, notes) = contract::prepare_flow(&d.flow()).map_err(|e| with_suggestions(e, &d))?;
+            ("flow", json!({"id": Value::Null, "name": flow_name(a)?, "flow": flow}), notes)
+        }
         "ferramentas.criar_http" => ("http_tool", a.get("ferramenta").cloned().ok_or(tr("argument 'ferramenta' is required"))?, vec![]),
         _ => return Err(trf("unknown platform tool {name}", &[("name", name.to_string())])),
     };
+    let mut prepared = prepared;
+    // a flow that runs an agent that does not exist yet is said so (the platform decides; the person sees it too)
+    if prepared.0 == "flow" {
+        let notes = unknown_agents(peer, &prepared.1["flow"]);
+        prepared.2.extend(notes);
+    }
     contract::check_shown(prepared.0, &prepared.1)?;
     Ok(prepared)
+}
+
+/// A note for each agent id of the flow's blocks that no agent has (nothing when the list cannot be read).
+fn unknown_agents(peer: &Peer, flow: &Value) -> Vec<String> {
+    let Some(ids) = agent_ids(peer) else { return vec![] };
+    let mut seen = std::collections::HashSet::new();
+    flow["nodes"].as_array().into_iter().flatten().filter_map(|n| n["data"]["agent_id"].as_str()).filter(|a| !a.is_empty() && !ids.contains(*a) && seen.insert(a.to_string()))
+        .map(|a| trf("the agent \"{id}\" does not exist (create it with agentes.criar before the flow runs, or use one that exists: agentes.listar)", &[("id", contract::one_line(a, 60))])).collect()
 }
 
 /// What the approval screen showed, for the call that follows: the item applied is exactly the item the person saw
@@ -140,8 +199,19 @@ fn prepare(peer: &Peer, name: &str, a: &Value) -> Result<Prepared, String> {
 static SHOWN: std::sync::Mutex<Vec<(String, std::time::Instant, Prepared)>> = std::sync::Mutex::new(Vec::new());
 const SHOWN_FOR: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// The tools that create from what the server holds for the conversation (a draft): what was approved
+/// is bound to the conversation (its process) and, for a draft, to the exact blocks and connections the person saw.
+fn is_bound(name: &str) -> bool {
+    name == "fluxos.concluir"
+}
+
 fn call_key(peer: &Peer, rule: &str, name: &str, args: &Value) -> String {
-    format!("{}\n{rule}\n{name}\n{args}", peer.uid)
+    if !is_bound(name) {
+        return format!("{}\n{rule}\n{name}\n{args}", peer.uid);
+    }
+    // (the draft as it is now: one edited after the approval has another key, and the approval no longer matches it)
+    let draft = if name == "fluxos.concluir" { DRAFTS.lock().unwrap_or_else(|e| e.into_inner()).get((peer.uid, peer.pid)).map(|d| d.flow().to_string()).unwrap_or_default() } else { String::new() };
+    format!("{}\n{}\n{rule}\n{name}\n{args}\n{draft}", peer.uid, peer.pid)
 }
 
 fn item_of(peer: &Peer, rule: &str, name: &str, a: &Value) -> Result<Prepared, String> {
@@ -165,6 +235,10 @@ fn approved_item(peer: &Peer, rule: &str, name: &str, a: &Value) -> Result<Prepa
         return Ok(shown.remove(i).2);
     }
     drop(shown);
+    // a draft is created only as the person saw it: no approval for this conversation and these blocks, no creation
+    if is_bound(name) {
+        return Err(tr("what the person approved is not what this conversation holds now (the draft changed, or it was never shown): commit it again so that it is shown").to_string());
+    }
     prepare(peer, name, a)
 }
 
@@ -173,7 +247,7 @@ fn approved_item(peer: &Peer, rule: &str, name: &str, a: &Value) -> Result<Prepa
 pub fn needs_approval(peer: &Peer, rule: &crate::policy::CallerRule, name: &str, args: &Value) -> Result<Option<String>, String> {
     let creator = json!({"id": rule.name, "max_level": rule.max_level.name()});
     match name {
-        "agentes.criar" | "agentes.editar" | "fluxos.criar" | "fluxos.editar" | "ferramentas.criar_http" => {
+        "agentes.criar" | "agentes.editar" | "fluxos.criar" | "fluxos.editar" | "fluxos.concluir" | "ferramentas.criar_http" => {
             let (kind, item, mine) = item_of(peer, &rule.name, name, args)?;
             let p = service(peer, "platform.preview", &json!({"kind": kind, "item": item, "creator": creator}))?;
             if let Some(problems) = p["problems"].as_array().filter(|v| !v.is_empty()) {
@@ -221,6 +295,10 @@ fn preview(kind: &str, item: &Value, notes: &[Value]) -> String {
             }
             if !item["config"]["max_iterations"].is_null() {
                 lines.push(trf("repeats at most {n} times", &[("n", one(&item["config"]["max_iterations"], 10))]));
+            }
+            if let Some(f) = item["output_fields"].as_array().filter(|f| !f.is_empty()) {
+                let shown: Vec<String> = f.iter().map(|x| format!("{} ({})", one(&x["name"], 40), one(&x["kind"], 20))).collect();
+                lines.push(trf("answers with the fields: {fields}", &[("fields", shown.join(", "))]));
             }
             for t in item["config"]["tools"].as_array().into_iter().flatten() {
                 lines.push(format!("· {} — {}", one(&t["name"], contract::MAX_SHOWN), perm_text(t["permission"].as_str().unwrap_or("ask"))));
@@ -344,9 +422,17 @@ fn perm_text(p: &str) -> String {
 }
 
 fn apply(c: &Ctx, name: &str, a: &Value, edit: bool) -> Result<Out, String> {
-    let (kind, item, mine) = approved_item(c.peer, &c.rule.name, name, a)?;
-    let r = service(c.peer, "platform.apply", &json!({"kind": kind, "item": item, "creator": creator(c), "edit": edit}))?;
+    apply_for(c.peer, &c.rule.name, creator(c), name, a, edit)
+}
+
+/// What `apply` does, from what it needs (so that it can be tested without a whole server).
+fn apply_for(peer: &Peer, rule: &str, creator: Value, name: &str, a: &Value, edit: bool) -> Result<Out, String> {
+    let (kind, item, mine) = approved_item(peer, rule, name, a)?;
+    let r = service(peer, "platform.apply", &json!({"kind": kind, "item": item, "creator": creator, "edit": edit}))?;
     let id = r["id"].as_str().unwrap_or("").to_string();
+    if name == "fluxos.concluir" {
+        DRAFTS.lock().unwrap_or_else(|e| e.into_inner()).clear((peer.uid, peer.pid));
+    }
     let notes: Vec<Value> = mine.into_iter().map(Value::String).chain(r["notes"].as_array().cloned().unwrap_or_default()).collect();
     // undo deletes what was created (an edit is undone by the item's own version history)
     let inverse = (!edit).then(|| json!({"ferramenta": "agentes.apagar_criado", "argumentos": {"tipo": kind, "id": id}}));
@@ -361,6 +447,93 @@ fn criar_agente(c: &Ctx, a: &Value) -> Result<Out, String> {
 fn editar_agente(c: &Ctx, a: &Value) -> Result<Out, String> {
     apply(c, "agentes.editar", a, true)
 }
+fn concluir_fluxo(c: &Ctx, a: &Value) -> Result<Out, String> {
+    apply(c, "fluxos.concluir", a, false)
+}
+
+/// The drafts of the conversations talking to this server (see `flow_draft`).
+static DRAFTS: std::sync::LazyLock<std::sync::Mutex<draft::Drafts>> = std::sync::LazyLock::new(Default::default);
+
+fn flow_name(a: &Value) -> Result<String, String> {
+    let n = contract::one_line(a.get("nome").and_then(Value::as_str).unwrap_or(""), 80);
+    if n.is_empty() { Err(tr("the flow needs a name (nome)").to_string()) } else { Ok(n) }
+}
+
+/// An error of the flow contract, with what a person would add (said to the model; nothing is applied).
+fn with_suggestions(e: String, d: &draft::Draft) -> String {
+    let s = draft::suggestions(d, &d.steps.join(". "));
+    if s.is_empty() { e } else { format!("{e}. {} {}", tr("Suggestions:"), s.join("; ")) }
+}
+
+fn with_suggestions_of(e: String, flow: Option<&Value>) -> String {
+    let nodes: Vec<Value> = flow.and_then(|f| f["nodes"].as_array()).cloned().unwrap_or_default();
+    let edges: Vec<Value> = flow.and_then(|f| f["edges"].as_array()).cloned().unwrap_or_default();
+    if nodes.is_empty() || nodes.iter().any(|n| !n["id"].is_string() || !n["type"].is_string()) {
+        return e;
+    }
+    with_suggestions(e, &draft::Draft { nodes, edges, steps: vec![] })
+}
+
+fn who(c: &Ctx) -> draft::Owner {
+    (c.peer.uid, c.peer.pid)
+}
+
+/// What the model reads after each draft step: the blocks, what is missing, what is suggested and what to do next.
+fn draft_out(c: &Ctx, d: draft::Draft, notes: &[String], summary: String) -> Result<Out, String> {
+    let problems = contract::prepare_flow(&d.flow()).err();
+    let mut notes = notes.to_vec();
+    if problems.is_none() {
+        notes.extend(unknown_agents(c.peer, &d.flow()));
+    }
+    let mut v = draft::report(&d, problems.as_deref(), &notes);
+    v["proximo"] = json!(match &problems {
+        Some(_) => tr("fix what is in \"faltando\" (fluxos.ajustar, fluxos.ligar, fluxos.adicionar_bloco), then call fluxos.concluir with a name"),
+        None => tr("the draft is valid: call fluxos.concluir with a name (the person approves it before it exists)"),
+    });
+    DRAFTS.lock().unwrap_or_else(|e| e.into_inner()).put(who(c), d)?;
+    Ok(Out::read(v, summary))
+}
+
+fn current_draft(c: &Ctx) -> Result<draft::Draft, String> {
+    DRAFTS.lock().unwrap_or_else(|e| e.into_inner()).get(who(c)).ok_or_else(|| tr("there is no flow draft: start one with fluxos.planejar").to_string())
+}
+
+fn planejar_fluxo(c: &Ctx, a: &Value) -> Result<Out, String> {
+    let steps: Vec<String> = match a.get("passos") {
+        Some(Value::Array(v)) => v.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+        Some(Value::String(t)) => t.split(['\n', ';']).map(str::to_string).collect(),
+        _ => vec![],
+    };
+    let agents: Vec<String> = agent_ids(c.peer).map(|s| s.into_iter().collect()).unwrap_or_default();
+    // the kinds the engine's decision model (d1) read for the steps: only text, and only a kind the planner may make
+    let kinds: Vec<String> = a.get("tipos").and_then(Value::as_array).map(|v| v.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect()).unwrap_or_default();
+    // the person's own words (from the engine): they only decide whether a search becomes the decision model they named
+    let request = a.get("pedido").and_then(Value::as_str).unwrap_or("");
+    let (d, notes) = draft::plan_for(kalango_i18n::system_locale(), &steps, &kinds, &contract::one_line(request, 600), &agents)?;
+    draft_out(c, d, &notes, tr("planned the flow draft").into())
+}
+
+fn adicionar_bloco(c: &Ctx, a: &Value) -> Result<Out, String> {
+    let mut d = current_draft(c).unwrap_or_default();
+    let id = draft::add_block(&mut d, s(a, "tipo")?, a.get("dados").unwrap_or(&Value::Null), a.get("depois_de").and_then(Value::as_str), a.get("via").and_then(Value::as_str))?;
+    let t = d.nodes.last().and_then(|n| n["type"].as_str()).unwrap_or("").to_string();
+    // the data this type needs, so that the model fills it right
+    let hint = contract::NODE_TYPES.iter().find(|(n, _, _)| *n == t).map(|(_, _, ex)| trf("block \"{id}\" added; the data of a {type} is, for example, {example}", &[("id", id.clone()), ("type", t.clone()), ("example", ex.to_string())])).unwrap_or_default();
+    draft_out(c, d, &[hint], trf("added the block {id} to the draft", &[("id", id)]))
+}
+
+fn ligar_blocos(c: &Ctx, a: &Value) -> Result<Out, String> {
+    let mut d = current_draft(c)?;
+    draft::link(&mut d, s(a, "de")?, s(a, "para")?, a.get("via").and_then(Value::as_str))?;
+    draft_out(c, d, &[], tr("connected two blocks of the draft").into())
+}
+
+fn ajustar_bloco(c: &Ctx, a: &Value) -> Result<Out, String> {
+    let mut d = current_draft(c)?;
+    draft::set_data(&mut d, s(a, "bloco")?, a.get("dados").unwrap_or(&Value::Null))?;
+    draft_out(c, d, &[], tr("changed a block of the draft").into())
+}
+
 fn criar_fluxo(c: &Ctx, a: &Value) -> Result<Out, String> {
     apply(c, "fluxos.criar", a, false)
 }
@@ -543,9 +716,11 @@ if method == "agents.list":
     print(open(d + "/list.json").read())
 elif method in ("agents.get", "flows.get"):
     f = d + "/" + method + ".json"
-    if not os.path.exists(f):
+    if not os.path.exists(f) or os.path.exists(d + "/fail_get"):
         sys.exit(1)
     print(open(f).read())
+elif method == "platform.apply":
+    print(json.dumps({"result": {"id": "fluxo-1", "notes": []}}))
 elif method == "platform.preview":
     print(json.dumps({"result": {"item": p["item"], "notes": [], "problems": []}}))
 else:
@@ -688,11 +863,146 @@ else:
         assert!(needs_approval(&peer, &rule, "fluxos.criar", &json!({"nome": "F", "fluxo": {"nodes": nodes}})).is_err());
     }
 
+    fn peer_pid(uid: u32, pid: i32) -> Peer {
+        Peer { pid, ..peer(uid) }
+    }
+
+    /// The commit of a draft goes through the same preview as `fluxos.criar` (every block and connection), only for the
+    /// conversation that made it, takes no standing "always" and clears the draft once applied.
+    #[test]
+    fn a_draft_is_committed_through_the_same_preview_and_only_by_its_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let _env = stand_in(dir.path());
+        put(dir.path(), "list.json", json!([{"agent": {"id": "resumidor"}}]));
+        let rule = rule("t");
+        let (mine, other, same_pid_other_user) = (peer_pid(1000, 4001), peer_pid(1000, 4002), peer_pid(1001, 4001));
+        let (d, _) = draft::plan(&["esperar 30 segundos".to_string(), "se falar do gta 6, rodar o agente resumidor".to_string(), "senão, fim".to_string()], &["resumidor".to_string()]).unwrap();
+        DRAFTS.lock().unwrap().put((mine.uid, mine.pid), d.clone()).unwrap();
+        let args = json!({"nome": "Meu fluxo"});
+        let shown = needs_approval(&mine, &rule, "fluxos.concluir", &args).unwrap().unwrap();
+        // the same text the classic tool shows for the same flow
+        let (flow, _) = contract::prepare_flow(&d.flow()).unwrap();
+        let classic = needs_approval(&mine, &rule, "fluxos.criar", &json!({"nome": "Meu fluxo", "fluxo": flow})).unwrap().unwrap();
+        assert_eq!(shown.lines().filter(|l| l.starts_with("·") || l.starts_with("    ")).collect::<Vec<_>>(), classic.lines().filter(|l| l.starts_with("·") || l.starts_with("    ")).collect::<Vec<_>>(), "{shown}\n---\n{classic}");
+        assert!(shown.contains("Meu fluxo") && shown.contains("agent_id: resumidor") && shown.contains("seconds: 30") && shown.contains("gta 6") && shown.contains('→'), "{shown}");
+        // nobody else sees or commits it
+        for p in [&other, &same_pid_other_user] {
+            assert!(needs_approval(p, &rule, "fluxos.concluir", &args).is_err());
+        }
+        // a draft that is not valid is refused with what to do, and nothing is shown
+        let (bad, _) = draft::plan(&["rodar o agente".to_string()], &[]).unwrap();
+        DRAFTS.lock().unwrap().put((other.uid, other.pid), bad).unwrap();
+        let e = needs_approval(&other, &rule, "fluxos.concluir", &args).unwrap_err();
+        assert!(e.contains("agent_id"), "{e}");
+        // approved, then the draft changes: the approval no longer fits, and nothing is prepared in its place
+        let (d2, _) = draft::plan(&["esperar 30 segundos".to_string(), "mostrar uma notificação dizendo outra coisa".to_string()], &[]).unwrap();
+        DRAFTS.lock().unwrap().put((mine.uid, mine.pid), d2).unwrap();
+        assert!(approved_item(&mine, "t", "fluxos.concluir", &args).is_err());
+        // approved for one process: another process of the same user, with the same arguments, cannot use it
+        DRAFTS.lock().unwrap().put((mine.uid, mine.pid), d.clone()).unwrap();
+        needs_approval(&mine, &rule, "fluxos.concluir", &args).unwrap();
+        DRAFTS.lock().unwrap().put((other.uid, other.pid), d.clone()).unwrap();
+        assert!(approved_item(&other, "t", "fluxos.concluir", &args).is_err());
+        // nothing shown at all: refused, not prepared from the draft
+        DRAFTS.lock().unwrap().put((same_pid_other_user.uid, same_pid_other_user.pid), d.clone()).unwrap();
+        assert!(approved_item(&same_pid_other_user, "t", "fluxos.concluir", &args).is_err());
+        // what was shown to this process, for exactly these blocks, is what applies (once)
+        let (_, item, _) = approved_item(&mine, "t", "fluxos.concluir", &args).unwrap();
+        assert_eq!(item["flow"]["nodes"].as_array().unwrap().len(), flow["nodes"].as_array().unwrap().len());
+        assert!(approved_item(&mine, "t", "fluxos.concluir", &args).is_err(), "used once");
+        // the commit never takes a standing approval: the arguments do not say what it creates
+        let src = include_str!("../server.rs");
+        assert!(src.contains(r#"matches!(name, "fluxos.concluir") ||"#));
+    }
+
+    /// `KALANGOD_DUMP_TOOLS=<file>`: writes the tools as the model gets them (name, description, schema), to study the
+    /// prompt and the grammar the model's server builds from them.
+    #[test]
+    fn dump_the_tools_for_study() {
+        if let Some(path) = std::env::var_os("KALANGOD_DUMP_TOOLS") {
+            let v: Vec<Value> = tools().iter().map(|t| json!({"name": t.name.replace('.', "__"), "description": t.description, "parameters": (t.schema)()})).collect();
+            std::fs::write(path, serde_json::to_string(&v).unwrap()).unwrap();
+        }
+    }
+
+    /// A commit that went through clears the draft of that conversation (and only that one); one refused keeps it.
+    #[test]
+    fn a_committed_draft_is_cleared_and_only_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let _env = stand_in(dir.path());
+        put(dir.path(), "list.json", json!([]));
+        let (mine, other) = (peer_pid(1000, 5001), peer_pid(1000, 5002));
+        let (d, _) = draft::plan(&["esperar 30 segundos".to_string()], &[]).unwrap();
+        DRAFTS.lock().unwrap().put((mine.uid, mine.pid), d.clone()).unwrap();
+        DRAFTS.lock().unwrap().put((other.uid, other.pid), d.clone()).unwrap();
+        let args = json!({"nome": "Meu fluxo"});
+        // not approved first: refused, the draft stays
+        assert!(apply_for(&mine, "t", json!({}), "fluxos.concluir", &args, false).is_err());
+        assert!(DRAFTS.lock().unwrap().get((mine.uid, mine.pid)).is_some());
+        needs_approval(&mine, &rule("t"), "fluxos.concluir", &args).unwrap();
+        let out = apply_for(&mine, "t", json!({}), "fluxos.concluir", &args, false).unwrap();
+        assert_eq!(out.value["id"], "fluxo-1");
+        assert!(DRAFTS.lock().unwrap().get((mine.uid, mine.pid)).is_none(), "the committed draft is gone");
+        assert!(DRAFTS.lock().unwrap().get((other.uid, other.pid)).is_some(), "another conversation keeps its own");
+    }
+
+    #[test]
+    fn the_authoring_tools_follow_the_chosen_way() {
+        let names = |mode: &str| {
+            std::env::set_var("KALANGOD_FLUXOS_AUTORIA", mode);
+            let v: Vec<&str> = tools().iter().map(|t| t.name).collect();
+            std::env::remove_var("KALANGOD_FLUXOS_AUTORIA");
+            v
+        };
+        let _lock = SERVICE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!names("classico").contains(&"fluxos.planejar") && names("classico").contains(&"fluxos.criar"));
+        assert!(names("etapas").contains(&"fluxos.concluir") && names("etapas").contains(&"fluxos.criar"));
+        assert!(names("anything").contains(&"fluxos.planejar"), "the draft tools are the default");
+        let only = names("so-etapas");
+        assert!(!only.contains(&"fluxos.criar") && only.contains(&"fluxos.planejar") && only.contains(&"fluxos.editar") && only.contains(&"fluxos.concluir"));
+    }
+
     #[test]
     fn tools_are_registered() {
         let names: Vec<&str> = tools().iter().map(|t| t.name).collect();
-        for n in ["agentes.criar", "agentes.editar", "agentes.listar", "fluxos.criar", "fluxos.editar", "fluxos.executar", "ferramentas.criar_http", "ferramentas.importar_openapi", "mcp.registrar", "modelos.listar"] {
+        for n in ["agentes.criar", "agentes.editar", "agentes.listar", "fluxos.editar", "fluxos.executar", "ferramentas.criar_http", "ferramentas.importar_openapi", "mcp.registrar", "modelos.listar"] {
             assert!(names.contains(&n), "{n}");
         }
+    }
+
+    #[test]
+    fn changing_a_flow_needs_an_id_that_a_flow_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let _env = stand_in(dir.path());
+        let peer = peer(1000);
+        let flow = json!({"nodes": [{"id": "a", "type": "wait", "data": {"seconds": 5}}, {"id": "b", "type": "end"}], "edges": [{"source": "a", "target": "b"}]});
+        // some flow exists: a missing or empty id is still refused (the service would answer for any id)
+        put(dir.path(), "flows.get.json", json!({"id": "f1", "flow": {"nodes": [], "edges": []}}));
+        for id in [json!(null), json!("")] {
+            let e = prepare(&peer, "fluxos.editar", &json!({"id": id, "nome": "x", "fluxo": flow})).unwrap_err();
+            assert!(e.contains("fluxos.planejar"), "{id}: {e}");
+        }
+        assert!(prepare(&peer, "fluxos.editar", &json!({"nome": "x", "fluxo": flow})).is_err(), "no id at all");
+        // a flow that exists is changed as before
+        assert!(prepare(&peer, "fluxos.editar", &json!({"id": "f1", "nome": "x", "fluxo": flow})).is_ok());
+        // an id no flow has is refused
+        std::fs::remove_file(dir.path().join("flows.get.json")).unwrap();
+        let e = prepare(&peer, "fluxos.editar", &json!({"id": "nao-existe", "nome": "x", "fluxo": flow})).unwrap_err();
+        assert!(e.contains("fluxos.planejar"), "{e}");
+    }
+
+    #[test]
+    fn a_service_that_fails_to_read_the_flow_does_not_turn_a_change_into_a_new_flow() {
+        let dir = tempfile::tempdir().unwrap();
+        let _env = stand_in(dir.path());
+        let peer = peer(1000);
+        let flow = json!({"nodes": [{"id": "a", "type": "wait", "data": {"seconds": 5}}, {"id": "b", "type": "end"}], "edges": [{"source": "a", "target": "b"}]});
+        put(dir.path(), "flows.get.json", json!({"id": "f1", "flow": {"nodes": [], "edges": []}}));
+        let args = json!({"id": "f1", "nome": "x", "fluxo": flow});
+        assert!(prepare(&peer, "fluxos.editar", &args).is_ok());
+        // the flow exists, but the service fails this time
+        std::fs::write(dir.path().join("fail_get"), "").unwrap();
+        assert!(prepare(&peer, "fluxos.editar", &args).is_err(), "a failed read is a refusal, never a new flow");
+        assert!(needs_approval(&peer, &rule("t"), "fluxos.editar", &args).is_err());
     }
 }
