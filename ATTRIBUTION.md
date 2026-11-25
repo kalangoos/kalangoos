@@ -30,6 +30,7 @@ a marca do projeto e **não** entram na licença do código.
 | `crates/kalango-shell/assets/ui/*.svg` | Ícones de interface desenhados no Design System (FigCraft) e exportados | A definir |
 | `crates/kalango-instalador/assets/icones/*.svg` | Ícones de linha da etapa "Modelos de IA" do instalador (rede, servidor, pen drive, relógio), desenhados por agente de IA no estilo do Design System e escritos como SVG à mão | A definir | |
 | `crates/kalango-aprovacao/capturas/*.png` | Capturas da tela de aprovação em sessão de teste | A definir |
+| `docs/evidencias-vm/*.jpg` | Capturas das duas máquinas virtuais da validação do Remote (KalangoOS de teste, sem dados pessoais) | A definir |
 | `docs/pagina/img/**` | Capturas e exportações do Design System e da sessão de teste | A definir |
 | `crates/kalangod/tests/fixtures/*.pdf` | Arquivo de teste gerado pelo projeto | A definir |
 | `assets/sounds/kalango/**` | Sons do sistema compostos pelo projeto no LMMS só com sintetizadores (ZynAddSubFX, TripleOscillator, OpulenZ, BitInvader, Organic), sem samples de terceiros | CC0-1.0 |
