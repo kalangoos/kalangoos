@@ -19,7 +19,7 @@ pela esteira de lançamento (veja [CHANGELOG.md](CHANGELOG.md) e [docs/NOTAS-0.1
 | 4 | **Área de trabalho mínima**: barra superior, dock, Arquivos e Configurações, com um kit único de componentes GTK | Feito e já além do mínimo; as telas restantes seguem em [docs/telas.md](docs/telas.md) |
 | 5 | **AG-UI 1.0** como protocolo de eventos entre o agente e a interface: texto chegando enquanto é escrito, aprovações do `kalangod` como interrupções, progresso, raciocínio e subagentes | Planejado |
 | 6 | **Hardware real**: matriz NVIDIA, AMD e Intel, a ISO com o modelo local quando as licenças forem revistas | Próximo |
-| 7 | **Kalango Audio nos fluxos e nos agentes**: ferramentas `audio.*`, blocos "Áudio · capturar" e gatilho ao vivo por transcrição (sem passar por um arquivo) | Ideia; detalhes abaixo |
+| 7 | **Kalango Audio nos fluxos e nos agentes**: ferramentas `audio.*`, blocos "Áudio · capturar" e gatilho ao vivo por transcrição (sem passar por um arquivo); **isolamento de voz** (Inworld Voice Isolator, Apache-2.0) no Audio, em tempo real e em arquivo | Ideia; detalhes abaixo |
 | 8 | **Suporte remoto com o Kalango Remote**: máquinas salvas, consultar (só leitura) e agir (com aprovação) por fluxos e agentes | Ideia; detalhes abaixo |
 | 9 | **Gatilho de entrada pela internet** (como o webhook do n8n): uma URL pública gerada, ou um domínio próprio apontado para um túnel da Cloudflare, que dispara um fluxo | Ideia; detalhes abaixo |
 
@@ -56,6 +56,17 @@ faz nada depois que ela abre. A ideia é integrá-los de forma nativa, na ordem 
    microfone, som do sistema) e um gatilho ao vivo: o Audio transcreve em janelas curtas e dispara o fluxo quando o texto
    bate com uma condição. Capturar som é sensível: o `kalangod` pergunta, o indicador do Audio fica sempre visível, a
    transcrição é local e o que ela traz é tratado como conteúdo externo.
+   **Isolamento de voz no Kalango Audio** (a ideia: usar o modelo
+   [Inworld Voice Isolator](https://github.com/inworld-ai/voice-isolator), que separa a fala do ruído de fundo). Ele
+   vem em dois modelos: um para **arquivos** (o processamento por trechos de 8 s com 2 s de sobreposição) e um para
+   **tempo real** (blocos de 20 ms, latência algorítmica de cerca de 63 ms), os dois em áudio de 48 kHz mono. O código e
+   os pesos são Apache-2.0, uma licença que a lista do projeto já aceita; os pesos somam cerca de 490 MB e viriam como
+   download opcional na Central de Apps, com o aviso de licença. No Audio entra como um efeito "Isolar voz" nas sessões
+   (ao vivo e na gravação) e como ferramenta e bloco de fluxo (`audio.isolar_voz`, em arquivo ou em tempo real), por
+   exemplo para limpar o som antes de transcrever. O que precisa ser medido antes: o modelo é PyTorch com camadas Mamba,
+   e o projeto quer Rust em tudo, então o primeiro passo é um estudo de viabilidade (portar a inferência para Rust, com
+   `candle` ou ONNX, ou rodar o pacote Python como um processo auxiliar isolado e opcional), com o fator de tempo real
+   medido na CPU e na GPU; o resto só segue se o tempo real couber numa máquina comum.
 2. **Kalango Remote, só consultar.** `remoto.maquinas` (as máquinas salvas, sem nenhum segredo) e `remoto.consultar`
    (comandos de leitura, como `df`, `systemctl status` e `journalctl`), com um perfil por máquina e uma lista de comandos
    permitidos. A saída da máquina remota passa pela defesa de conteúdo externo.
@@ -120,7 +131,7 @@ Numeração e canais: [docs/LANCAMENTO.md](docs/LANCAMENTO.md).
 
 **English summary.** Next steps: real hardware (the NVIDIA, AMD and Intel matrix), the
 rest of the screens, then AG-UI 1.0 between the agent and the interface. Planned ideas, with no date: Kalango Audio
-and Kalango Remote as native parts of flows and agents (a live audio source and trigger; a remote-support flow that first
+and Kalango Remote as native parts of flows and agents (a live audio source and trigger, and voice isolation with the Inworld Voice Isolator model, in real time and on files; a remote-support flow that first
 only reads from the machines you can reach, then acts with approval), and an internet-facing trigger like n8n's
 webhook, through a Cloudflare tunnel (a generated URL or your own domain). Version 0.1.0 is a technical preview: it
 has an installable ISO that the release workflow builds and tests in a VM (live session, installer, installed system
