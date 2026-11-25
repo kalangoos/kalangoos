@@ -51,11 +51,11 @@ Baixe da [página de versões](https://github.com/kalangoos/kalangoos/releases) 
 `SHA256SUMS-iso.txt` e, se quiser, `kalangoos-0.1.1-linux-x86_64.tar.gz` com `SHA256SUMS.txt`.
 
 1. **Confira a soma:** `sha256sum -c SHA256SUMS-iso.txt`
-   (ISO: `HASH_ISO_A_PREENCHER`; tarball: `HASH_TARBALL_A_PREENCHER`).
+   (ISO: `7edab7cf27dc8b657d50c18f839e5c9d90c6d62fbe7a5ff963c81335182ee520`; tarball: `10c9a18d17117b0cbc7a096c39c0e1ee3de6112cf328bba0063de4789e6ca0f9`).
 2. **Confira a origem do build** (precisa da CLI do GitHub):
    `gh attestation verify kalangoos-0.1.1-amd64.iso --repo kalangoos/kalangoos`
 3. **Teste numa VM:** `KALANGO_ISO=/caminho/kalangoos-0.1.1-amd64.iso imagem/rodar-iso.sh novo`
-   (veja os detalhes nas [notas da 0.1.0](https://github.com/kalangoos/kalangoos/blob/main/docs/NOTAS-0.1.0.md)).
+   (veja os detalhes nas [notas da 0.1.0](NOTAS-0.1.0.md)).
 4. **Modelos de IA:** a ISO não leva modelo local; escolha a fonte na etapa "Modelos de IA" do instalador ou depois em
    Ajustes e na Central de Apps.
 
@@ -75,7 +75,7 @@ Baixe da [página de versões](https://github.com/kalangoos/kalangoos/releases) 
 - Áudio da sessão remota com o núcleo não depurável: não verificado (as VMs de teste não têm placa de som).
 - Janela entre o `exec` e o `prctl` do app e do núcleo, e identificação do cliente por pid no niri: limites
   documentados, correção planejada.
-- Continua valendo o que as [notas da 0.1.0](https://github.com/kalangoos/kalangoos/blob/main/docs/NOTAS-0.1.0.md)
+- Continua valendo o que as [notas da 0.1.0](NOTAS-0.1.0.md)
   dizem: testada só em VM, sem modelo local na ISO, VirtualDesk e Fluxos fora da ISO, Remote ainda não testado entre dois
   computadores físicos, Mosh sem teste.
 
