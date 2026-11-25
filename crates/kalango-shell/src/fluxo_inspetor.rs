@@ -1182,6 +1182,7 @@ const TRIGGER_KINDS: &[(&str, &str, &str)] = &[
     ("file", n_("File or folder"), n_("created, changed or removed in a folder")),
     ("notification", n_("Notification"), n_("from an app: Mail, Calendar, Messages…")),
     ("webhook", n_("Local webhook"), n_("an address only on this computer, with a key")),
+    ("internet_webhook", n_("Over the internet"), n_("a public address that calls this flow from outside, signed")),
     ("system", n_("System event"), n_("USB, network, battery, entering a space, login")),
 ];
 
@@ -1212,7 +1213,8 @@ fn trigger_panel(page: &Rc<FlowPage>, tid: &str) {
     cab.append(&back);
     c.append(&cab);
     let tid_s = tid.to_string();
-    for (k, name, desc) in TRIGGER_KINDS {
+    // (an internet trigger shows its own form straight away, as the design does: the list of kinds is for the others)
+    for (k, name, desc) in TRIGGER_KINDS.iter().filter(|_| kind != "internet_webhook") {
         let b = gtk::Button::new();
         b.add_css_class("fluxo-gatilho-tipo");
         if *k == kind {
@@ -1242,6 +1244,31 @@ fn trigger_panel(page: &Rc<FlowPage>, tid: &str) {
         b.connect_clicked(move |_| {
             if let Some(p) = w.upgrade() {
                 let fid = p.flow_id.borrow().clone();
+                let was_internet = p.triggers.borrow().iter().any(|t| t.id == id && t.config["kind"] == "internet_webhook");
+                if k == "internet_webhook" {
+                    // made by the service (the path, the key and the off switch are its): the placeholder goes, the new one comes
+                    if was_internet {
+                        return;
+                    }
+                    let (p2, old) = (p.clone(), id.clone());
+                    crate::fluxo_internet::create(&fid, move |r| {
+                        if r.is_ok() {
+                            crate::fluxos::call("triggers.delete", json!({"id": old}), move |_| p2.reload_triggers());
+                        }
+                    });
+                    return;
+                }
+                if was_internet {
+                    // (leaving the internet kind: the service removes it with its key, then this becomes the new kind)
+                    let (p2, id2, k2) = (p.clone(), id.clone(), k.clone());
+                    crate::fluxos::call("internet.trigger_delete", json!({"id": id}), move |_| {
+                        let fid = p2.flow_id.borrow().clone();
+                        p2.edit_trigger(&id2, |cfg| *cfg = m::default_trigger(&k2, &fid));
+                        let p3 = p2.clone();
+                        glib::idle_add_local_once(move || build(&p3));
+                    });
+                    return;
+                }
                 p.edit_trigger(&id, |cfg| *cfg = m::default_trigger(&k, &fid));
                 let p2 = p.clone();
                 glib::idle_add_local_once(move || build(&p2));
@@ -1250,7 +1277,9 @@ fn trigger_panel(page: &Rc<FlowPage>, tid: &str) {
         c.append(&b);
     }
     let name = TRIGGER_KINDS.iter().find(|x| x.0 == kind).map(|x| tr(x.1)).unwrap_or(tr("By hand"));
-    c.append(&section(&format!("{} · {}", name.to_uppercase(), tr("SETTINGS"))));
+    if kind != "internet_webhook" {
+        c.append(&section(&format!("{} · {}", name.to_uppercase(), tr("SETTINGS"))));
+    }
     let w = Rc::downgrade(page);
     let id = tid.to_string();
     let set = Rc::new(move |k: &'static str, v: Value| {
@@ -1403,6 +1432,22 @@ fn trigger_panel(page: &Rc<FlowPage>, tid: &str) {
             l.set_wrap(true);
             c.append(&l);
         }
+        "internet_webhook" => {
+            // the service's form (the key shown once, what it accepts, the level…) and, for the wide version, the sheet
+            let form = crate::fluxo_internet::InternetForm::new(tid, false);
+            c.append(&form.root);
+            let open = add_button(tr("Open in a sheet"), {
+                let (tid, name) = (tid.to_string(), page.name.borrow().clone());
+                move || crate::fluxo_internet::open_sheet(&tid, &name)
+            });
+            c.append(&open);
+            let w = Rc::downgrade(page);
+            c.append(&add_button(tr("See the calls"), move || {
+                if let Some(p) = w.upgrade() {
+                    p.show_calls();
+                }
+            }));
+        }
         "system" => {
             c.append(&label(tr("Event")));
             let evs: Vec<(String, String)> = [("usb", n_("USB device connected")), ("network", n_("Network changed")), ("battery", n_("Battery")), ("space", n_("Entering a space")), ("login", n_("Login"))]
@@ -1452,7 +1497,12 @@ fn trigger_panel(page: &Rc<FlowPage>, tid: &str) {
         let mut n = 0;
         for (run, steps) in recent.iter().take(3) {
             let what = steps.first().map(|s| s.input.clone()).unwrap_or_default();
-            let what: String = what.chars().take(40).collect();
+            // (an internet call's text is the request itself, external content: the line says what came, never the content)
+            let what: String = if kind == "internet_webhook" {
+                format!("{} · {}", run["event"]["method"].as_str().unwrap_or("POST"), tr("call from the internet"))
+            } else {
+                what.chars().take(40).collect()
+            };
             let x = rotulo(&format!("{} · {what}", crate::fluxo_construtor::when_text(run["created_at"].as_i64().unwrap_or(0))), "fluxo-mono");
             x.set_xalign(0.0);
             x.set_ellipsize(gtk::pango::EllipsizeMode::End);

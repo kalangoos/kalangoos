@@ -443,6 +443,8 @@ pub fn barra(app: &gtk::Application, shell: &Rc<Shell>) -> gtk::ApplicationWindo
     let dir = caixa(Orientation::Horizontal, 8, "");
     dir.set_valign(Align::Center);
     // who is watching now (microphone, camera, screen, agents reading): chips no app can hide
+    // the internet tunnel, while one is open (design "Gatilho pela internet")
+    dir.append(&crate::tunel_agora::chips());
     dir.append(&crate::privacy_now::chips());
     let agentes = gtk::Button::new();
     agentes.add_css_class("pilula");

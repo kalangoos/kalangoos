@@ -620,6 +620,22 @@ impl FlowPage {
         }
     }
 
+    /// The calls of the flow's internet trigger (a page of the body, made when it is asked for).
+    pub fn show_calls(self: &Rc<Self>) {
+        let Some(id) = self.triggers.borrow().iter().find(|t| t.config["kind"] == "internet_webhook").map(|t| t.id.clone()) else { return };
+        let w = Rc::downgrade(self);
+        let view = crate::fluxo_chamadas::CallsView::new(&id, &self.name.borrow(), move || {
+            if let Some(p) = w.upgrade() {
+                p.show_mode("editar");
+            }
+        });
+        if let Some(old) = self.body.child_by_name("chamadas") {
+            self.body.remove(&old);
+        }
+        self.body.add_named(&view.root, Some("chamadas"));
+        self.show_mode("chamadas");
+    }
+
     pub fn is_runs_mode(&self) -> bool {
         self.body.visible_child_name().as_deref() == Some("execucoes")
     }
@@ -1178,8 +1194,30 @@ impl FlowPage {
         self.trigger_timers.borrow_mut().insert(id.to_string(), s);
     }
 
+    /// Reads the flow's triggers again (an internet trigger is made and changed by the service, not by this page).
+    pub fn reload_triggers(self: &Rc<Self>) {
+        let w = Rc::downgrade(self);
+        let gen = self.generation.get();
+        let id = self.flow_id.borrow().clone();
+        crate::fluxos::call("triggers.list", json!({"flow_id": id}), move |r| {
+            let Some(p) = w.upgrade().filter(|p| p.generation.get() == gen) else { return };
+            *p.triggers.borrow_mut() = r
+                .unwrap_or_default()
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|t| TriggerDoc { id: t["id"].as_str().unwrap_or("").into(), config: t["config"].clone(), enabled: t["enabled"].as_bool().unwrap_or(true), saved: true })
+                .collect();
+            p.loaded();
+        });
+    }
+
     fn save_trigger(self: &Rc<Self>, id: &str) {
         let Some(t) = self.triggers.borrow().iter().find(|t| t.id == id).cloned() else { return };
+        // an internet trigger is changed through the service's own methods (its form), never by this generic save
+        if t.config["kind"] == "internet_webhook" {
+            return;
+        }
         let key = format!("{}{id}", m::TRIGGER_PREFIX);
         let w = Rc::downgrade(self);
         let fid = self.flow_id.borrow().clone();
@@ -1576,7 +1614,7 @@ impl FlowPage {
     /// The top bar: the builder's (not in Execuções, which has its own header; not in a narrow window, where the
     /// center's bar names the flow).
     pub(crate) fn update_top(&self) {
-        self.top.set_visible(!self.is_runs_mode() && !self.narrow.get());
+        self.top.set_visible(!self.is_runs_mode() && self.body.visible_child_name().as_deref() != Some("chamadas") && !self.narrow.get());
         let _ = &self.header_actions;
     }
 

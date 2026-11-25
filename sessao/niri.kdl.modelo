@@ -210,6 +210,7 @@ binds {
     Mod+A repeat=false hotkey-overlay-title="Todos os apps" { spawn "@SHELL@" "apps"; }
     Mod+Shift+E repeat=false hotkey-overlay-title="Menu de energia" { spawn "@SHELL@" "energia"; }
     Mod+Shift+P repeat=false hotkey-overlay-title="Pausar sensores e agentes" { spawn "@SHELL@" "privacidade" "pausar"; }
+    Ctrl+Shift+F12 repeat=false hotkey-overlay-title="Fechar todos os túneis da internet" { spawn "@SHELL@" "tunel" "fechar"; }
     Alt+Tab hotkey-overlay-title="Alternar janelas" { spawn "@SHELL@" "alternar"; }
     Alt+Shift+Tab { spawn "@SHELL@" "alternar-voltar"; }
     Mod+N repeat=false hotkey-overlay-title="Avisos e calendário" { spawn "@SHELL@" "lateral" "avisos"; }

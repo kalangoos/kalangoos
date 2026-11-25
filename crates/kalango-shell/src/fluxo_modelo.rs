@@ -654,6 +654,7 @@ pub fn trigger_glyph(kind: &str) -> &'static str {
         "file" => "pasta",
         "notification" => "sino",
         "webhook" => "ramo",
+        "internet_webhook" => "globo",
         "system" => "cpu",
         _ => "raio",
     }
@@ -1861,6 +1862,11 @@ pub fn trigger_text(t: &Value) -> (String, Vec<Line>) {
             (if app.is_empty() { tr("Any notification").into() } else { format!("{} {app}", tr("New notification from")) }, vec![plain(rule)])
         }
         "webhook" => (tr("Local webhook").into(), vec![plain(tr("only from this computer, with a key"))]),
+        "internet_webhook" => (
+            tr("Over the internet").into(),
+            vec![plain(if t["public_unsigned"].as_bool().unwrap_or(false) { tr("public, without signature") } else { tr("over the internet") }),
+                 mono(format!("{} · {}", t["methods"].as_array().map(|m| m.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("/")).filter(|s| !s.is_empty()).unwrap_or_else(|| "POST".into()), t["max_level"].as_str().unwrap_or("observar")))],
+        ),
         "system" => (tr("System event").into(), vec![mono(format!("{} {}", s("event"), s("filter")).trim().to_string())]),
         _ => (tr("By hand").into(), vec![]),
     }
@@ -1899,6 +1905,7 @@ pub fn trigger_summary(t: &Value) -> String {
         "schedule" => trigger_text(t).1.first().map(|l| l.text.clone()).unwrap_or_default(),
         "file" => format!("{} {}", tr("file in"), t["path"].as_str().unwrap_or("")),
         "webhook" => tr("local webhook").into(),
+        "internet_webhook" => tr("internet webhook").into(),
         "system" => format!("{} {}", tr("system event"), t["event"].as_str().unwrap_or("")),
         _ => tr("by hand").into(),
     }
@@ -2905,6 +2912,17 @@ mod tests {
         assert!(c.contains("Ubuntu base"));
         assert!(sandbox_note(&json!({"machine": "m1", "state": "ready", "millis": 800})).contains("m1"));
         assert_eq!(machine_list(&json!({"maquinas": [{"id": "x", "nome": "Alpine"}, {"id": "y"}]})), vec![("x".into(), "Alpine".into()), ("y".into(), "y".into())]);
+    }
+
+    #[test]
+    fn an_internet_webhook_is_never_shown_as_a_trigger_by_hand() {
+        let t = json!({"kind": "internet_webhook", "slug": "a", "max_level": "usuario"});
+        let (title, lines) = trigger_text(&t);
+        assert_ne!(title, tr("By hand"));
+        assert!(lines.iter().any(|l| l.text.contains("usuario")), "the level is shown");
+        assert_ne!(trigger_summary(&t), tr("by hand"));
+        let open = trigger_text(&json!({"kind": "internet_webhook", "public_unsigned": true})).1;
+        assert!(open.iter().any(|l| l.text == tr("public, without signature")), "a public one says so");
     }
 
     #[test]

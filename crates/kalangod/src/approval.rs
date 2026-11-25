@@ -202,6 +202,11 @@ impl Approvals {
     pub fn decide(&self, id: u64, approve: bool, always: bool, approver: &Peer, requires_tty: bool, trusted: &[std::path::PathBuf], grant_total: Duration) -> Result<String, String> {
         let mut g = self.inner.lock().unwrap();
         let p = g.pending.get(&id).cloned().ok_or(trf("approval #{id} does not exist or was already decided", &[("id", id.to_string())]))?;
+        // one decision per request: an answer that is already there is never overwritten (a second one, however it comes,
+        // could turn a refusal into an approval, or make "only at the lowest" an approval of the level asked)
+        if p.decision.is_some() {
+            return Err(trf("approval #{id} does not exist or was already decided", &[("id", id.to_string())]).into());
+        }
         if approver.pid == p.pid {
             return Err(tr("a process cannot approve its own request").into());
         }
@@ -214,10 +219,16 @@ impl Approvals {
         if requires_tty && !approver.has_tty && !trusted_approver(&approver.exe, trusted) {
             return Err(tr("the approval has to be made by you: in a terminal or on the system approval screen (in person)").into());
         }
-        if always && p.no_always {
+        // a card that offers an alternative way to approve (the internet trigger's “only at the lowest level”): that button
+        // answers "always" in the protocol, but it is not the standing answer: it is kept for this request only
+        let alt = p.cartao.as_ref().is_some_and(|c| c["alternativa"].is_string());
+        if always && p.no_always && !alt {
             return Err(tr("this request cannot be answered with “always”: each change is approved on its own").into());
         }
-        if always && (!approve || !matches!(p.level.as_str(), "sistema" | "pasta")) {
+        if always && alt && !approve {
+            return Err(tr("the alternative answer approves; to refuse, deny").into());
+        }
+        if always && !alt && (!approve || !matches!(p.level.as_str(), "sistema" | "pasta")) {
             return Err(tr("“always” is only for approving system changes; full access is always temporary").into());
         }
         g.pending.get_mut(&id).unwrap().decision = Some(approve);
@@ -225,7 +236,7 @@ impl Approvals {
             g.total_grants.insert(p.uid, Instant::now() + grant_total);
         }
         let mut saved = None;
-        if always && p.level == "pasta" {
+        if always && (p.level == "pasta" || alt) {
             g.always.insert(id);
         } else if always {
             let s = Standing { uid: p.uid, exe: p.exe.clone(), tool: p.tool.clone(), args: canonical(&p.args), criado: crate::timeline::now() };
@@ -281,4 +292,48 @@ pub fn trusted_approver(exe: &str, trusted: &[std::path::PathBuf]) -> bool {
 fn not_writable_by_others(m: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     m.mode() & 0o002 == 0 && (m.mode() & 0o020 == 0 || m.gid() == 0)
+}
+
+#[cfg(test)]
+mod decision_tests {
+    use super::*;
+
+    fn peer(pid: i32, uid: u32) -> Peer {
+        Peer { pid, uid, gid: uid, exe: "/usr/bin/kalango-aprovacao".into(), cgroup: "/user.slice".into(), home: "/tmp".into(), passwd_home: "/tmp".into(), user: "teste".into(), has_tty: true }
+    }
+
+    fn pending(a: &Approvals, id: u64) {
+        let p = Pending {
+            id, tool: "gatilho_internet.criar".into(), level: "sistema".into(), args: json_null(), caller: "agente".into(), uid: 1000, pid: 4000,
+            reason: "x".into(), descricao: String::new(), efeito: String::new(), reversivel: true, criado: 0, prazo_s: 0, exe: "/usr/bin/agente".into(),
+            decision: None, startup: None, no_always: true, cartao: Some(serde_json::json!({"alternativa": "Only at the lowest"})),
+        };
+        a.inner.lock().unwrap().pending.insert(id, p);
+    }
+
+    fn json_null() -> Value {
+        Value::Null
+    }
+
+    /// A request has one decision: the second answer (a refusal after the alternative approval, or the other way round) is
+    /// refused and does not overwrite what the person chose first.
+    #[test]
+    fn a_request_that_was_decided_cannot_be_decided_again() {
+        let a = Approvals::default();
+        pending(&a, 1);
+        let me = peer(5000, 1000);
+        let none: &[PathBuf] = &[];
+        // the alternative approval (the "always" of the protocol on a card that offers one)
+        assert!(a.decide(1, true, true, &me, false, none, Duration::from_secs(1)).is_ok());
+        assert_eq!(a.inner.lock().unwrap().pending[&1].decision, Some(true));
+        // a refusal afterwards: refused, and the approval stays
+        let e = a.decide(1, false, false, &me, false, none, Duration::from_secs(1)).unwrap_err();
+        assert!(e.contains("already decided"), "{e}");
+        assert_eq!(a.inner.lock().unwrap().pending[&1].decision, Some(true));
+        // and a denial first stays a denial
+        pending(&a, 2);
+        assert!(a.decide(2, false, false, &me, false, none, Duration::from_secs(1)).is_ok());
+        assert!(a.decide(2, true, false, &me, false, none, Duration::from_secs(1)).is_err());
+        assert_eq!(a.inner.lock().unwrap().pending[&2].decision, Some(false));
+    }
 }

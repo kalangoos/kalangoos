@@ -13,6 +13,21 @@
 //!
 //! O soquete padrão é /run/kalango/mcp.sock; KALANGOD_SOCKET muda isso.
 
+/// The unit tests of this program read English from `tr()` whatever language the machine is set to: the language is fixed
+/// before `main` runs, because the catalog is chosen once, at the first use.
+#[cfg(test)]
+#[used]
+#[link_section = ".init_array"]
+static ENGLISH_FOR_TESTS: extern "C" fn() = {
+    extern "C" fn set() {
+        unsafe {
+            libc::setenv(c"LANGUAGE".as_ptr(), c"".as_ptr(), 1);
+            libc::setenv(c"LC_ALL".as_ptr(), c"C".as_ptr(), 1);
+        }
+    }
+    set
+};
+
 mod allowlist;
 mod approval;
 mod cofre;

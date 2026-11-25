@@ -136,6 +136,14 @@ struct Ui {
     havia: Cell<bool>,
 }
 
+/// The facts of an internet card as aligned lines: the names in one column, the values in the other.
+fn card_rows(rows: &Value) -> String {
+    let rows: Vec<(String, String)> =
+        rows.as_array().into_iter().flatten().map(|r| (r[0].as_str().unwrap_or("").to_string(), r[1].as_str().unwrap_or("").to_string())).collect();
+    let width = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0) + 3;
+    rows.iter().map(|(k, v)| format!("{k:<width$}{v}")).collect::<Vec<_>>().join("\n")
+}
+
 /// The agent's name in "name (/path/to/exe)".
 fn agent_name(caller: &str) -> String {
     caller.split(" (").next().unwrap_or(caller).to_string()
@@ -350,8 +358,9 @@ impl Ui {
     fn recommend(self: &Rc<Self>, p: &Value) {
         let n = self.d1_pedido.get() + 1;
         self.d1_pedido.set(n);
-        // the cards of a folder and of an install are not in the design of this screen: no recommendation there
-        if matches!(p["level"].as_str(), Some("pasta" | "instalar")) {
+        // the cards of a folder, of an install and of the internet tunnel and triggers are not in the design of this screen
+        // with a recommendation: none there (these cards are the person's own decision, with their own warning)
+        if matches!(p["level"].as_str(), Some("pasta" | "instalar")) || p["cartao"]["tipo"] == "internet" {
             self.d1.set_visible(false);
             return;
         }
@@ -420,6 +429,46 @@ impl Ui {
         self.comando.set_visible(true);
         self.detalhe.set_visible(false);
         self.sempre.set_label(tr("Always"));
+        self.sempre.set_tooltip_text(Some(tr("Allow, and do not ask again for this exact request (it can be taken back in Agents)")));
+        self.negar.set_label(tr("Deny"));
+        self.aviso.remove_css_class("coral");
+        // the internet tunnel and triggers (design page 37): the sentence, a warning with its title, the facts as rows, the
+        // footnote; never "always". The text of each piece comes from kalangod, already in the person's language.
+        if p["cartao"]["tipo"] == "internet" {
+            let c = &p["cartao"];
+            let tom = c["risco"].as_str().unwrap_or("ouro");
+            self.risco.set_text(tr("High risk"));
+            self.risco.set_css_classes(&["risco", "alto", if tom == "coral" { "coral" } else { "ouro" }]);
+            self.frase.set_text(c["frase"].as_str().unwrap_or(""));
+            self.aviso.remove_css_class("coral");
+            if let Some(a) = c["aviso"].as_object() {
+                let t = glib::markup_escape_text(a.get("titulo").and_then(Value::as_str).unwrap_or(""));
+                let x = glib::markup_escape_text(a.get("texto").and_then(Value::as_str).unwrap_or(""));
+                self.aviso_texto.set_markup(&format!("<b>{t}</b>\n{x}"));
+                if a.get("tom").and_then(Value::as_str) == Some("coral") {
+                    self.aviso.add_css_class("coral");
+                }
+                self.aviso.set_visible(true);
+            }
+            // the facts: the names in one column, the values in the other (a value is one line: kalangod cut it)
+            self.comando.set_text(&card_rows(&c["linhas"]));
+            self.comando.set_visible(true);
+            self.detalhe.set_visible(false);
+            self.escopo.set_text(c["rodape"].as_str().unwrap_or(""));
+            self.aprovar.set_label(c["aprovar"].as_str().unwrap_or(tr("Allow once")));
+            self.negar.set_label(c["negar"].as_str().unwrap_or(tr("Deny")));
+            // an alternative way to approve (“only at the lowest level”): the third button, answering for this request only
+            match c["alternativa"].as_str() {
+                Some(alt) => {
+                    self.sempre.set_label(alt);
+                    self.sempre.set_tooltip_text(Some(tr("Approve this request with the level lowered to the lowest")));
+                    self.sempre.set_visible(true);
+                }
+                None => self.sempre.set_visible(false),
+            }
+            self.mostrar_comum(p);
+            return;
+        }
         // a folder for the agents' commands (design page 32): its path, summary and first entries; "only this task" or
         // "always in this folder" (the person's own request, from Permissões: add it, or not)
         if nivel == "pasta" {
@@ -1051,6 +1100,18 @@ fn main() -> glib::ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_internet_card_lines_are_aligned_and_never_run_into_each_other() {
+        let rows = card_rows(&json!([["Address", "exemplo.trycloudflare.com"], ["Type", "quick tunnel"], ["Level", "lowest (observe)"]]));
+        let lines: Vec<&str> = rows.lines().collect();
+        assert_eq!(lines.len(), 3);
+        // the values start at the same column
+        let col = |l: &str, v: &str| l.find(v).unwrap();
+        assert_eq!(col(lines[0], "exemplo"), col(lines[1], "quick"));
+        assert_eq!(col(lines[1], "quick"), col(lines[2], "lowest"));
+        assert_eq!(card_rows(&json!(null)), "");
+    }
+
     use super::*;
 
     #[test]
