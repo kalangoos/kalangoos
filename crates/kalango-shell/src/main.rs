@@ -96,6 +96,11 @@ mod nm_agent;
 mod polkit_agent;
 mod print_dialog;
 mod privacy_now;
+mod ajustes_tuneis;
+mod fluxo_chamadas;
+mod fluxo_internet;
+mod internet_modelo;
+mod tunel_agora;
 mod access_dialog;
 mod shutdown_screen;
 mod syntax;
@@ -460,6 +465,14 @@ impl Shell {
                     privacy_now::pause_all();
                 } else {
                     privacy_now::toggle_panel();
+                }
+            }
+            // the tunnel's chip: its menu, or the kill switch (Ctrl+Shift+F12) that closes every tunnel with no question
+            Some("tunel") => {
+                if args.get(1).map(String::as_str) == Some("fechar") {
+                    tunel_agora::close_all(false);
+                } else {
+                    tunel_agora::toggle_panel();
                 }
             }
             Some("alternar") => {
@@ -928,6 +941,7 @@ fn iniciar(app: &gtk::Application) -> Rc<Shell> {
     // polkit asks the shell for the admin password (its authentication agent; not in the development session)
     polkit_agent::start();
     privacy_now::start();
+    tunel_agora::start();
     // apps that stop reading the compositor's events: their windows dimmed and "App não está respondendo"
     unresponsive::start(&shell);
     // the divider between windows snapped side by side (design "Janelas lado a lado")

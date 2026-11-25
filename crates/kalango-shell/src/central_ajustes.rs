@@ -183,6 +183,7 @@ pub struct Ajustes {
     models: Rc<crate::ajustes_modelos::ModelsTab>,
     keys: Rc<crate::ajustes_chaves::KeysTab>,
     sandbox: Rc<crate::ajustes_sandbox::SandboxTab>,
+    tunnels: Rc<crate::ajustes_tuneis::TunnelsTab>,
     abas_conteudo: gtk::Stack,
 }
 
@@ -226,8 +227,9 @@ impl Ajustes {
         let models = crate::ajustes_modelos::ModelsTab::new(largura_lado);
         let keys = crate::ajustes_chaves::KeysTab::new(largura_lado);
         let sandbox = crate::ajustes_sandbox::SandboxTab::new(largura_lado);
+        let tunnels = crate::ajustes_tuneis::TunnelsTab::new(largura_lado);
         let mut botoes_abas: Vec<(&'static str, gtk::Button)> = Vec::new();
-        for (id, nome) in [("geral", tr("General")), ("modelos", tr("Models and providers")), ("conectores", tr("Connectors (MCP)")), ("chaves", tr("Keys")), ("sandbox", tr("Sandbox")), ("notificacoes", tr("Notifications")), ("avancado", tr("Advanced"))] {
+        for (id, nome) in [("geral", tr("General")), ("modelos", tr("Models and providers")), ("conectores", tr("Connectors (MCP)")), ("chaves", tr("Keys")), ("sandbox", tr("Sandbox")), ("tuneis", tr("Tunnels")), ("notificacoes", tr("Notifications")), ("avancado", tr("Advanced"))] {
             let b = gtk::Button::with_label(nome);
             b.add_css_class("ajustes-aba");
             if id == "conectores" {
@@ -239,12 +241,13 @@ impl Ajustes {
         }
         for (id, b) in &botoes_abas {
             let (id, todos, c, l) = (*id, botoes_abas.iter().map(|(_, b)| b.clone()).collect::<Vec<_>>(), abas_conteudo.clone(), abas_lado.clone());
-            let (mw, kw, sw) = (Rc::downgrade(&models), Rc::downgrade(&keys), Rc::downgrade(&sandbox));
+            let (mw, kw, sw, tw) = (Rc::downgrade(&models), Rc::downgrade(&keys), Rc::downgrade(&sandbox), Rc::downgrade(&tunnels));
             b.connect_clicked(move |b| {
                 match id {
                     "modelos" => mw.upgrade().into_iter().for_each(|m| m.reload()),
                     "chaves" => kw.upgrade().into_iter().for_each(|k| k.reload()),
                     "sandbox" => sw.upgrade().into_iter().for_each(|s| s.reload()),
+                    "tuneis" => tw.upgrade().into_iter().for_each(|t| t.reload()),
                     _ => {}
                 }
                 for x in &todos {
@@ -369,6 +372,7 @@ impl Ajustes {
         abas_conteudo.add_named(&models.body, Some("modelos"));
         abas_conteudo.add_named(&keys.body, Some("chaves"));
         abas_conteudo.add_named(&sandbox.body, Some("sandbox"));
+        abas_conteudo.add_named(&tunnels.body, Some("tuneis"));
         abas_conteudo.set_visible_child_name("conectores");
         corpo.append(&abas_conteudo);
         raiz.append(&corpo);
@@ -574,6 +578,7 @@ impl Ajustes {
         abas_lado.add_named(&models.cols.side, Some("modelos"));
         abas_lado.add_named(&keys.cols.side, Some("chaves"));
         abas_lado.add_named(&sandbox.side, Some("sandbox"));
+        abas_lado.add_named(&tunnels.side, Some("tuneis"));
         abas_lado.set_visible_child_name("conectores");
         raiz.append(&abas_lado);
         // (a narrow window: the side panel waits — the body below 520 px hides it, it comes back when the body
@@ -604,7 +609,7 @@ impl Ajustes {
             p_ferramentas, p_filtros, p_quem, p_testar, p_registro, p_remover, p_remover_rotulo, remover_confirma: Cell::new(false),
             normal, diag, d_texto, d_acoes, d_reg_sub, d_codigo, d_log, d_afeta, banner, banner_texto, cabecalho,
             kalangod: RefCell::default(), permissoes: RefCell::default(), terceiros: RefCell::default(), escolhido: RefCell::new("arquivos".into()), escolha_feita: Cell::new(false), botao_adicionar: adicionar.clone(),
-            filtro: Cell::new(0), preenchendo: Cell::new(false), models, keys, sandbox, abas_conteudo: abas_conteudo.clone(),
+            filtro: Cell::new(0), preenchendo: Cell::new(false), models, keys, sandbox, tunnels, abas_conteudo: abas_conteudo.clone(),
         });
         a.p_filtros[0].set_active(true);
         for (i, b) in a.p_filtros.iter().enumerate() {
@@ -767,6 +772,7 @@ impl Ajustes {
             Some("modelos") => self.models.reload(),
             Some("chaves") => self.keys.reload(),
             Some("sandbox") => self.sandbox.reload(),
+            Some("tuneis") => self.tunnels.reload(),
             _ => {}
         }
         let w = Rc::downgrade(self);

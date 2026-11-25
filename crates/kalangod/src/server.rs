@@ -582,28 +582,60 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
         return Err(e);
     }
     let timeout = Duration::from_secs(st.cfg.approval_timeout_s);
-    let approve = |level: &str, reason: String| -> Result<(), String> {
+    // (the card may offer an alternative answer; `true` in the second place says the person chose it)
+    let approve_full = |level: &str, reason: String, cartao: Option<Value>| -> (Result<(), String>, bool) {
         let p = Pending {
             id: 0, tool: name.into(), level: level.into(), args: args.clone(), caller: format!("{} ({})", rule.name, peer.exe), uid: peer.uid, pid: peer.pid, reason,
             descricao: kalango_i18n::tr(tool.description).into(), efeito: match tool.effect { crate::policy::Effect::Leitura => "leitura", crate::policy::Effect::Escreve => "escreve", crate::policy::Effect::Destrutiva => "destrutiva" }.into(),
-            reversivel: tool.reversible, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: None, no_always: false, cartao: None
+            reversivel: tool.reversible, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: None, no_always: crate::tools::gatilho_internet::asks(name), cartao
         };
-        match st.approvals.request(p, timeout) {
-            Outcome::Approved => Ok(()),
-            Outcome::Denied => {
+        match st.approvals.request_with_always(p, timeout) {
+            (Outcome::Approved, alternative) => (Ok(()), alternative),
+            (Outcome::Denied, _) => {
                 log(st, peer, rule, name, tool.level, args, "negado", kalango_i18n::tr("the person denied"), None, None);
-                Err(kalango_i18n::tr("the person denied this action").into())
+                (Err(kalango_i18n::tr("the person denied this action").into()), false)
             }
-            Outcome::Timeout => {
+            (Outcome::Timeout, _) => {
                 log(st, peer, rule, name, tool.level, args, "negado", kalango_i18n::tr("no answer from the person"), None, None);
-                Err(kalango_i18n::tr("no approval within the time limit").into())
+                (Err(kalango_i18n::tr("no approval within the time limit").into()), false)
             }
         }
     };
+    let approve_card = |level: &str, reason: String, cartao: Option<Value>| approve_full(level, reason, cartao).0;
+    let approve = |level: &str, reason: String| approve_card(level, reason, None);
     match tool.level {
         Level::Total if !st.approvals.has_total_grant(peer.uid) => approve("total", format!("nível total por {} min", st.cfg.total_grant_s / 60))?,
         // the person answered "always" to exactly this request before: it goes ahead (still with a restore point and
         // recorded in the timeline)
+        // the internet webhook and its tunnel: a door to the world. It always asks, with the exact text, and never
+        // looks at the "always" answers
+        Level::Sistema if crate::tools::gatilho_internet::asks(name) && crate::tools::gatilho_internet::take_preapproved(&crate::tools::gatilho_internet::Who::of(peer, rule), name, args) => {}
+        Level::Sistema if crate::tools::gatilho_internet::asks(name) => match crate::tools::gatilho_internet::needs_approval_card(peer, rule, Some(&st.cfg), name, args) {
+            Ok(Some((reason, card))) => {
+                let for_after = card.clone();
+                let (ok, alternative) = approve_full("sistema", reason, Some(card).filter(|c| !c.is_null()));
+                ok?;
+                // (only an approval gets here: a denial returned above, and nothing was remembered for it)
+                let who = crate::tools::gatilho_internet::Who::of(peer, rule);
+                // “only at the lowest level”: the same request with the level rewritten to the lowest, approved as such and
+                // recorded in the Timeline; it runs through the whole flow again, without asking the same question twice
+                if alternative {
+                    if let Some(lowered) = crate::tools::gatilho_internet::lowered(name, args) {
+                        log(st, peer, rule, name, tool.level, args, "ok", kalango_i18n::tr("the person approved it with the level lowered to the lowest (observe)"), None, None);
+                        // (what the card showed, at the lowest level, is what the lowered run must find)
+                        crate::tools::gatilho_internet::after_approval(&who, name, &lowered, &crate::tools::gatilho_internet::lowered_card(&for_after));
+                        crate::tools::gatilho_internet::preapprove(&who, name, &lowered);
+                        return call(st, peer, rule, name, &lowered);
+                    }
+                }
+                crate::tools::gatilho_internet::after_approval(&who, name, args, &for_after);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                log(st, peer, rule, name, tool.level, args, "erro", &e, None, None);
+                return Err(e);
+            }
+        },
         // an undo that puts back (or deletes) a startup file asks on the startup screen, with the diff, in undo()
         Level::Sistema if name == "linha_do_tempo.desfazer" && undo_asks_startup(st, peer, rule, args) => {}
         Level::Sistema if st.approvals.is_standing(peer.uid, &peer.exe, name, args) => {}

@@ -3609,3 +3609,59 @@ entry.mf-campo:focus-within { border-color: @k_accent; }
 .linha-d1-nome { font-size: 13px; font-weight: 600; color: @k_text2; }
 .linha-d1-veredito, .linha-d1-confianca { font-size: 13px; color: @k_teal; }
 .linha-d1-veredito { font-weight: 600; }
+
+/* Gatilho pela internet: o chip na barra e o menu rápido (design "indicador na barra e menu rápido") */
+.tunel-chip { border-radius: 99px; padding: 0 9px; min-height: 21px; background: none; border: 1px solid alpha(@k_teal, 0.55); }
+.tunel-chip:hover { background: alpha(@k_teal, 0.10); }
+.tunel-chip-texto { font-size: 12px; color: @k_text; }
+.tunel-chip-tempo { font-size: 11px; font-family: monospace; color: @k_muted; }
+.tunel-cartao { padding: 12px 14px; }
+.tunel-linha { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 8px 10px; }
+.tunel-aviso { color: @k_gold; }
+.tunel-aviso-caixa { background: alpha(@k_coral, 0.08); border-radius: 6px; padding: 8px 10px; }
+.tunel-aviso-titulo { font-size: 12px; font-weight: 600; color: @k_coral; }
+.tunel-quadro { background: @k_surface; border-radius: 6px; padding: 8px 10px; }
+.tunel-selo { font-size: 11px; color: @k_coral; border: 1px solid @k_coral; border-radius: 4px; padding: 1px 8px; }
+button.tunel-fechar-todos { background: @k_coral; color: @k_bg; border: none; border-radius: 4px; padding: 6px 12px; min-height: 0; box-shadow: none; }
+button.tunel-fechar-todos:hover { background: alpha(@k_coral, 0.85); }
+.tunel-fechar-x, .tunel-fechar-texto { font-size: 12px; font-weight: 600; color: @k_bg; }
+button.tunel-botao { background: @k_control; color: @k_text; border: none; border-radius: 4px; padding: 6px 12px; min-height: 0; box-shadow: none; font-size: 12px; font-weight: 600; }
+
+/* Ajustes › Túneis */
+.tunel-banner { background: alpha(@k_coral, 0.06); border: 1px solid @k_coral; border-radius: 6px; padding: 12px 14px; }
+.tunel-token { font-size: 12px; color: @k_text2; font-family: monospace; }
+.tunel-passo { background: @k_control; border-radius: 99px; min-width: 22px; min-height: 22px; font-size: 11px; color: @k_text2; padding: 0 7px; }
+entry.tunel-entrada { background: transparent; border: none; box-shadow: none; padding: 0; min-height: 0; font-family: monospace; font-size: 13px; color: @k_text; }
+
+/* Gatilho pela internet: o formulário do editor de fluxos e a folha */
+.int-seg { background: @k_surface; border: 1px solid @k_border; border-radius: 4px; padding: 2px; }
+button.int-seg-item { background: transparent; border: none; border-radius: 3px; padding: 3px 10px; min-height: 0; font-size: 12px; color: @k_muted; box-shadow: none; }
+button.int-seg-item:checked { background: @k_control; color: @k_text; }
+button.int-chip { background: @k_surface; border: 1px solid @k_border; border-radius: 4px; padding: 3px 10px; min-height: 0; font-size: 12px; color: @k_muted; box-shadow: none; }
+button.int-chip:checked { border-color: @k_accent; color: @k_text; background: alpha(@k_accent, 0.12); }
+entry.int-campo { background: @k_surface; border: 1px solid @k_border; border-radius: 4px; padding: 6px 10px; min-height: 0; font-size: 12px; color: @k_text; box-shadow: none; }
+.int-endereco { background: @k_surface; border: 1px solid @k_border; border-radius: 4px; padding: 6px 10px; }
+.int-mono { font-family: monospace; font-size: 12px; color: @k_text; }
+.int-chave-nova { background: alpha(@k_gold, 0.08); border: 1px solid @k_gold; border-radius: 6px; padding: 8px 10px; }
+.int-chave-aviso { font-size: 12px; font-weight: 600; color: @k_gold; }
+.int-aviso-ouro { background: alpha(@k_gold, 0.08); border: 1px solid @k_gold; border-radius: 6px; padding: 8px 10px; }
+.int-aviso-titulo { font-size: 12px; font-weight: 600; color: @k_gold; }
+.int-aviso-vermelho { background: alpha(@k_coral, 0.08); border: 1px solid @k_coral; border-radius: 6px; padding: 8px 10px; }
+.int-vermelho { font-size: 12px; font-weight: 600; color: @k_coral; }
+.int-codigo { background: @k_base; border-radius: 6px; padding: 10px 12px; }
+.int-folha-corpo { background: @k_sunken; border: 1px solid @k_divider; border-radius: 8px; padding: 16px 18px; }
+
+/* Gatilho pela internet: o registro de chamadas */
+.int-chamadas { padding: 18px 22px; }
+.int-chamadas-cab { padding: 6px 12px; }
+button.int-chamada-linha { background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 6px 12px; min-height: 0; box-shadow: none; }
+button.int-chamada-linha:hover { background: alpha(@k_realce, 0.04); }
+button.int-chamada-linha.ativa { border-color: @k_accent; }
+.int-estado { font-family: monospace; font-size: 11px; border-radius: 4px; padding: 1px 6px; border: 1px solid @k_border; }
+.int-estado.ok { color: @k_teal; border-color: alpha(@k_teal, 0.6); }
+.int-estado.aviso { color: @k_gold; border-color: alpha(@k_gold, 0.6); }
+.int-estado.erro { color: @k_coral; border-color: alpha(@k_coral, 0.6); }
+
+/* Gatilho pela internet: estados (abrindo, falhou, limite) e a folha lateral das chamadas */
+.tunel-chip.abrindo { border-color: alpha(@k_gold, 0.7); }
+.int-folha-lateral { border-radius: 8px 0 0 8px; border-right: none; padding: 16px 18px; }

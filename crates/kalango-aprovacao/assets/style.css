@@ -24,6 +24,8 @@ button:disabled { opacity: 0.45; }
 /* a file that runs at login (design page 30): the gold warning and the diff */
 .aviso-inicio { background: alpha(@k_gold, 0.10); border-radius: 4px; padding: 8px 10px; }
 .aviso-texto { color: @k_cream; font-size: 12px; }
+.aviso-inicio.coral { background: alpha(@k_coral, 0.10); }
+.aviso-inicio.coral .aviso-texto { color: @k_text; }
 .diff { background: @k_base; border-radius: 4px; padding: 8px 10px; font-family: "JetBrains Mono", "Fira Code", monospace; font-size: 12px; }
 .diff-arquivo { color: @k_muted; margin-bottom: 2px; }
 .diff-linha { border-radius: 2px; padding: 1px 6px; color: @k_text; }

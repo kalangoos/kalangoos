@@ -797,6 +797,25 @@ fn answer_startup(sock: PathBuf, decision: &'static str) -> std::thread::JoinHan
     })
 }
 
+/// Waits for the next request and answers it with the card's alternative (the second approving button: "always" in the
+/// protocol), and nothing else. Then tries once more to decide the same request the other way, which must be refused.
+/// Returns the request and what that second attempt said.
+fn answer_alternative(sock: PathBuf) -> std::thread::JoinHandle<(Value, String)> {
+    std::thread::spawn(move || {
+        for _ in 0..400 {
+            let p = Client::new(&sock).rpc("kalango/pendentes", json!({}));
+            if let Some(req) = p["result"].as_array().and_then(|a| a.first()).cloned() {
+                let id = req["id"].as_u64().unwrap().to_string();
+                Command::new(BIN).args(["aprovar", &id, "--sempre"]).env("KALANGOD_SOCKET", &sock).output().unwrap();
+                let second = Command::new(BIN).args(["negar", &id]).env("KALANGOD_SOCKET", &sock).output().unwrap();
+                return (req, String::from_utf8_lossy(&second.stdout).into_owned() + &String::from_utf8_lossy(&second.stderr));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        (Value::Null, "nenhum pedido".into())
+    })
+}
+
 #[test]
 fn startup_files_ask_with_the_diff_and_never_always() {
     let d = start_startup();
@@ -2071,4 +2090,141 @@ fn only_the_engine_can_announce_an_approval_by_the_d1() {
     assert_eq!(c.call("arquivos.lixeira", args)["isError"], false);
     let log = std::fs::read_to_string(d._dir.path().join("estado/linha-do-tempo.jsonl")).unwrap();
     assert!(log.contains("arquivos.lixeira") && !log.contains("\"d1\""), "{log}");
+}
+
+/// The internet tunnel is a door to the world: opening it always asks, with the exact text (what becomes reachable,
+/// through whom, which triggers), the answer "always" is refused, and the Timeline records both the no and the yes.
+#[test]
+fn the_internet_tunnel_always_asks_with_the_exact_text_and_never_always() {
+    let d = start_startup();
+    let mut c = Client::new(&d.sock);
+    let args = json!({"modo": "rapido", "provedor": "cloudflare", "porta": 40123, "ociosidade_s": 7200,
+        "gatilhos": [{"id": "gi-1", "flow": "Receber pedidos", "signed": true, "level": "observar"}]});
+    let h = answer_startup(d.sock.clone(), "negar");
+    let r = c.call("tunel.autorizar", args.clone());
+    let (req, always) = h.join().unwrap();
+    assert_eq!(r["isError"], true, "{r}");
+    assert_eq!(req["no_always"], true, "{req}");
+    assert_eq!(req["tool"], "tunel.autorizar");
+    let shown = req["reason"].as_str().unwrap_or_default().to_string();
+    for must in ["Cloudflare", "trycloudflare.com", "40123", "Receber pedidos", "gi-1"] {
+        assert!(shown.contains(must), "{must} missing in the approval text: {shown}");
+    }
+    assert!(!always.contains("aprovado"), "“always” must be refused: {always}");
+    // the screen gets the card of the design: sentence, warning, the four rows, the footnote, “Open once”
+    assert_eq!(req["cartao"]["tipo"], "internet", "{req}");
+    assert_eq!(req["cartao"]["linhas"].as_array().unwrap().len(), 5, "address, type, level, signature and who asked");
+    // (the daemon speaks the person's language: the button is “Open once” or “Abrir uma vez”)
+    assert!(["Open once", "Abrir uma vez"].contains(&req["cartao"]["aprovar"].as_str().unwrap()), "{req}");
+    assert!(req["cartao"]["frase"].as_str().unwrap().contains("Receber pedidos"));
+    // yes: it goes ahead; asked again the next time (no "always" was kept)
+    let h = answer_startup(d.sock.clone(), "aprovar");
+    let r = c.call("tunel.autorizar", args.clone());
+    h.join().unwrap();
+    assert_eq!(r["isError"], false, "{r}");
+    let h = answer_startup(d.sock.clone(), "negar");
+    assert_eq!(c.call("tunel.autorizar", args)["isError"], true);
+    h.join().unwrap();
+    let regs = c.rpc("kalango/registros", json!({}))["result"]["registros"].as_array().unwrap().clone();
+    let mine: Vec<&Value> = regs.iter().filter(|e| e["tool"] == "tunel.autorizar").collect();
+    assert_eq!(mine.len(), 3, "the Timeline has every request: {regs:?}");
+    // an invalid request is an error before anyone is asked
+    let bad = c.call("tunel.autorizar", json!({"modo": "rapido", "provedor": "tailscale", "porta": 1}));
+    assert_eq!(bad["isError"], true, "{bad}");
+    // closing never asks (the service is not there in this test, so it fails — but it fails without a request)
+    let close = c.call("tunel.fechar_todos", json!({}));
+    assert_eq!(close["isError"], true);
+    assert!(c.rpc("kalango/pendentes", json!({}))["result"].as_array().unwrap().is_empty());
+}
+
+/// An agent's internet trigger asked at a level above the lowest: the card offers “Only at the lowest”. That answer runs
+/// the SAME request with the level rewritten to the lowest, once, and the Timeline says so; “Approve as asked” keeps the
+/// level; a request that already asks for the lowest has no such answer.
+#[test]
+fn an_agents_internet_trigger_can_be_approved_only_at_the_lowest_level() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("criado.log");
+    let script = dir.path().join("kalango-fluxosd");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncase \"$2\" in\n internet.trigger_preview) echo '{{\"result\":{{\"flow\":\"Contas a pagar\",\"signed\":true,\"level\":\"'\"$(echo \"$3\" | sed -n 's/.*\"max_level\":\"\\([a-z]*\\)\".*/\\1/p')\"'\",\"methods\":[\"POST\"],\"max_body_bytes\":65536,\"rate_per_minute\":30,\"content_types\":[\"application/json\"],\"respond\":{{\"mode\":\"accepted\"}},\"allow_ips\":[],\"max_pending\":20}}}}' ;;\n internet.trigger_create) echo \"$3\" >> '{}'; echo '{{\"result\":{{\"id\":\"gi-1\",\"path\":\"/h/x\",\"signed\":true,\"level\":\"observar\"}}}}' ;;\nesac\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let d = start_startup_env(&[("KALANGO_FLUXOSD", script.to_str().unwrap())]);
+    let mut c = Client::new(&d.sock);
+    let ask = json!({"fluxo": "contas", "nivel": "usuario"});
+    // “Only at the lowest”: the alternative answer (the protocol's second approving button)
+    let h = answer_alternative(d.sock.clone());
+    let r = c.call("gatilho_internet.criar", ask.clone());
+    let (req, second) = h.join().unwrap();
+    assert!(req["cartao"]["alternativa"].is_string(), "the card offers it: {req}");
+    // (this reaches the guard only when the request is still waiting when the second answer comes, which a process cannot
+    // time here: `approval::decision_tests::a_request_that_was_decided_cannot_be_decided_again` is the test that holds the
+    // guard, deterministically; this asserts that, either way, the second answer is not taken)
+    assert!(second.contains("decided") || second.contains("decidid"), "a second answer to the same request is refused, not taken: {second}");
+    assert_eq!(r["isError"], false, "{r}");
+    let made = std::fs::read_to_string(&log).unwrap();
+    assert!(made.contains("\"max_level\":\"observar\"") && !made.contains("usuario"), "the trigger was made at the lowest level: {made}");
+    // the facts of the card went with it, at the level it was made at
+    assert!(made.contains("\"expected\":{") && made.contains("\"level\":\"observar\""), "the card's facts travel with the lowered run: {made}");
+    let regs = c.rpc("kalango/registros", json!({}))["result"]["registros"].as_array().unwrap().clone();
+    assert!(regs.iter().any(|e| e["tool"] == "gatilho_internet.criar" && e["status"] == "ok" && e["args"]["nivel"] == "usuario"), "the Timeline records the approval of the request as it was asked: {regs:?}");
+    assert!(regs.iter().filter(|e| e["tool"] == "gatilho_internet.criar").count() >= 2, "and the run that followed: {regs:?}");
+    // “Approve as asked”: the level stays
+    std::fs::remove_file(&log).unwrap();
+    let sock = d.sock.clone();
+    let h = std::thread::spawn(move || {
+        for _ in 0..400 {
+            let p = Client::new(&sock).rpc("kalango/pendentes", json!({}));
+            if let Some(req) = p["result"].as_array().and_then(|a| a.first()).cloned() {
+                Command::new(BIN).args(["aprovar", &req["id"].as_u64().unwrap().to_string()]).env("KALANGOD_SOCKET", &sock).output().unwrap();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    });
+    let r = c.call("gatilho_internet.criar", ask);
+    h.join().unwrap();
+    assert_eq!(r["isError"], false, "{r}");
+    assert!(std::fs::read_to_string(&log).unwrap().contains("\"max_level\":\"usuario\""), "as asked, the level is the one asked");
+    assert!(std::fs::read_to_string(&log).unwrap().contains("\"expected\":{"), "and the card's facts travel with it too");
+    // the lowest asked: no alternative on the card
+    let h = answer_startup(d.sock.clone(), "aprovar");
+    c.call("gatilho_internet.criar", json!({"fluxo": "contas"}));
+    let (req, always) = h.join().unwrap();
+    assert!(req["cartao"]["alternativa"].is_null(), "{req}");
+    assert!(!always.contains("aprovado"), "no “always” where there is no alternative: {always}");
+}
+
+/// Replacing the key and turning a trigger on show a card that says who asked (never "you"), and a denial changes nothing.
+#[test]
+fn turning_on_and_replacing_the_key_ask_with_a_card_that_says_who_asked() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("kalango-fluxosd");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ncase \"$2\" in\n internet.trigger_list) echo '{\"result\":[{\"id\":\"gi-1\",\"path\":\"/h/x\",\"signed\":true,\"level\":\"observar\",\"flow\":\"Contas\",\"methods\":[\"POST\"],\"max_body_bytes\":65536,\"rate_per_minute\":30,\"content_types\":[\"application/json\"],\"respond\":{\"mode\":\"accepted\"},\"allow_ips\":[],\"max_pending\":20,\"enabled\":false}]}' ;;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let d = start_startup_env(&[("KALANGO_FLUXOSD", script.to_str().unwrap())]);
+    let mut c = Client::new(&d.sock);
+    for (tool, args) in [("gatilho_internet.ativar", json!({"id": "gi-1"})), ("gatilho_internet.girar_segredo", json!({"id": "gi-1"}))] {
+        let h = answer_startup(d.sock.clone(), "negar");
+        let r = c.call(tool, args);
+        let (req, _) = h.join().unwrap();
+        assert_eq!(r["isError"], true, "{tool}: denied, so it did not run: {r}");
+        assert_eq!(req["cartao"]["tipo"], "internet", "{tool}: {req}");
+        let rows = req["cartao"]["linhas"].as_array().unwrap_or_else(|| panic!("{tool}: no rows in {req}"));
+        let asked = rows.iter().find(|r| r[0] == "Asked by" || r[0] == "Pedido por").unwrap_or_else(|| panic!("{tool}: no row for who asked: {rows:?}"));
+        // (“you” only when the caller is verified as the person's own interface: a test program is whatever the stand-in
+        // configuration says; here it is enough that the row is there and says something)
+        assert!(!asked[1].as_str().unwrap().is_empty(), "{tool}: {asked}");
+    }
 }
