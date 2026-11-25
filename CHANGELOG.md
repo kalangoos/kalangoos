@@ -5,7 +5,7 @@ Todas as mudanças relevantes do KalangoOS ficam aqui. O formato segue o
 [kalangoos/kalangoos](https://github.com/kalangoos/kalangoos/pulls?q=is%3Apr+is%3Amerged). As versões 0.x são
 prévias de desenvolvimento ([docs/LANCAMENTO.md](docs/LANCAMENTO.md)).
 
-## [0.1.1] — a lançar
+## [0.1.1] — 2026-11-25
 
 Correção de segurança e de uso da 0.1.0, achada ao testar a ISO publicada em máquinas virtuais (duas VMs, uma controlando
 a outra). **O `kalangod` desta versão exige o Kalango Remote desta versão: os dois saem juntos** (o núcleo da 0.1.0 é

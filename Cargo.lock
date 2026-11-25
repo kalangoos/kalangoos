@@ -1150,7 +1150,7 @@ dependencies = [
 
 [[package]]
 name = "kalango-agente"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "kalango-d1",
@@ -1166,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "kalango-aprovacao"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gtk4",
  "gtk4-layer-shell",
@@ -1179,7 +1179,7 @@ dependencies = [
 
 [[package]]
 name = "kalango-d1"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "kalango-i18n",
  "serde_json",
@@ -1188,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "kalango-entrada"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gtk4",
  "gtk4-layer-shell",
@@ -1200,14 +1200,14 @@ dependencies = [
 
 [[package]]
 name = "kalango-i18n"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "kalango-instalador"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gtk4",
  "kalango-i18n",
@@ -1221,7 +1221,7 @@ dependencies = [
 
 [[package]]
 name = "kalango-modelos"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "serde",
@@ -1235,14 +1235,14 @@ dependencies = [
 
 [[package]]
 name = "kalango-movimento"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gtk4",
 ]
 
 [[package]]
 name = "kalango-shell"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cairo-rs",
  "gstreamer",
@@ -1275,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "kalango-sons"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gstreamer",
  "gstreamer-app",
@@ -1284,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "kalango-tela"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "flate2",
@@ -1298,7 +1298,7 @@ dependencies = [
 
 [[package]]
 name = "kalangod"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aya",
  "base64",
