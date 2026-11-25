@@ -232,6 +232,10 @@ fn pontos_padrao() -> usize {
 /// agents' cgroup and read them directly. A connector's own data folder (`~/.local/share/kalango/conectores/NAME`)
 /// stays reachable: the connector runs in the agents' cgroup and works there.
 pub const KALANGO_PROTECTED: &[&str] = &[
+    // the person's Flatpak overrides and settings: a global override (`overrides/global`) stays under every app's own and
+    // widens what a creative app that kalangod starts sees (`filesystems=~/.ssh`)
+    "~/.local/share/flatpak/overrides",
+    "~/.config/flatpak",
     "~/.config/kalango",
     "~/.config/kalango-remote",
     "~/.local/share/kalango/fluxos",

@@ -22,6 +22,7 @@ ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 kalango-movimento = { path = "../kalango-movimento" }
 kalango-i18n = { path = "../kalango-i18n" }
 kalango-d1 = { path = "../kalango-d1" }
+kalango-craft = { path = "../kalango-craft" }
 # the compositor's idle notifications (ext-idle-notify-v1): the screens go dark, the computer suspends
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
@@ -44,3 +45,6 @@ gstreamer-video = "0.23"
 # the system's sounds (the theme's files, played in this process)
 kalango-sons = { path = "../kalango-sons" }
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "aac", "isomp4", "flac", "vorbis", "ogg", "pcm", "wav", "alac"] }
+
+[dev-dependencies]
+tempfile = "3"

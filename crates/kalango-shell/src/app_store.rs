@@ -178,6 +178,8 @@ pub struct AppStore {
     bars: RefCell<HashMap<String, (glib::WeakRef<gtk::LevelBar>, glib::WeakRef<gtk::Label>)>>,
     ticking: Cell<bool>,
     refresh_pending: RefCell<Option<glib::SourceId>>,
+    /// Apps criativos: a coleção, o detalhe de um app, a parte deles nas Atualizações, a chamada (criativos.rs)
+    criativos: Rc<crate::criativos::Criativos>,
 }
 
 thread_local! {
@@ -207,7 +209,13 @@ pub fn open(shell: &Rc<Shell>, query: Option<String>) {
 pub fn open_page(shell: &Rc<Shell>, page: &str) {
     open(shell, None);
     if let Some(s) = STORE.with(|s| s.borrow().clone()) {
-        s.go(page);
+        // (`--pagina=criativo:filmcraft`: a creative app's detail)
+        if let Some(id) = page.strip_prefix("criativo:") {
+            *s.criativos.atual.borrow_mut() = kalango_craft::catalogo().app(id).map(|a| a.id.clone());
+            s.go("criativo");
+        } else {
+            s.go(page);
+        }
     }
 }
 
@@ -412,6 +420,11 @@ impl AppStore {
         updates.more.set_label(tr("Update all"));
         let system_updates = caixa(Orientation::Horizontal, 10, "loja-nota");
         page.append(&downloads.root);
+        let criativos = crate::criativos::compartilhado();
+        page.append(&criativos.chamada);
+        page.append(&criativos.colecao);
+        page.append(&criativos.detalhe);
+        page.append(&criativos.atualizacoes);
         for s in [&agents, &apps, &models, &updates] {
             page.append(&s.root);
         }
@@ -444,7 +457,32 @@ impl AppStore {
             page: Cell::new("descobrir"), category: Cell::new(0), width: Cell::new(0), catalog: RefCell::new(Rc::new(Vec::new())), catalog_state: Cell::new(0),
             shelf: RefCell::default(), agent_list: RefCell::default(), model_list: RefCell::default(), flatpaks: RefCell::default(), user_remotes: RefCell::default(),
             pending_updates: RefCell::default(), jobs: RefCell::default(), bars: RefCell::default(), ticking: Cell::new(false), refresh_pending: RefCell::default(),
+            criativos,
         });
+        // the creative apps ask for the page again, open an app's detail, go back to the collection
+        let w = Rc::downgrade(&s);
+        *s.criativos.ao_mudar.borrow_mut() = Some(Box::new(move || {
+            if let Some(s) = w.upgrade() {
+                s.refresh(false);
+            }
+        }));
+        let w = Rc::downgrade(&s);
+        *s.criativos.ao_abrir.borrow_mut() = Some(Box::new(move |id: &str| {
+            if let Some(s) = w.upgrade() {
+                if id.is_empty() {
+                    s.go("criativos");
+                } else {
+                    *s.criativos.atual.borrow_mut() = Some(id.to_string());
+                    s.go("criativo");
+                }
+            }
+        }));
+        let w = Rc::downgrade(&s);
+        *s.criativos.ao_voltar.borrow_mut() = Some(Box::new(move || {
+            if let Some(s) = w.upgrade() {
+                s.go("criativos");
+            }
+        }));
         // the menu: the catalog again from the remotes, the models' folder
         for (glyph, text, what) in [("reiniciar", tr("Refresh the catalog"), 0), ("pasta", tr("Open the models folder"), 1)] {
             let b = link_button(glyph, "#C9CAD1", text, "menu-item");
@@ -475,6 +513,7 @@ impl AppStore {
                 let inner = width - 56;
                 if s.width.replace(inner) != inner {
                     s.hero_art.set_visible(inner >= 900);
+                    s.criativos.ajustar(inner);
                     let w2 = Rc::downgrade(&s);
                     glib::idle_add_local_once(move || {
                         if let Some(s) = w2.upgrade() {
@@ -613,6 +652,7 @@ impl AppStore {
         *self.model_list.borrow_mut() = data::model_catalog();
         *self.flatpaks.borrow_mut() = data::flatpak_installed();
         *self.user_remotes.borrow_mut() = data::user_remotes();
+        self.criativos.recarregar();
         if self.catalog_state.get() == 0 {
             self.load_catalog();
         }
@@ -655,8 +695,14 @@ impl AppStore {
     }
 
     fn go(self: &Rc<Self>, page: &str) {
-        let i = PAGES.iter().position(|(p, _, _)| *p == page).unwrap_or(0);
-        self.page.set(PAGES[i].0);
+        // (the creative apps' collection and an app's detail are pages of Apps: the rail shows Apps)
+        let extra = match page {
+            "criativos" => Some("criativos"),
+            "criativo" => Some("criativo"),
+            _ => None,
+        };
+        let i = if extra.is_some() { 1 } else { PAGES.iter().position(|(p, _, _)| *p == page).unwrap_or(0) };
+        self.page.set(extra.unwrap_or(PAGES[i].0));
         for (n, (b, img)) in self.rail.iter().enumerate() {
             if n == i { b.add_css_class("ativa") } else { b.remove_css_class("ativa") }
             crate::conversa::set_icon(img, PAGES[n].1, if n == i { "#A5A1E2" } else { "#8E8F99" });
@@ -665,7 +711,7 @@ impl AppStore {
             self.look_for_updates();
         }
         if debug() {
-            eprintln!("debug loja: página {}", PAGES[i].0);
+            eprintln!("debug loja: página {}", self.page.get());
         }
         self.refresh(true);
     }
@@ -785,6 +831,21 @@ impl AppStore {
         let discover = page == "descobrir";
         self.hero.set_visible(discover && q.is_empty());
         self.chips_row.set_visible(matches!(page, "descobrir" | "apps" | "agentes"));
+        // the creative apps
+        let cr = &self.criativos;
+        cr.chamada.set_visible(matches!(page, "descobrir" | "apps") && q.is_empty() && self.category.get() == 0);
+        cr.colecao.set_visible(page == "criativos");
+        cr.detalhe.set_visible(page == "criativo");
+        cr.atualizacoes.set_visible(page == "atualizacoes");
+        match page {
+            "criativos" => cr.mostrar_colecao(),
+            "criativo" => {
+                let id = cr.atual.borrow().clone().unwrap_or_default();
+                cr.mostrar_detalhe(&id);
+            }
+            "atualizacoes" => cr.mostrar_atualizacoes(),
+            _ => {}
+        }
         let mut anims: Vec<Animavel> = Vec::new();
         let mut counts = (0, 0, 0);
         // agents
@@ -846,7 +907,7 @@ impl AppStore {
             self.fill_updates(&mut anims);
         }
         // nothing
-        let nothing = !show_updates && counts == (0, 0, 0);
+        let nothing = !show_updates && !matches!(page, "criativos" | "criativo") && counts == (0, 0, 0);
         self.empty.set_visible(nothing);
         if nothing {
             self.empty.set_text(&if !q.is_empty() {

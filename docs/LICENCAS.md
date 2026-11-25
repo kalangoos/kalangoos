@@ -18,6 +18,7 @@
 | llama.cpp (motor dos modelos locais, na ISO) | ggml-org | MIT |
 | Compositor base (niri ou cosmic-comp) | Projetos de código aberto | GPL-3.0 |
 | Inter, Roboto, Ubuntu, JetBrains Mono | Google Fonts / autores | SIL OFL 1.1 / Ubuntu Font Licence |
+| Apps criativos do projeto Craft (17 apps, instalados pela Central de Apps a pedido; não vão na ISO) | github.com/storytold, lançamentos assinados em getartcraft.com | MIT OR Apache-2.0; dentro deles, a fonte Ubuntu (Ubuntu Font Licence 1.0), partes BSL-1.0 e MIT-0 (aceitas em 25/11/2026). Marca ArtCraft/Craft dos autores: nunca reempacotamos nem renomeamos (`docs/APPS-CRIATIVOS.md`) |
 | Ícones simbólicos da prova de conceito | Adwaita | CC BY-SA 3.0 (substituir na fase 3) |
 
 ## Recursos gerados por IA

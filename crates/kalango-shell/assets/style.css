@@ -1502,7 +1502,7 @@ button.cfg-botao-acento:hover { background: alpha(@k_accent, 0.24); }
 button.cfg-botao { background: #24252D; border: none; box-shadow: none; border-radius: 4px; padding: 6px 12px; min-height: 0; font-size: 12px; font-weight: 600; color: #E2E2E6; }
 button.cfg-botao:hover { background: #2E2F3A; }
 button.cfg-botao-principal { background: #A5A1E2; border: none; box-shadow: none; border-radius: 4px; padding: 7px 14px; min-height: 0; font-size: 12px; font-weight: 600; color: #1C1D24; }
-button.cfg-botao-principal:hover { background: #B4B0EA; }
+button.cfg-botao-principal:hover { background: mix(@k_accent, @k_realce, 0.15); }
 button.cfg-botao-principal.pequeno { padding: 6px 12px; }
 button.cfg-botao-principal:disabled { background: alpha(#A5A1E2, 0.4); color: #1C1D24; }
 button.cfg-botao-texto { background: none; border: none; box-shadow: none; border-radius: 4px; padding: 6px 12px; min-height: 0; font-size: 12px; font-weight: 600; color: #8E8F99; }
@@ -1924,7 +1924,7 @@ button.wifi-botao { background: #24252D; border: none; box-shadow: none; border-
 button.wifi-botao:hover { background: @k_raised; }
 button.wifi-botao:focus-visible { outline-color: @k_accent; }
 button.wifi-botao.principal { background: @k_accent; color: #1C1D24; }
-button.wifi-botao.principal:hover { background: #B4B0EA; }
+button.wifi-botao.principal:hover { background: mix(@k_accent, @k_realce, 0.15); }
 button.wifi-botao.principal:disabled { background: alpha(@k_accent, 0.35); color: alpha(#1C1D24, 0.7); }
 /* "App não está respondendo" (design 54053): the app's icon and what is stuck, the agent's diagnosis in an accent card
    with the system's memory, the least destructive way out, then Esperar and Forçar encerramento */
@@ -2201,7 +2201,7 @@ button.captura-alternar:disabled, button.captura-extrair:disabled { opacity: 0.4
 button.captura-extrair { background: alpha(@k_accent, 0.14); border: none; box-shadow: none; border-radius: 4px; padding: 0 12px; min-height: 32px; font-size: 13px; font-weight: 600; color: @k_text; }
 button.captura-extrair:hover { background: alpha(@k_accent, 0.22); }
 button.captura-capturar { background: @k_accent; border: none; box-shadow: none; border-radius: 4px; padding: 0 14px; min-height: 32px; font-size: 13px; font-weight: 600; color: #1C1D24; }
-button.captura-capturar:hover { background: #B4B0EA; }
+button.captura-capturar:hover { background: mix(@k_accent, @k_realce, 0.15); }
 button.captura-capturar:disabled { background: alpha(@k_accent, 0.35); }
 button.captura-esc { background: none; border: 1px solid @k_divider; box-shadow: none; border-radius: 4px; padding: 0 6px; min-height: 24px; font-size: 12px; color: @k_muted; }
 .captura-flash { background: #FFFFFF; }
@@ -2636,7 +2636,7 @@ button.mus-trilho-botao.ativo { background-color: alpha(@k_accent, 0.16); backgr
 button.mus-controle { background: none; border: none; box-shadow: none; min-width: 36px; min-height: 36px; padding: 0; border-radius: 99px; }
 button.mus-controle:hover { background: alpha(@k_realce, 0.06); }
 button.mus-tocar { background: #A5A1E2; border: none; box-shadow: none; min-width: 52px; min-height: 52px; padding: 0; border-radius: 99px; }
-button.mus-tocar:hover { background: #B4B0EA; }
+button.mus-tocar:hover { background: mix(@k_accent, @k_realce, 0.15); }
 .mus-mix { background: #1C1D23; border: 1px solid #26272F; border-radius: 6px; padding: 14px 14px; }
 .mus-mix-icone { background: alpha(@k_accent, 0.14); border-radius: 6px; min-width: 40px; min-height: 40px; padding: 0; }
 .mus-mix-titulo { font-size: 15px; font-weight: 600; color: @k_text; }
@@ -2664,7 +2664,7 @@ button.mus-mais:hover { background: alpha(@k_realce, 0.08); }
 button.vid-botao, menubutton.vid-botao > button { background: none; border: none; box-shadow: none; min-width: 28px; min-height: 28px; padding: 0; border-radius: 4px; }
 button.vid-botao:hover, menubutton.vid-botao > button:hover { background: alpha(#FFFFFF, 0.08); }
 button.vid-tocar { background: #A5A1E2; border: none; box-shadow: none; min-width: 32px; min-height: 32px; padding: 0; border-radius: 99px; }
-button.vid-tocar:hover { background: #B4B0EA; }
+button.vid-tocar:hover { background: mix(@k_accent, @k_realce, 0.15); }
 .vid-tempo { font-family: "JetBrains Mono", monospace; font-size: 12px; color: #E2E2E6; }
 button.vid-acao, menubutton.vid-acao > button { background: none; border: 1px solid #2C2D36; box-shadow: none; border-radius: 4px; min-height: 24px; padding: 0 10px; font-size: 12px; color: #E2E2E6; }
 button.vid-acao:hover, menubutton.vid-acao > button:hover { background: alpha(#FFFFFF, 0.06); }
@@ -3665,3 +3665,67 @@ button.int-chamada-linha.ativa { border-color: @k_accent; }
 /* Gatilho pela internet: estados (abrindo, falhou, limite) e a folha lateral das chamadas */
 .tunel-chip.abrindo { border-color: alpha(@k_gold, 0.7); }
 .int-folha-lateral { border-radius: 8px 0 0 8px; border-right: none; padding: 16px 18px; }
+
+/* Central de Apps › Apps criativos (design 36: coleção 345270, detalhe 345764, atualizações 346139, estreita 347389) */
+.cr-titulo { font-size: 22px; font-weight: 600; color: @k_text; }
+.cr-auto { border: 1px solid @k_border; background: @k_surface; border-radius: 6px; padding: 4px 6px 4px 12px; }
+.cr-auto-texto { font-size: 12px; color: @k_text2; }
+button.cr-instalar-todos, button.loja-acao.cr-cheio { all: unset; background: @k_accent; color: @k_accent_fg; border-radius: 4px; min-height: 32px; padding: 0 14px; font-size: 12px; font-weight: 600; }
+button.cr-instalar-todos:hover, button.loja-acao.cr-cheio:hover { background: mix(@k_accent, @k_realce, 0.15); }
+button.loja-chip.cr-filtro:checked { background: alpha(@k_accent, 0.10); border-color: @k_accent; color: @k_text; font-weight: 600; }
+.cr-cartao { padding: 14px; min-height: 66px; }
+.cr-cartao:hover { border-color: @k_divider; }
+.cr-marcador { background: @k_raised; border-radius: 6px; }
+.cr-iniciais { font-size: 15px; font-weight: 700; color: @k_text2; }
+.cr-iniciais-grande { font-size: 24px; font-weight: 700; color: @k_text2; }
+.cr-alfa { font-size: 10px; font-weight: 600; color: @k_gold; background: alpha(@k_gold, 0.10); border-radius: 3px; padding: 1px 6px; }
+.cr-meta { font-size: 11px; color: @k_muted; }
+.cr-ponto, .cr-ponto-teal, .cr-ponto-cinza { border-radius: 99px; min-width: 6px; min-height: 6px; }
+.cr-ponto-teal { background: @k_teal; }
+.cr-ponto-cinza { background: @k_muted; }
+.cr-instalado { font-size: 12px; color: @k_teal; background: alpha(@k_teal, 0.08); border-radius: 4px; padding: 5px 10px; }
+.cr-nota { font-size: 11px; color: @k_dim; }
+.cr-chamada { padding: 14px 16px; }
+button.cr-voltar { all: unset; font-size: 12px; color: @k_muted; padding: 2px 0; }
+button.cr-voltar:hover { color: @k_text; }
+.cr-nome-grande { font-size: 24px; font-weight: 600; color: @k_text; }
+.cr-chip { font-size: 11px; color: @k_text2; background: @k_surface2; border-radius: 4px; padding: 3px 8px; }
+.cr-chip-alfa { color: @k_gold; background: alpha(@k_gold, 0.10); }
+.cr-chip-cat { color: @k_coral; background: alpha(@k_coral, 0.10); }
+.cr-chip-ok { color: @k_teal; background: alpha(@k_teal, 0.08); }
+button.cr-chip { all: unset; font-size: 11px; color: @k_text2; background: @k_surface2; border-radius: 4px; padding: 3px 8px; }
+button.cr-x { all: unset; color: @k_muted; padding: 0 2px; }
+button.cr-x:hover { color: @k_coral; }
+.cr-sobre { font-size: 13px; color: @k_text2; }
+button.cr-remover { all: unset; font-size: 12px; color: @k_text2; padding: 0 10px; min-height: 32px; }
+button.cr-remover:hover { color: @k_coral; }
+.cr-capturas { background: @k_surface; border: 1px solid @k_border; border-radius: 6px; padding: 26px; }
+.cr-captura { padding: 0 4px; }
+.cr-captura-tela { background: @k_panel; border-radius: 4px; margin-bottom: 14px; }
+.cr-barrinha { border-radius: 3px; }
+.cr-secao { font-size: 15px; font-weight: 600; color: @k_text; }
+.cr-chave { font-size: 12px; color: @k_muted; }
+.cr-valor { font-size: 12px; color: @k_text; }
+.cr-mono { font-family: monospace; font-size: 12px; color: @k_text2; }
+.cr-painel { padding: 14px 16px; }
+.cr-painel-titulo { font-size: 13px; font-weight: 600; color: @k_text; }
+.cr-agentes { border-color: alpha(@k_accent, 0.55); }
+.cr-nivel-livre { font-size: 11px; color: @k_teal; }
+.cr-nivel-confirmar { font-size: 11px; color: @k_gold; }
+.cr-nivel-aprovar { font-size: 11px; color: @k_coral; }
+.cr-pilula, .cr-pilula-ok { font-size: 11px; border-radius: 4px; padding: 3px 8px; color: @k_text2; background: @k_surface2; }
+.cr-pilula-ok { color: @k_teal; background: alpha(@k_teal, 0.08); }
+.cr-linha { padding: 12px 14px; }
+.cr-linha-erro, .cr-linha-erro:hover { border-color: alpha(@k_coral, 0.7); }
+.cr-aviso { font-size: 12px; color: @k_gold; }
+.cr-erro { font-size: 12px; color: @k_coral; }
+button.cr-link { all: unset; font-size: 12px; color: @k_accent_text; }
+button.cr-link:hover { text-decoration: underline; }
+.cr-migalha { font-size: 12px; color: @k_muted; }
+button.cr-link-texto { all: unset; font-size: 12px; color: @k_text2; padding: 0 10px; min-height: 32px; }
+button.cr-link-texto:hover { color: @k_text; }
+button.cr-remover-cheio { all: unset; background: @k_coral; color: @k_accent_fg; border-radius: 4px; min-height: 32px; padding: 0 14px; font-size: 12px; font-weight: 600; }
+.cr-remover-titulo { font-size: 13px; font-weight: 600; color: @k_coral; }
+.cr-ajuste { padding: 12px 14px; }
+button.ajustes-app-criativo { all: unset; }
+.cr-ajustes { padding: 8px 28px 28px 28px; }

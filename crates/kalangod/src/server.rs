@@ -211,6 +211,16 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
                 Err(e) => err(id, -32003, &e),
             }
         }
+        // the creative apps: whether agents may use each (Central de Apps); never from an agent
+        "kalango/craft" => {
+            if !crate::allowlist::is_person_ui(peer, &st.cfg.interface_da_pessoa, &st.cfg.interface_ambiente_permitido) {
+                return Some(err(id, -32003, kalango_i18n::tr("only you change this, in the App Center")));
+            }
+            match crate::tools::craft::rpc(&st.cfg, peer, &params) {
+                Ok(v) => ok(id, v),
+                Err(e) => err(id, -32003, &e),
+            }
+        }
         // an agent operating the screen: the person's own input (niri, patch 0011) and "Stop" end the session at once;
         // the lock screen ends it and keeps new ones out; the shell's indicator waits here for changes
         "kalango/tela" => {
@@ -670,6 +680,37 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
         }
         // the virtual machines ask as the person chose in VirtualDesk (turning off and deleting, always); an
         // "always" answered here for exactly this request goes ahead
+        // a creative app's tool: the level of that tool with these arguments (kalango_craft::niveis); confirm allows
+        // "always" for exactly this request, approval never
+        _ if name == "craft.chamar" => match crate::tools::craft::nivel_da_chamada(&st.cfg, peer, args) {
+            Ok((_, kalango_craft::niveis::Nivel::Livre, _)) => {}
+            Ok((_, kalango_craft::niveis::Nivel::Confirmar, _)) if st.approvals.is_standing(peer.uid, &peer.exe, name, args) => {}
+            Ok((app, nivel, porque)) => {
+                let aprovar = nivel == kalango_craft::niveis::Nivel::Aprovar;
+                let p = Pending {
+                    id: 0, tool: name.into(), level: "craft".into(), args: args.clone(), caller: format!("{} ({})", rule.name, peer.exe), uid: peer.uid, pid: peer.pid,
+                    reason: kalango_i18n::trf("{app}: {why}", &[("app", app.nome.clone()), ("why", kalango_i18n::tr(porque).to_string())]),
+                    descricao: kalango_i18n::tr(tool.description).into(), efeito: if aprovar { "destrutiva".into() } else { "escreve".into() },
+                    reversivel: false, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: None, no_always: aprovar,
+                    cartao: Some(crate::tools::craft::cartao(&st.cfg, peer, args)),
+                };
+                match st.approvals.request(p, timeout) {
+                    Outcome::Approved => {}
+                    Outcome::Denied => {
+                        log(st, peer, rule, name, tool.level, args, "negado", kalango_i18n::tr("the person denied"), None, None);
+                        return Err(kalango_i18n::tr("the person denied this action").into());
+                    }
+                    Outcome::Timeout => {
+                        log(st, peer, rule, name, tool.level, args, "negado", kalango_i18n::tr("no answer from the person"), None, None);
+                        return Err(kalango_i18n::tr("no approval within the time limit").into());
+                    }
+                }
+            }
+            Err(e) => {
+                log(st, peer, rule, name, tool.level, args, "negado", &e, None, None);
+                return Err(e);
+            }
+        },
         _ if name.starts_with("vm.") && !st.approvals.is_standing(peer.uid, &peer.exe, name, args) => {
             match crate::tools::maquinas::needs_approval(peer, name, args) {
                 Ok(Some(reason)) => approve("usuario", reason)?,

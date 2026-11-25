@@ -46,3 +46,6 @@ button:disabled { opacity: 0.45; }
 .d1.perigoso .d1-veredito, .d1.perigoso .d1-confianca { color: @k_coral; }
 .d1-motivo { color: @k_muted; font-size: 12px; }
 .d1-decisao { color: @k_dim; font-size: 11px; }
+.campos { padding: 4px 2px; }
+.campo-nome { font-size: 12px; color: @k_muted; min-width: 84px; }
+.campo-valor { font-size: 13px; color: @k_text; }

@@ -98,7 +98,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let mut used = BTreeSet::new();
         let mut files = Vec::new();
-        let mut dirs: Vec<_> = ["kalango-shell", "kalango-aprovacao", "kalangod", "kalango-agente", "kalango-entrada", "kalango-instalador", "kalango-d1"].iter().map(|k| root.join(k).join("src")).collect();
+        let mut dirs: Vec<_> = ["kalango-shell", "kalango-aprovacao", "kalangod", "kalango-agente", "kalango-entrada", "kalango-instalador", "kalango-d1", "kalango-craft"].iter().map(|k| root.join(k).join("src")).collect();
         while let Some(d) = dirs.pop() {
             for e in std::fs::read_dir(d).unwrap().flatten() {
                 if e.path().is_dir() { dirs.push(e.path()) } else if e.path().extension().is_some_and(|x| x == "rs") { files.push(e.path()) }

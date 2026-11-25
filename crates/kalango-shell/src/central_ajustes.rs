@@ -38,6 +38,8 @@ const EMBUTIDOS: &[(&str, &str, &str, &[&str])] = &[
     ("sistema", n_("Services and system"), "engrenagem", &["servicos.", "sistema.info", "kernel.", "sysctl.", "registros."]),
     ("pontos", n_("Restore points and timeline"), "relogio", &["pontos.", "linha_do_tempo."]),
     ("web", n_("Web"), "globo", &["web."]),
+    // the creative apps (Craft project) through kalangod: each app's own switch and folders are in the App Center
+    ("craft", n_("Creative apps"), "paleta", &["craft."]),
 ];
 
 pub(crate) fn pasta() -> PathBuf {
@@ -879,6 +881,29 @@ impl Ajustes {
                 None => ("", tr("testing…").to_string(), String::new(), None),
             };
             self.linha(&format!("ext:{}", t.nome), &t.nome, if t.url.is_some() { "globo" } else { "terminal" }, tipo, classe, &estado_t, &extra, ligado, acao);
+        }
+        // the creative apps installed: each opens its own settings (Ajustes › Apps)
+        for id in crate::criativos::compartilhado().instalados_agora() {
+            let Some(app) = kalango_craft::catalogo().app(&id) else { continue };
+            let b = gtk::Button::new();
+            b.add_css_class("ajustes-app-criativo");
+            let r = caixa(Orientation::Horizontal, 10, "rotinas-item");
+            r.append(&ui_icon("paleta", "#A5A1E2", 16));
+            let n = rotulo(&app.nome, "rotinas-item-nome");
+            n.set_xalign(0.0);
+            n.set_hexpand(true);
+            r.append(&n);
+            r.append(&rotulo(tr("Creative app · settings"), "rotinas-item-sub"));
+            r.append(&ui_icon("chevron", "#8E8F99", 14));
+            b.set_child(Some(&r));
+            crate::central::posicao_debug_sempre(&format!("ajustes app criativo {}", app.imagem()), b.upcast_ref());
+            let idc = app.id.clone();
+            b.connect_clicked(move |_| {
+                if let Some(sh) = crate::shell_atual() {
+                    sh.abrir_central(Some(&format!("app-criativo:{idc}")));
+                }
+            });
+            self.lista.append(&b);
         }
         // what failed, said above the list
         let falhou = ts.iter().filter(|t| matches!(&t.teste, Some(Err(_)))).count();
