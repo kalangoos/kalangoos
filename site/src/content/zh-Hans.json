@@ -1,0 +1,1459 @@
+{
+  "lang": "zh-Hans",
+  "path": "/zh/",
+  "meta": {
+    "title": "KalangoOS — AI 代理与您一起工作的 Linux",
+    "description": "Linux 发行版的技术预览版 0.1，其中 AI 代理在您的计算机上运行，​​在出现任何风险之前进行询问，遵循内核强制执行的规则并记录它们所做的操作，以便您可以撤消更改的内容。",
+    "ogImageAlt": "壁纸夜空上方的KalangoOS标志，以及系统桌面"
+  },
+  "a11y": {
+    "skip": "跳至内容",
+    "themeToLight": "切换到浅色主题",
+    "themeToDark": "切换到深色主题",
+    "language": "语言",
+    "summary": "项目概要"
+  },
+  "bar": {
+    "status": "技术预览 0.1",
+    "statusDetail": "发布页面上的 ISO 和二进制文件",
+    "statusLink": "如何下载",
+    "download": "下载",
+    "signIn": "登入",
+    "soon": "很快",
+    "soonHint": "会员区尚未连接",
+    "account": "帐户",
+    "members": "会员专区",
+    "memberOf": "kalangoos会员",
+    "profile": "GitHub简介",
+    "signOut": "登出"
+  },
+  "footer": {
+    "license": "KalangoOS 是免费软件，根据 GPL-3.0-or-later 授权。"
+  },
+  "pages": {
+    "download": {
+      "title": "下载 KalangoOS 0.1（技术预览） — KalangoOS",
+      "description": "如何下载、验证和尝试 KalangoOS 0.1 技术预览版：ISO、二进制文件、校验和和要求。",
+      "eyebrow": "下载",
+      "h1": "下载 0.1 技术预览版",
+      "lead": "可安装的 ISO 和二进制文件位于 GitHub 发布页面上，并带有校验和。安装前请阅读警告。",
+      "blocks": [
+        {
+          "kind": "notice",
+          "tone": "warn",
+          "text": "技术预览 0.x。系统可能会崩溃，仅在虚拟机中进行了测试（UEFI），真实的硬件矩阵不完整，并且还没有可恢复的更新。在虚拟机或没有重要数据的计算机上使用。"
+        },
+        {
+          "kind": "notice",
+          "tone": "info",
+          "text": "文件位置：版本 0.1.0 发布在 GitHub 上，ISO、二进制文件、SHA256SUMS 和构建来源证明附加到 v0.1.0 版本。",
+          "link": {
+            "label": "发布页面 v0.1.0",
+            "href": "https://github.com/kalangoos/kalangoos/releases/tag/v0.1.0"
+          }
+        },
+        {
+          "kind": "cards",
+          "title": "下载什么",
+          "items": [
+            {
+              "title": "kalangoos-0.1.0-amd64.iso",
+              "badge": "安装",
+              "text": "ISO：与安装人员的实时会话。 x86_64，UEFI（使用UEFI进行 CI 测试）。它没有携带人工智能模型。"
+            },
+            {
+              "title": "SHA256SUMS-iso.txt",
+              "badge": "核实",
+              "text": "ISO 的 SHA-256 校验和。请参阅下面如何验证它。"
+            },
+            {
+              "title": "kalangoos-0.1.0-linux-x86_64.tar.gz",
+              "badge": "二进制文件",
+              "text": "编译的程序（shell、kalangod、代理、批准、登录和安装程序）。不是安装程序：它是为那些组装自己的会话的人而设计的。"
+            },
+            {
+              "title": "SHA256SUMS.txt",
+              "badge": "核实",
+              "text": "二进制存档的 SHA-256 校验和。"
+            }
+          ]
+        },
+        {
+          "kind": "steps",
+          "title": "使用前验证文件",
+          "items": [
+            {
+              "title": "下载ISO和SHA256SUMS-iso.txt到同一个文件夹并检查总和",
+              "text": "ISO 的行必须以 OK 结尾。如果显示失败，请删除文件并重新下载；切勿使用不匹配的 ISO。",
+              "code": "sha256sum -c --ignore-missing SHA256SUMS-iso.txt"
+            },
+            {
+              "title": "检查来源（可选，需要GitHub CLI）",
+              "text": "每个版本都带有构建来源证明，显示文件来自存储库的 CI 管道。它并不能证明代码已经过审查，并且 ISO 尚未签署。",
+              "code": "gh attestation verify kalangoos-0.1.0-amd64.iso --repo kalangoos/kalangoos"
+            }
+          ]
+        },
+        {
+          "kind": "steps",
+          "title": "在虚拟机中尝试一下（推荐）",
+          "items": [
+            {
+              "title": "使用存储库脚本（最简单）",
+              "text": "安装了 qemu-system-x86 和 ovmf 并且无需 root。该脚本创建一个空的 40 GB 虚拟磁盘（DISCO=、MEM=、CPUS= 和 RES= 对其进行调整），使用 UEFI 固件启动 ISO，并打开与安装程序的实时会话；真实账户 kalango 没有密码。安装后，不带参数的 imagem/rodar-iso.sh 首先启动已安装的磁盘。",
+              "code": "git clone https://github.com/kalangoos/kalangoos && cd kalangoos\nKALANGO_ISO=/path/kalangoos-0.1.0-amd64.iso imagem/rodar-iso.sh novo"
+            },
+            {
+              "title": "或者，不使用脚本：创建 40 GB 虚拟磁盘",
+              "text": "CI 像这样安装并启动系统，使用 QEMU 和 UEFI 固件（ovmf 软件包）。 Other UEFI VM programs may work, but they have not been tested.",
+              "code": "qemu-img create -f qcow2 kalango.qcow2 40G\ncp /usr/share/OVMF/OVMF_VARS_4M.fd uefi-vars.fd"
+            },
+            {
+              "title": "使用 8 GB 内存和 6 个 CPU 启动 ISO",
+              "text": "空磁盘落入 ISO；安装后，该磁盘启动系统。如果没有 /dev/kvm，VM 会很慢。",
+              "code": "qemu-system-x86_64 -enable-kvm -cpu host -machine q35 -m 8192 -smp 6 \\\n  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \\\n  -drive if=pflash,format=raw,file=uefi-vars.fd \\\n  -drive file=kalangoos-0.1.0-amd64.iso,media=cdrom,readonly=on,if=none,id=cd -device ide-cd,drive=cd,bootindex=1 \\\n  -drive file=kalango.qcow2,format=qcow2,if=none,id=disco -device virtio-blk-pci,drive=disco,bootindex=0 \\\n  -device virtio-vga-gl,xres=1920,yres=1080 -display sdl,gl=on \\\n  -device virtio-keyboard-pci -device virtio-tablet-pci -nic user,model=virtio-net-pci"
+            }
+          ]
+        },
+        {
+          "kind": "steps",
+          "title": "在计算机上安装（风险自负）",
+          "items": [
+            {
+              "title": "将 ISO 写入 U 盘",
+              "text": "将 /dev/sdX 替换为 U 盘。使用 lsblk 检查：选择错误的磁盘会删除您的数据。",
+              "code": "lsblk\nsudo dd if=kalangoos-0.1.0-amd64.iso of=/dev/sdX bs=4M status=progress conv=fsync"
+            },
+            {
+              "title": "在 UEFI 模式下从 USB 记忆棒启动",
+              "text": "实时会话将打开安装程序（实时帐户没有密码）。安装将写入您选择的磁盘：首先备份。"
+            }
+          ]
+        },
+        {
+          "kind": "text",
+          "title": "AI模型随后出现",
+          "paras": [
+            "发布的ISO不包含AI模型，因为该模型的许可证仍在审查中。安装程序有一个 AI 模型步骤，您可以稍后在“设置”和“应用程序中心”中更改它。您可以选择来源：公共来源、私人服务器、文件夹或 USB 记忆棒。下载会从停止处继续，并由 SHA-256 检查。",
+            "如果没有安装模型，界面可以工作，但代理不会回答。默认为LFM3 1.7B，约1GB。"
+          ]
+        },
+        {
+          "kind": "cards",
+          "title": "要求",
+          "items": [
+            {
+              "title": "最低（计划）",
+              "text": "4 核 64 位处理器 (x86-64-v2)、8 GB 内存、64 GB SSD、带有 Vulkan 和 UEFI 的 Intel、AMD 或 NVIDIA 显卡。"
+            },
+            {
+              "title": "受到推崇的",
+              "text": "8 cores, 16 GB of memory, a 256 GB NVMe and a dedicated graphics card.对于较大的本地型号，32 GB。"
+            },
+            {
+              "title": "测试了什么",
+              "text": "虚拟机（自动化测试中的QEMU/KVM）。真实硬件（NVIDIA、AMD、Intel）和安全启动尚未测试； Kalango Remote 未在两台物理计算机之间进行测试。"
+            }
+          ]
+        },
+        {
+          "kind": "links",
+          "title": "其他方式",
+          "items": [
+            {
+              "label": "所有版本",
+              "href": "https://github.com/kalangoos/kalangoos/releases",
+              "text": "GitHub 上的版本列表。"
+            },
+            {
+              "label": "从源代码构建",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/README.md#english",
+              "text": "为想要处理代码的人举办开发会议。"
+            },
+            {
+              "label": "0.1.0 发行说明",
+              "href": "@notes",
+              "text": "什么进去了，什么被遗漏了。"
+            }
+          ]
+        }
+      ]
+    },
+    "security": {
+      "title": "安全和隐私 — KalangoOS",
+      "description": "KalangoOS 如何限制代理的行为、不保证的行为、本网站的隐私以及如何报告安全缺陷。",
+      "eyebrow": "安全和隐私",
+      "h1": "真正的力量，有限制你可以检查",
+      "lead": "代理通过单一服务 kalangod 操作系统。本页介绍了目前的情况、尚未发生的情况以及如何就缺陷与我们联系。",
+      "blocks": [
+        {
+          "kind": "cards",
+          "title": "今天是什么在保护你",
+          "items": [
+            {
+              "title": "系统审批",
+              "text": "危险的行为需要在合成器绘制的屏幕上获得批准，而代理无法触及；伪造它被视为安全缺陷。如果没有答复，请求就会被拒绝。"
+            },
+            {
+              "title": "四个功率级别",
+              "text": "观察、用户、系统和总计。每次会议的总级别需要亲自批准，时间为 15 分钟，并记录所有内容。"
+            },
+            {
+              "title": "内核中的规则",
+              "text": "Landlock、seccomp、cgroups 和 eBPF LSM，没有我们自己的内核模块。即使对于总级别，受保护的文件夹也会保持锁定状态。"
+            },
+            {
+              "title": "读取的是数据",
+              "text": "页面、文件和工具答案不会成为命令。在通往网络的路上，规则会阻止在地址中粘贴、拆分或编码（base64、十六进制、百分比编码）的本地秘密。"
+            },
+            {
+              "title": "时间轴和撤消",
+              "text": "每个操作都会从内核事件中记录下来并且可以撤消；在更改系统之前有一个还原点。"
+            },
+            {
+              "title": "允许的文件夹",
+              "text": "代理的命令和文件工具仅写入允许的文件夹；在登录和 PATH 文件夹中运行的文件要求批准； KalangoOS 自己的配置超出了代理的能力范围。"
+            },
+            {
+              "title": "d1 批准建议（可选）",
+              "text": "批准屏幕显示 d1 的推荐，这是一个有帮助的本地小模型，决定权在人手上；权限中的“Aprovar sozinho o que é de baixo risco”选项默认情况下处于关闭状态，仅涵盖移至垃圾箱、移动和创建不运行的新文件，仅当 d1 表示它看起来安全且至少具有最低置信度时，从不从外部读取内容，每个请求最多 5 个，在 3 次拒绝后自行关闭，kalangod 再次检查并安装软件包永远不会算作“安全”。"
+            },
+            {
+              "title": "Kalango Remote：隐私模式",
+              "text": "当有人以此处无人批准的访问权限（固定密码或无人值守访问，没有文件、终端、摄像头、隧道、重启或隐私模式）进行控制时，本地屏幕会被覆盖（“tela preta aqui”），而控制器会看到真实的桌面。紧急出口：Esc Esc、切换虚拟终端、电源按钮和门锁。还有两步验证，尝试后进行全局锁定，并向被记录的人发出通知。"
+            }
+          ]
+        },
+        {
+          "kind": "checks",
+          "tone": "coral",
+          "title": "KalangoOS 不保证什么",
+          "items": [
+            "未进行外部安全审查；计划在1.0之前。",
+            "这是 0.x 预览版：存在我们尚不知道的缺陷。请勿将其与不会丢失的数据一起使用。",
+            "该规则阻止在地址中粘贴、分割或编码（base64、十六进制、百分比编码）的本地秘密；它不包括 rot13、反向文本、跨参数的秘密分割或 POST 正文。",
+            "本地模型可能是错误的或被欺骗的。内核规则和批准的存在正是因为它不能被单独信任。",
+            "谁批准谁就决定。未经阅读而给予批准视为许可。",
+            "ISO 和二进制文件未签名：它们只有构建来源证明和 SHA-256 校验和。",
+            "使用 Kalango Remote 可以访问其他人或机器：仅与您认识的人进行操作并批准每个请求。",
+            "d1 是一个小的局部模型，可以帮助人们做出决定；这可能是错误的。这就是为什么自动批准默认处于关闭状态并仅限于一些可逆操作的原因。",
+            "Kalango Remote：隐私模式、两步验证和记录未在两台物理计算机之间或真实（非嵌套）niri会话中进行测试；莫什没有接受测试；封面下的锁屏路径仅由代码覆盖，未由测试覆盖。",
+            "安全启动和 TPM 未经过测试，真实硬件（NVIDIA、AMD、Intel）也未经过测试。"
+          ]
+        },
+        {
+          "kind": "cards",
+          "title": "系统隐私",
+          "items": [
+            {
+              "title": "此计算机上的型号",
+              "text": "LFM3、LFM3-VL 和 LFM3-Audio 通过本地套接字上的llama.cpp 运行，没有网络端口。如今还没有云人工智能提供商。"
+            },
+            {
+              "title": "能留下什么",
+              "text": "搜索和寻呼代理在网络上阅读的信息；从您选择的来源下载模型；以及您启动的 Kalango Remote 连接（Cloudflare 隧道，端到端加密）。现在的隐私面板显示了今天剩下的内容。"
+            },
+            {
+              "title": "你可以看到谁使用什么",
+              "text": "酒吧中显示正在使用的麦克风、摄像头和屏幕； Super+Shift+P 暂停一切； Wi-Fi 网络可以远离客服人员。"
+            }
+          ]
+        },
+        {
+          "kind": "cards",
+          "title": "本网站的隐私",
+          "items": [
+            {
+              "title": "没有追踪器",
+              "text": "没有cookie，也没有分析。如果您登录会员区域，登录服务（auth.kalangoos.com、Cloudflare）会保留 8 小时的会话 cookie；登录后，每个页面都会询问该服务一次，因此它会看到您的 IP 地址。会员区还从GitHub加载文件和头像。"
+            },
+            {
+              "title": "浏览器中保留的内容",
+              "text": "只有您在计算机上的 localStorage 中选择的主题（浅色或深色）。没有形式；您的GitHub帐户仅在您登录会员区后才起作用。"
+            },
+            {
+              "title": "托管",
+              "text": "该网站由 GitHub 页面提供服务，该页面可能会按照 GitHub 的政策描述记录访问情况。该项目不会收到这些日志。"
+            }
+          ]
+        },
+        {
+          "kind": "steps",
+          "title": "如何报告缺陷",
+          "items": [
+            {
+              "title": "使用GitHub的私人报告",
+              "text": "在存储库的“安全”选项卡中，报告漏洞。不要针对缺陷提出问题、拉取请求或公开讨论。",
+              "link": {
+                "label": "打开私人报告",
+                "href": "https://github.com/kalangoos/kalangoos/security/advisories/new",
+                "text": ""
+              }
+            },
+            {
+              "title": "告诉我们你看到了什么",
+              "text": "版本或提交、组件（kalangod、kalango-agente、shell、安装程序、niri 补丁）、重现步骤和影响。不要在不属于您的计算机或帐户上进行测试。"
+            },
+            {
+              "title": "会发生什么",
+              "text": "在 5 个工作日内回复，确认收到、评估、修复和商定的披露日期。如果你愿意的话，请相信咨询。目前还没有安全电子邮件。"
+            }
+          ]
+        },
+        {
+          "kind": "links",
+          "title": "阅读更多",
+          "items": [
+            {
+              "label": "安全策略（SECURITY.md，葡萄牙语）",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/SECURITY.md",
+              "text": ""
+            },
+            {
+              "label": "威胁模型（docs/SEGURANCA.md，葡萄牙语）",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/docs/SEGURANCA.md",
+              "text": ""
+            },
+            {
+              "label": "建筑（docs/ARQUITETURA.md，葡萄牙语）",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/docs/ARQUITETURA.md",
+              "text": ""
+            }
+          ]
+        }
+      ]
+    },
+    "docs": {
+      "title": "文档 — KalangoOS",
+      "description": "在哪里可以阅读有关 KalangoOS 的内容：愿景、架构、安全性、要求、路线图、许可证和规范。主要是葡萄牙语。",
+      "eyebrow": "文档",
+      "h1": "哪里可以阅读更多内容",
+      "lead": "文档位于存储库中，位于代码旁边。几乎所有内容都是葡萄牙语；自述文件有英文摘要。",
+      "blocks": [
+        {
+          "kind": "notice",
+          "tone": "info",
+          "text": "要了解 0.1.0 的内容，请阅读发行说明；接下来是路线图 (ROADMAP.md)。较旧的规划文档（例如 PLANO.md）的详细信息可能已过时。"
+        },
+        {
+          "kind": "links",
+          "title": "开始",
+          "items": [
+            {
+              "label": "README",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/README.md",
+              "text": "项目是什么，存在什么，如何运行开发会话（最后有英文摘要）。"
+            },
+            {
+              "label": "路线图 (ROADMAP.md)",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/ROADMAP.md",
+              "text": "后续步骤、阶段和版本，没有日期。"
+            },
+            {
+              "label": "0.1.0 发行说明",
+              "href": "@notes",
+              "text": "预览中包含哪些内容以及未包含哪些内容。"
+            },
+            {
+              "label": "下载",
+              "href": "@download",
+              "text": "ISO、二进制文件以及如何验证它们。"
+            },
+            {
+              "label": "CHANGELOG",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/CHANGELOG.md",
+              "text": "每 0.1.0 更改，带有拉取请求编号（葡萄牙语）。"
+            },
+            {
+              "label": "计划集成 (ROADMAP.md)",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/ROADMAP.md#integra%C3%A7%C3%B5es-planejadas-ideias-sem-data",
+              "text": "没有日期的想法：音频流、远程支持和互联网触发器（葡萄牙语）。"
+            }
+          ]
+        },
+        {
+          "kind": "links",
+          "title": "系统如何运作",
+          "items": [
+            {
+              "label": "想象",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/docs/VISAO.md",
+              "text": "它是为谁而存在以及它为何存在。"
+            },
+            {
+              "label": "建筑学",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/docs/ARQUITETURA.md",
+              "text": "决定和原因。"
+            },
+            {
+              "label": "安全",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/docs/SEGURANCA.md",
+              "text": "威胁模型和防御层。"
+            },
+            {
+              "label": "要求",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/docs/REQUISITOS.md",
+              "text": "硬件和性能目标。"
+            },
+            {
+              "label": "屏幕",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/docs/telas.md",
+              "text": "系统和应用程序的屏幕。"
+            },
+            {
+              "label": "版本和发布",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/docs/LANCAMENTO.md",
+              "text": "编号、渠道和发布标准。"
+            },
+            {
+              "label": "计划",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/docs/PLANO.md",
+              "text": "简而言之，缺少什么。"
+            },
+            {
+              "label": "各阶段规范",
+              "href": "https://github.com/kalangoos/kalangoos/tree/main/openspec",
+              "text": "OpenSpec，包含每个阶段的任务。"
+            }
+          ]
+        },
+        {
+          "kind": "links",
+          "title": "许可证和资产来自哪里",
+          "items": [
+            {
+              "label": "代码许可证 (GPL-3.0-or-later)",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/LICENSE",
+              "text": ""
+            },
+            {
+              "label": "品牌（LICENSE-brand.txt）",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/LICENSE-brand.txt",
+              "text": "名称、吉祥物和徽标位于代码许可证之外。"
+            },
+            {
+              "label": "归因 (ATTRIBUTION.md)",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/ATTRIBUTION.md",
+              "text": "每个图像、图标和字体都来自哪里。"
+            },
+            {
+              "label": "第三方许可证（注意）",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/NOTICE",
+              "text": ""
+            }
+          ]
+        },
+        {
+          "kind": "links",
+          "title": "拥有自己的存储库的应用程序",
+          "items": [
+            {
+              "label": "Kalango Remote",
+              "href": "https://github.com/kalangoos/kalango-remote",
+              "text": "远程访问：屏幕、文件、SSH 和 Mosh。"
+            },
+            {
+              "label": "Kalango Audio",
+              "href": "https://github.com/kalangoos/kalango-audio",
+              "text": "声音会话、录音和本地转录。"
+            },
+            {
+              "label": "Design System",
+              "href": "https://github.com/kalangoos/design",
+              "text": "FigCraft 来源、代币、品牌、图标和屏幕展示 — 设计贡献。"
+            }
+          ]
+        },
+        {
+          "kind": "links",
+          "title": "社区",
+          "items": [
+            {
+              "label": "如何贡献",
+              "href": "@contribute",
+              "text": ""
+            },
+            {
+              "label": "行为守则",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/CODE_OF_CONDUCT.md",
+              "text": ""
+            },
+            {
+              "label": "安全性：报告缺陷",
+              "href": "@security",
+              "text": ""
+            }
+          ]
+        }
+      ]
+    },
+    "contribute": {
+      "title": "贡献 — KalangoOS",
+      "description": "如何为KalangoOS做出贡献：问题、开发环境、内部规则、拉取请求和编码代理。",
+      "eyebrow": "贡献",
+      "h1": "帮助构建KalangoOS",
+      "lead": "该项目是新的并且进展很快。欢迎用葡萄牙语或英语做出贡献：在编写代码之前，请在问题中说明您打算做什么。",
+      "blocks": [
+        {
+          "kind": "steps",
+          "title": "从第一眼到拉取请求",
+          "items": [
+            {
+              "title": "阅读自述文件和路线图",
+              "text": "知道什么已经存在以及接下来会发生什么。",
+              "link": {
+                "label": "完整 CONTRIBUTING.md（葡萄牙语）",
+                "href": "https://github.com/kalangoos/kalangoos/blob/main/CONTRIBUTING.md",
+                "text": ""
+              }
+            },
+            {
+              "title": "查找问题或打开问题",
+              "text": "检查是否有人已经在处理它（通过 #N 号码和关键字）。有错误、想法和屏幕的模板。大的改变首先成为问题中的提案。",
+              "link": {
+                "label": "打开一个问题",
+                "href": "https://github.com/kalangoos/kalangoos/issues/new/choose",
+                "text": ""
+              }
+            },
+            {
+              "title": "设置环境并运行检查",
+              "text": "Ubuntu 24.04 或更高版本。 CI 正是运行这些命令。",
+              "code": "sudo apt install build-essential clang libbpf-dev pkg-config libgtk-4-dev libvte-2.91-gtk4-dev \\\n  libpoppler-glib-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev\npoc/setup-deps.sh\ncargo clippy --workspace --all-targets --locked\ncargo test --workspace --locked --exclude kalango-agente"
+            },
+            {
+              "title": "打开一个小的拉取请求",
+              "text": "每个拉取请求有一个主题，其中包含在不进行更改的情况下失败的测试，说明您测试了哪些内容以及无法运行哪些内容。 main 仅通过拉取请求进行更改，并且 CI 必须是绿色的。"
+            }
+          ]
+        },
+        {
+          "kind": "cards",
+          "title": "入住须知",
+          "items": [
+            {
+              "title": "设计第一",
+              "text": "每个新的屏幕或可见的更改都是在代码之前在设计系统中诞生的，并且实现与之相匹配。没有来自其他系统（GNOME、Yaru、Adwaita）的屏幕。"
+            },
+            {
+              "title": "系统外观",
+              "text": "没有阴影、微妙的角落，颜色仅来自适应任何空间的令牌和屏幕。"
+            },
+            {
+              "title": "Rust 和代码中的英语",
+              "text": "我们的 Rust 程序；新的英文标识符；通过翻译目录显示葡萄牙语界面文本。"
+            },
+            {
+              "title": "没有个人数据",
+              "text": "名称、Wi-Fi 网络、电子邮件和代码文件、测试和捕获始终都是虚构的。"
+            },
+            {
+              "title": "第三方资产",
+              "text": "图像、图标和字体仅具有兼容的许可证，在同一更改中列出在 ATTRIBUTION.md 中。"
+            },
+            {
+              "title": "完成意味着完成",
+              "text": "说出您测试过的内容以及无法运行的内容。不要将仍然存在差距的事情描述为已完成。"
+            }
+          ]
+        },
+        {
+          "kind": "text",
+          "title": "编码剂",
+          "paras": [
+            "编码代理（Claude Code、Codex 等）遵循 AGENTS.md。一个人对代理打开、评论和发送的内容进行回答。代理引擎测试使用真实的本地模型，而不是假模型。"
+          ]
+        },
+        {
+          "kind": "links",
+          "title": "更多的",
+          "items": [
+            {
+              "label": "AGENTS.md",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/AGENTS.md",
+              "text": ""
+            },
+            {
+              "label": "行为守则",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/CODE_OF_CONDUCT.md",
+              "text": ""
+            },
+            {
+              "label": "安全漏洞？不要打开问题",
+              "href": "@security",
+              "text": "使用私人报告。"
+            },
+            {
+              "label": "代码GitHub",
+              "href": "https://github.com/kalangoos/kalangoos",
+              "text": ""
+            }
+          ]
+        },
+        {
+          "kind": "links",
+          "title": "Design System",
+          "items": [
+            {
+              "label": "kalangoos/design",
+              "href": "https://github.com/kalangoos/design",
+              "text": "FigCraft 来源、代币、品牌和展示。"
+            },
+            {
+              "label": "CONTRIBUTING",
+              "href": "https://github.com/kalangoos/design/blob/main/CONTRIBUTING.md",
+              "text": "如何使用 FigCraft 和 Git LFS 打开屏幕 PR。"
+            },
+            {
+              "label": "镜子和仅查看",
+              "href": "https://github.com/kalangoos/design/blob/main/ESPELHOS.md",
+              "text": "单向 .fig 文件和仅供查看的共享会话。"
+            }
+          ]
+        }
+      ]
+    },
+    "notes": {
+      "title": "0.1.0 发行说明 — KalangoOS",
+      "description": "KalangoOS 0.1.0 技术预览版包含哪些内容、遗漏了什么以及已知的限制。",
+      "eyebrow": "发行说明",
+      "h1": "KalangoOS 0.1.0 · 技术预览",
+      "lead": "第一个 KalangoOS 版本：可安装的 ISO、二进制文件和代理代码、kalangod 和桌面。这些注释遵循存储库的 docs/NOTAS-0.1.0.md 和 CHANGELOG.md。仅在虚拟机中进行了测试。",
+      "blocks": [
+        {
+          "kind": "notice",
+          "tone": "info",
+          "text": "状态：已发表。这些文件附加到 GitHub 上的 v0.1.0 版本，带有 SHA256SUMS 和构建来源证明。",
+          "link": {
+            "label": "下载",
+            "href": "@download",
+            "text": ""
+          }
+        },
+        {
+          "kind": "cards",
+          "title": "亮点",
+          "items": [
+            {
+              "title": "可安装的ISO",
+              "text": "x86_64，UEFI。发布工作流程会构建 ISO 并在每次运行时在虚拟机中对其进行测试：实时会话随安装程序启动，安装程序引擎写入空虚拟磁盘（测试不执行图形“AI 模型”步骤），安装的系统启动到其会话。"
+            },
+            {
+              "title": "安装程序和模型来源",
+              "text": "“AI 模型”步骤：选择模型的来源（公共目录、私人服务器或文件夹），也在“设置”和“应用程序中心”中。下载恢复并根据 SHA-256 总和进行检查 (#33)。 d1-Omni-2B 已加入目录 (#40)。"
+            },
+            {
+              "title": "d1 批准",
+              "text": "批准屏幕显示 d1 决策模型的推荐（“看起来安全”或“看起来危险”、其置信度以及来自封闭列表的原因）；决定权在人手上。在“权限”中，“Aprovar sozinho o que é de baixo risco”选项默认处于关闭状态：它仅涵盖该人的文件夹中的三个可逆操作（移至垃圾箱、移动、创建不运行的新文件），仅当 d1 表示它看起来安全且至少具有最低置信度时，从不在对话中从外部读取内容之后，每个请求最多 5 个，并且在 3 次拒绝后它会自行关闭。 kalangod 会重新检查所有内容，并且安装软件包永远不会“安全”（#42）。"
+            },
+            {
+              "title": "Kalango Remote",
+              "text": "屏幕共享、远程控制、SSH 和 Mosh（Mosh 尚未测试）。固定密码和具有有限权限的无人值守访问（无文件、终端、摄像头、隧道、重新启动、输入阻止或隐私模式；横幅列出了授予的内容）、两步验证 (TOTP)、会话记录（视频 › Kalango Remote，30 天，并向记录者发出通知）、自己的 RustDesk 兼容服务器、错误尝试后的全局锁定和代理计划面板（kalango-remote 代理计划） （kalango-remote#11 和#12）。"
+            },
+            {
+              "title": "远程隐私模式（“tela preta aqui”）",
+              "text": "当某人以无人批准的访问权限控制这台计算机时，本地屏幕会被覆盖，并且控制器会看到真实的桌面。紧急出口：Esc Esc、虚拟终端开关、电源按钮和锁（niri 补丁 0012、kalangoos/niri#4 和 #44）。"
+            },
+            {
+              "title": "Flows 和 Kalango VirtualDesk",
+              "text": "shell 中的完整流程编辑器； d1 模型也在“Decidir”块中给出答案。 kalangod 有 vm.* 工具，shell 有设置 › 沙箱屏幕（vm.* 工具提出一个问题，#40）； VirtualDesk 应用程序不在 ISO 上。"
+            }
+          ]
+        },
+        {
+          "kind": "steps",
+          "title": "安装并验证",
+          "items": [
+            {
+              "title": "验证校验和",
+              "text": "在下载文件夹中，ISO 行必须以 OK 结尾。",
+              "code": "sha256sum -c SHA256SUMS-iso.txt"
+            },
+            {
+              "title": "验证构建来自何处",
+              "text": "GitHub Actions 构建来源证明；需要GitHub CLI。",
+              "code": "gh attestation verify kalangoos-0.1.0-amd64.iso --repo kalangoos/kalangoos"
+            },
+            {
+              "title": "在虚拟机中尝试一下",
+              "text": "在存储库中，安装了 qemu-system-x86 和 ovmf，但没有 root。该脚本创建一个空的 40 GB 虚拟磁盘，使用 UEFI 固件启动 ISO，并使用安装程序打开实时会话（实时帐户 kalango 没有密码）。",
+              "code": "git clone https://github.com/kalangoos/kalangoos && cd kalangoos\nKALANGO_ISO=/path/kalangoos-0.1.0-amd64.iso imagem/rodar-iso.sh novo"
+            },
+            {
+              "title": "选择人工智能模型",
+              "text": "ISO 不提供本地模型。在安装程序的“AI 模型”步骤中（或稍后在“设置”和“应用程序中心”中），选择公共目录、专用服务器或包含模型的文件夹。"
+            }
+          ]
+        },
+        {
+          "kind": "checks",
+          "title": "也在",
+          "items": [
+            "它自己的 Rust 和 GTK 4 外壳位于已修补的niri上：栏、停靠栏、侧栏、桌面、锁定屏幕、登录屏幕、窗口和空间以及系统应用程序（文件、设置、终端、编辑器、计算器、代理中心等）。",
+            "kalangod：代理无法模仿的屏幕上的批准、撤消、时间线和四个功率级别（观察、用户、系统、总计），具有内核强制规则（eBPF LSM、Landlock、seccomp 和 cgroups）、用于写入的文件夹允许列表以及代理无法访问的系统配置。",
+            "具有 LFM3 至 llama.cpp 的本地代理、对话上下文管理（对话中的最近窗口、背景摘要和搜索）以及通过视觉操作屏幕的代理，始终获得批准。",
+            "代理和远程：remoto.conectar 工具可让代理通过远程计划面板提出与其中一台计算机的连接；只有一个人的点击才会获得批准（#44）。",
+            "图像上的Kalango Audio：捕捉、处理、路由和记录声音。",
+            "防御留在网址中的本地数据：在所涉及的情况下，粘贴、分割或编码的秘密会被阻止 (#36)；限制（rot13、反转、base32/58、XOR、交错噪声、跨参数或 DNS 标签的秘密分割、POST 正文和片段）位于 docs/SEGURANCA.md 中。",
+            "针对 RUSTSEC-2026-0592 (#37) 的 url 2.5.9 以及窗口关闭时停止的帮助听写 (#38)。",
+            "Shell 内存：关闭的应用程序窗口在 60 秒后释放其图形表面（#35）。"
+          ]
+        },
+        {
+          "kind": "checks",
+          "tone": "coral",
+          "title": "0.1.0 中没有的内容",
+          "items": [
+            "使用还原点和恢复屏幕进行更新。",
+            "签名的镜像和包以及外部安全审查。",
+            "云与英文系统的混合模式。"
+          ]
+        },
+        {
+          "kind": "checks",
+          "tone": "gold",
+          "title": "已知的限制",
+          "items": [
+            "真实硬件：仅在虚拟机中测试（UEFI）； NVIDIA、AMD 和 Intel 矩阵并不完整。",
+            "本土模特：模特牌照正在审核中； ISO 没有提供模型，需要稍后下载。",
+            "可访问性：未经认证或审核。",
+            "语言：用户界面和文档为巴西葡萄牙语；英语进入第六阶段。",
+            "Kalango Remote：未在两台物理计算机之间或真实的niri会话中进行测试（仅嵌套）； Mosh 未经测试（我们测试的地方没有安装）；隐私模式封面下的锁屏路径和屏幕转换框架仅由代码覆盖，未由测试覆盖。",
+            "VirtualDesk 和 Flows：不在 ISO 上； Flows 服务位于私有存储库中。",
+            "更新：没有带有还原点的更新，也没有恢复屏幕。",
+            "文档许可：提议的 CC BY-SA 4.0 仍有待确认。",
+            "安全性：无需外部审查；网址防御的限制位于 docs/SEGURANCA.md 中。"
+          ]
+        },
+        {
+          "kind": "links",
+          "title": "验证您下载的内容",
+          "items": [
+            {
+              "label": "CHANGELOG",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/CHANGELOG.md",
+              "text": "每 0.1.0 更改，带有拉取请求编号（葡萄牙语）。"
+            },
+            {
+              "label": "存储库中的发行说明 (docs/NOTAS-0.1.0.md)",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/docs/NOTAS-0.1.0.md",
+              "text": "如何安装、验证以及已知的限制；英语部分在最后。"
+            },
+            {
+              "label": "计划集成 (ROADMAP.md)",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/ROADMAP.md#integra%C3%A7%C3%B5es-planejadas-ideias-sem-data",
+              "text": "没有日期的想法：音频流、远程支持和互联网触发器（葡萄牙语）。"
+            },
+            {
+              "label": "下载并检查SHA-256校验和",
+              "href": "@download",
+              "text": ""
+            },
+            {
+              "label": "所有版本",
+              "href": "https://github.com/kalangoos/kalangoos/releases",
+              "text": ""
+            },
+            {
+              "label": "路线图",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/ROADMAP.md",
+              "text": ""
+            }
+          ]
+        }
+      ],
+      "pending": "尚未包含在 0.1.0 中：ISO 内的本地模型（许可证正在审核中）； ISO 上的 VirtualDesk 和 Flows；在真实硬件和完整的 NVIDIA、AMD 和 Intel 矩阵上进行验证；两台物理计算机之间的远程和真实的niri会话；路线图想法（流的实时音频源、通过 Cloudflare 隧道的入站互联网触发、远程内部流）；以及 CC BY-SA 4.0 文档许可证，仍有待确认。"
+    },
+    "notfound": {
+      "title": "找不到页面 — KalangoOS",
+      "description": "该页面不存在。",
+      "eyebrow": "错误404",
+      "h1": "找不到页面",
+      "lead": "该地址不存在或已移动。",
+      "home": "进入首页",
+      "other": {
+        "lang": "pt-BR",
+        "h": "Não encontrada 页面",
+        "text": "O endereço não Existe ou mudou de lugar。",
+        "home": "开始",
+        "href": "/"
+      }
+    }
+  },
+  "members": {
+    "board": {
+      "issue": "Issue",
+      "pr": "Pull request",
+      "draft": "草稿",
+      "redacted": "无法访问",
+      "redactedTitle": "您看不到的存储库中的项目",
+      "closed": "关闭",
+      "merged": "合并",
+      "draftState": "草稿",
+      "linkedPr": "链接拉取请求",
+      "linkedIssue": "链接问题"
+    },
+    "title": "会员专区·KalangoOS",
+    "description": "KalangoOS会员区：kalangoosGitHub组织的任务板，包含公共存储库的文档和规范。",
+    "eyebrow": "会员专区",
+    "titles": {
+      "docs": "文档",
+      "spec": "规格",
+      "board": "任务板",
+      "screens": "FigCraft 屏幕"
+    },
+    "login": {
+      "title": "使用您的 GitHub 帐户登录",
+      "text": "KalangoOS 任务板仅限于 kalangoos GitHub 组织中的人员。技术文档和规范是公开的：它们来自开放存储库，出现在这里只是为了方便。",
+      "button": "使用GitHub登录",
+      "checking": "检查会话...",
+      "opening": "开放GitHub…",
+      "error": "我们无法完成登录（请求已过期、被拒绝或GitHub未答复）。再试一次。",
+      "down": "我们现在无法检查您的会话（GitHub 或登录服务未应答）。您的会话将被保留；稍后再试。",
+      "fine": "我们仅要求读取访问权限：您的组织 (read:org) 和项目 (read:project) 会员资格。任何内容都不会以您的名义发布，并且会话存在于登录服务的受保护 cookie 中，而不是存在于浏览器的存储中。",
+      "foot": "不在组织内？通过公共存储库做出贡献"
+    },
+    "outside": {
+      "title": "任务板仅适用于kalangoos组织中的人员",
+      "as": "您登录的身份为",
+      "but": "但那个账户",
+      "unknown": "您登录的帐户",
+      "text": "不属于 GitHub 上的 kalangoos 组织。代码、文档和规范在存储库中是公开的，任何人都可以做出贡献。",
+      "repo": "See the repository",
+      "contribute": "如何贡献",
+      "other": "使用另一个帐户登录",
+      "why": "为什么我进不去？该组织决定谁是成员"
+    },
+    "soon": {
+      "title": "会员区尚未连接",
+      "text": "当身份验证服务开启时，使用GitHub登录即可生效。同时，文档和规范位于公共存储库中。",
+      "notice": "登录服务尚未开通。当它出现时，此页面将询问您的 GitHub 帐户。",
+      "button": "使用GitHub登录",
+      "foot": "阅读存储库中的文档"
+    },
+    "nav": {
+      "label": "会员专区",
+      "docs": "文档",
+      "docsShort": "Docs",
+      "spec": "规格",
+      "specShort": "规格",
+      "board": "任务板",
+      "boardShort": "木板",
+      "back": "返回网站",
+      "screens": "屏幕",
+      "screensShort": "屏幕"
+    },
+    "preview": "本地预览，无会话：文档和规范来自公共存储库；董事会需要签到服务； FigCraft 屏幕来自kalangoos/设计。",
+    "screens": {
+      "title": "FigCraft 屏幕",
+      "eyebrow": "操作系统·工具",
+      "lead": "FigCraft 捕获按操作系统和工具分组：kalango-audio、kalango-agents、kalango-remote 和 kalango-virtualdesk。",
+      "search": "搜索屏幕",
+      "loading": "加载展示...",
+      "empty": "没有屏幕与此过滤器匹配。",
+      "loadError": "无法从设计存储库加载exports/manifest.json。",
+      "repo": "Design repository",
+      "openPng": "打开PNG"
+    }
+  },
+  "landing": {
+    "announce": {
+      "text": "KalangoOS 0.1.0 · 技术预览版发布",
+      "link": "阅读发行说明"
+    },
+    "nav": {
+      "label": "主导航",
+      "items": [
+        {
+          "id": "recursos",
+          "label": "特征"
+        },
+        {
+          "id": "capturas",
+          "label": "屏幕"
+        },
+        {
+          "id": "baixar",
+          "label": "下载"
+        },
+        {
+          "id": "notas",
+          "label": "笔记"
+        },
+        {
+          "id": "comunidade",
+          "label": "社区"
+        },
+        {
+          "id": "apoie",
+          "label": "支持"
+        }
+      ],
+      "members": "会员专区",
+      "download": "下载",
+      "menu": "Menu"
+    },
+    "hero": {
+      "logoAlt": "KalangoOS",
+      "version": "v0.1.0 · 技术预览 · x86_64 · UEFI",
+      "title": "AI 代理与您一起工作的 Linux",
+      "lead": "一种 Linux 发行版，代理可以用简单的语言理解请求并操作系统及其应用程序，模型在您的计算机上运行，​​在出现任何风险之前获得批准并给出撤消的时间表。",
+      "download": "下载0.1",
+      "tour": "观看游览",
+      "github": "代码GitHub"
+    },
+    "tour": {
+      "label": "Tour · 1:04",
+      "title": "一分钟KalangoOS",
+      "play": "玩游览",
+      "soon": "视频即将推出",
+      "chaptersLabel": "巡演章节",
+      "chapters": [
+        {
+          "t": "0:00",
+          "s": 0,
+          "label": "桌面"
+        },
+        {
+          "t": "0:10",
+          "s": 10,
+          "label": "代理商"
+        },
+        {
+          "t": "0:22",
+          "s": 22,
+          "label": "批准和撤消"
+        },
+        {
+          "t": "0:34",
+          "s": 34,
+          "label": "隐私"
+        },
+        {
+          "t": "0:46",
+          "s": 46,
+          "label": "Apps"
+        },
+        {
+          "t": "0:56",
+          "s": 56,
+          "label": "下载"
+        }
+      ],
+      "alt": "KalangoOS 桌面：时钟、座席每日摘要、询问KalangoOS 字段和 Dock"
+    },
+    "facts": [
+      {
+        "value": "Rust",
+        "text": "从内核到像素",
+        "tone": "gold"
+      },
+      {
+        "value": "Local",
+        "text": "该模型在您的 PC 上运行",
+        "tone": "teal"
+      },
+      {
+        "value": "Ctrl+Z",
+        "text": "对于整个系统",
+        "tone": "coral"
+      },
+      {
+        "value": "eBPF + Landlock",
+        "text": "内核强制执行的规则",
+        "tone": "accent"
+      }
+    ],
+    "features": {
+      "eyebrow": "特征",
+      "title": "系统为您做的一切",
+      "lead": "每个亮点都有一个短片，由KalangoOS设计的屏幕制成。",
+      "clip": "夹子",
+      "watch": "在游览中看到它",
+      "items": [
+        {
+          "id": "agentes",
+          "label": "代理商",
+          "tone": "accent",
+          "title": "用简单的话询问。它做到了。",
+          "text": "代理理解自然语言请求并操作系统及其应用程序：他们整理文件、构建表格和图表、更改设置。",
+          "bullets": [
+            "理解日常语言",
+            "操作应用程序和系统本身",
+            "行动前先展示计划"
+          ],
+          "shot": "ds-criar-agente",
+          "alt": "新的代理屏幕，其中包含请求“每个星期五，组织我的下载...”、代理的理解内容、其步骤以及所需的权限；然后是运行代理的代理中心"
+        },
+        {
+          "id": "aprovar",
+          "label": "批准和撤消",
+          "tone": "coral",
+          "title": "你批准。你可以回去。",
+          "text": "任何有风险的事情都需要先得到您的批准。一切都记录在时间线上，并且在计算机上更改的内容可以撤消。",
+          "bullets": [
+            "在发生任何风险之前先获得批准",
+            "特工所做一切的时间表",
+            "撤消计算机上的更改"
+          ],
+          "shot": "ds-aprovar-tela",
+          "alt": "权限对话框：助理代理想要控制屏幕（文本编辑器，10 分钟），拒绝和允许 10 分钟；然后时间轴上的撤消按钮位于“将 118 个文件移动到 4 个文件夹中”"
+        },
+        {
+          "id": "privacidade",
+          "label": "隐私",
+          "tone": "teal",
+          "title": "该模型存在于您的计算机上。",
+          "text": "默认情况下是本地的：AI 模型在带有 llama.cpp 的机器上运行，在 GPU 或 CPU 上。面板显示每个代理可以访问的内容。",
+          "bullets": [
+            "本地模型与llama.cpp",
+            "ISO 不提供模型：您稍后选择并下载",
+            "每个应用程序和每个代理谁可以使用什么"
+          ],
+          "shot": "ds-privacidade",
+          "alt": "设置 › 隐私和安全性，包括谁可以使用什么表、每个应用程序和每个代理；然后设置 › 具有本地模型和“个人数据永远不会离开计算机”的模型和提供商"
+        },
+        {
+          "id": "desktop",
+          "label": "自己的桌面",
+          "tone": "gold",
+          "title": "用 Rust 构建的桌面。",
+          "text": "在 niri 上有自己的 Rust 和 GTK4 外壳：顶部栏、停靠栏、侧边栏、命令搜索、锁定和登录屏幕，有浅色和深色主题。",
+          "bullets": [
+            "niri 上的 Rust + GTK4 外壳",
+            "命令搜索和工作区",
+            "从系统到应用程序的浅色和深色主题"
+          ],
+          "shot": "ds-desktop",
+          "alt": "带时钟的桌面、客服人员的每日摘要（“Bom dia, Roo”）、Ask KalangoOS 字段和 Dock；然后是今日侧边栏及其小部件"
+        }
+      ]
+    },
+    "apps": {
+      "eyebrow": "包含在 0.1 中",
+      "title": "系统应用程序，随时可用",
+      "lead": "KalangoOS 应用程序，具有系统自己的图标和设计。",
+      "items": [
+        {
+          "icon": "arquivos",
+          "name": "文件",
+          "text": "文件夹、搜索和预览"
+        },
+        {
+          "icon": "configuracoes",
+          "name": "设置",
+          "text": "整个系统集中在一处"
+        },
+        {
+          "icon": "terminal",
+          "name": "Terminal",
+          "text": "与经纪人并肩作战"
+        },
+        {
+          "icon": "editor-de-texto",
+          "name": "文本编辑器",
+          "text": "轻快"
+        },
+        {
+          "icon": "calculadora",
+          "name": "计算器",
+          "text": "有历史"
+        },
+        {
+          "icon": "agentes",
+          "name": "代理中心",
+          "text": "创建和管理代理"
+        },
+        {
+          "icon": "ajuda",
+          "name": "帮助",
+          "text": "离线回答"
+        },
+        {
+          "icon": "documentos",
+          "name": "文件",
+          "text": "阅读并整理"
+        }
+      ]
+    },
+    "gallery": {
+      "eyebrow": "屏幕",
+      "title": "查看KalangoOS屏幕",
+      "note": "KalangoOS设计的屏幕（FigCraft中的设计系统）：按计划的系统；界面为巴西葡萄牙语。",
+      "label": "系统画面",
+      "tabs": [
+        {
+          "shot": "ds-desktop",
+          "label": "桌面",
+          "caption": "桌面，包含客服人员的每日摘要和询问 KalangoOS 字段。",
+          "alt": "KalangoOS 桌面：时钟、座席每日摘要（“Bom dia, Roo”）、活跃座席、询问 KalangoOS 字段和 Dock"
+        },
+        {
+          "shot": "ds-central",
+          "label": "代理商",
+          "caption": "代理中心：每个代理正在做什么、正在等待或已完成。",
+          "alt": "代理中心，正在运行：组织〜/下载正在运行，清理重复项正在等待，每日电子邮件摘要已完成，同步存储库失败，旁边有组织者的日志"
+        },
+        {
+          "shot": "ds-criar-agente",
+          "label": "创建代理",
+          "caption": "通过描述代理应该执行的操作来创建代理：系统会在创建代理之前显示其理解的内容和权限。",
+          "alt": "新的代理屏幕，其中包含请求“每个星期五，组织我的下载...”，星期五清理代理及其步骤、所需的权限和模拟"
+        },
+        {
+          "shot": "ds-linha-tempo",
+          "label": "时间轴",
+          "caption": "时间线：特工今天做了什么，以及撤消操作。",
+          "alt": "今天有 37 个代理操作的时间线，选择之前和之后的“将 118 个文件移至 4 个文件夹”，以及“撤消此操作”和“撤消自 13:58 以来的所有内容”按钮"
+        },
+        {
+          "shot": "ds-memoria",
+          "label": "记忆",
+          "caption": "内存：系统对您的了解，仅保存在这台计算机上。",
+          "alt": "仅在本计算机上保留 42 个记忆的内存屏幕，例如“用葡萄牙语回答，开门见山”，以及内存打开和隐身选项"
+        },
+        {
+          "shot": "ds-loja",
+          "label": "应用中心",
+          "caption": "应用程序中心：要安装的代理、基本应用程序和本地模型。",
+          "alt": "应用程序中心包含与您合作的代理，重点介绍趋势代理（Dev Sync、组织者、导师）、基本应用程序和本地模型"
+        }
+      ]
+    },
+    "download": {
+      "eyebrow": "下载",
+      "title": "下载KalangoOS0.1",
+      "lead": "可安装的 ISO、二进制文件和校验和位于 GitHub 上的 v0.1.0 版本中，并带有构建来源证明。",
+      "edition": {
+        "label": "技术预览·0.1.0",
+        "title": "KalangoOS 0.1.0",
+        "text": "与安装人员进行实时会话。 x86_64，UEFI。 AI模型稍后下载。",
+        "iso": "下载 ISO",
+        "sums": "SHA-256",
+        "all": "所有版本",
+        "filesLabel": "发布文件",
+        "files": [
+          {
+            "name": "kalangoos-0.1.0-amd64.iso",
+            "badge": "安装",
+            "tone": "accent"
+          },
+          {
+            "name": "SHA256SUMS-iso.txt",
+            "badge": "检查 ISO",
+            "tone": "cream"
+          },
+          {
+            "name": "kalangoos-0.1.0-linux-x86_64.tar.gz",
+            "badge": "二进制文件",
+            "tone": "gold"
+          },
+          {
+            "name": "SHA256SUMS.txt",
+            "badge": "检查二进制文件",
+            "tone": "cream"
+          }
+        ]
+      },
+      "req": {
+        "label": "要求",
+        "items": [
+          {
+            "title": "最低（计划）",
+            "text": "64 位、4 核 (x86-64-v2)、8 GB 内存、64 GB SSD、Vulkan 显卡和 UEFI。"
+          },
+          {
+            "title": "受到推崇的",
+            "text": "8 核、16 GB、256 GB NVMe 和专用显卡。对于较大型号，32 GB。"
+          },
+          {
+            "title": "已测试",
+            "text": "虚拟机（QEMU/KVM）。真正的硬件和安全启动还没有。"
+          }
+        ]
+      },
+      "startTitle": "入门",
+      "copy": "复制",
+      "copied": "已复制",
+      "steps": [
+        {
+          "title": "检查总和",
+          "code": "sha256sum -c --ignore-missing \\\n  SHA256SUMS-iso.txt"
+        },
+        {
+          "title": "在虚拟机中尝试一下",
+          "code": "git clone https://github.com/kalangoos/kalangoos\ncd kalangoos\nKALANGO_ISO=…/kalangoos-0.1.0-amd64.iso \\\n  imagem/rodar-iso.sh novo"
+        },
+        {
+          "title": "写入并启动UEFI",
+          "code": "sudo dd if=kalangoos-0.1.0-amd64.iso \\\n  of=/dev/sdX bs=4M status=progress conv=fsync"
+        }
+      ],
+      "warn": "技术预览版 0.x：仅在虚拟机中测试 (UEFI)。在虚拟机或没有重要数据的计算机上使用它。",
+      "guide": "完整指南：下载、验证和安装"
+    },
+    "notes": {
+      "eyebrow": "发行说明",
+      "title": "0.1.0 中有什么",
+      "items": [
+        "可安装的 x86_64 ISO，UEFI，每次运行时都在虚拟机中进行测试",
+        "第一个版本的代理、kalangod 和桌面",
+        "niri 上的 Rust 和 GTK4 中的 Shell，以及系统应用程序",
+        "SHA256SUMS 并构建来源证明"
+      ],
+      "limits": "已知限制：真实硬件未经测试，模型单独下载，系统仅支持葡萄牙语。",
+      "more": "阅读完整笔记"
+    },
+    "roadmap": {
+      "eyebrow": "路线图",
+      "items": [
+        {
+          "v": "0.1.0",
+          "title": "技术预览",
+          "status": "已发布",
+          "done": true
+        },
+        {
+          "v": "下一个",
+          "title": "使用还原点进行更新",
+          "status": "在路线图上",
+          "done": false
+        },
+        {
+          "v": "之后",
+          "title": "签名图像和包",
+          "status": "在路线图上",
+          "done": false
+        },
+        {
+          "v": "之后",
+          "title": "混合模式和英文系统",
+          "status": "在路线图上",
+          "done": false
+        }
+      ],
+      "more": "GitHub 的完整路线图"
+    },
+    "community": {
+      "eyebrow": "社区",
+      "title": "建于露天",
+      "lead": "开源。每个错误报告、想法和代码行都有帮助。",
+      "soon": "即将推出",
+      "cards": [
+        {
+          "id": "github",
+          "name": "GitHub",
+          "text": "代码、问题和发布",
+          "cta": "github.com/kalangoos",
+          "href": "https://github.com/kalangoos",
+          "tone": "text"
+        },
+        {
+          "id": "discord",
+          "name": "Discord",
+          "text": "与使用和构建它的人交谈",
+          "cta": "加入服务器",
+          "href": "https://discord.gg/Yvu762kNr",
+          "tone": "accent"
+        },
+        {
+          "id": "youtube",
+          "name": "YouTube",
+          "text": "旅游、新闻和教程",
+          "cta": "订阅频道",
+          "href": "https://www.youtube.com/@KalangoOS",
+          "tone": "coral"
+        },
+        {
+          "id": "contribuir",
+          "name": "贡献",
+          "text": "Rust 代码、翻译和测试",
+          "cta": "阅读指南",
+          "href": "@contribute",
+          "tone": "teal"
+        }
+      ],
+      "channel": {
+        "eyebrow": "在频道上",
+        "title": "KalangoOS 视频",
+        "videos": [
+          {
+            "id": "tour",
+            "title": "一分钟0.1巡演",
+            "duration": "1:04",
+            "shot": "ds-desktop",
+            "alt": "KalangoOS桌面"
+          },
+          {
+            "id": "agentes",
+            "title": "代理：从请求到结果",
+            "duration": "即将推出",
+            "shot": "ds-central",
+            "alt": "正在运行代理的代理中心"
+          },
+          {
+            "id": "vm",
+            "title": "在虚拟机中安装，一步一步",
+            "duration": "即将推出",
+            "shot": "ds-instalador",
+            "alt": "磁盘步骤中的KalangoOS安装程序：安装在哪里？"
+          }
+        ]
+      }
+    },
+    "support": {
+      "eyebrow": "支持项目",
+      "title": "帮助KalangoOS成长",
+      "text": "捐款用于支付域名、构建服务器和测试计算机的费用，并使系统对所有人免费。",
+      "methods": [
+        {
+          "name": "PIX",
+          "text": "复制密钥",
+          "tone": "teal"
+        },
+        {
+          "name": "GitHub Sponsors",
+          "text": "每月支持",
+          "tone": "accent"
+        },
+        {
+          "name": "其他方式",
+          "text": "卡和国际",
+          "tone": "gold"
+        }
+      ],
+      "cta": "支持KalangoOS",
+      "soon": "捐赠选项仍在设置中：即将到来。"
+    },
+    "members": {
+      "eyebrow": "会员专区",
+      "title": "对于贡献者",
+      "text": "使用GitHub登录以遵循项目板、内部文档和规范。",
+      "items": [
+        "项目板",
+        "文档",
+        "规格"
+      ],
+      "cta": "使用GitHub登录"
+    },
+    "footer": {
+      "tagline": "AI 代理与您一起工作的 Linux。开源。",
+      "follow": "新闻：关注GitHub发布",
+      "cols": [
+        {
+          "title": "产品",
+          "links": [
+            {
+              "label": "特征",
+              "href": "#recursos"
+            },
+            {
+              "label": "屏幕",
+              "href": "#capturas"
+            },
+            {
+              "label": "下载",
+              "href": "#baixar"
+            },
+            {
+              "label": "发行说明",
+              "href": "@notes"
+            },
+            {
+              "label": "路线图",
+              "href": "#roteiro"
+            }
+          ]
+        },
+        {
+          "title": "社区",
+          "links": [
+            {
+              "label": "GitHub",
+              "href": "https://github.com/kalangoos"
+            },
+            {
+              "label": "Discord",
+              "href": "https://discord.gg/Yvu762kNr"
+            },
+            {
+              "label": "YouTube",
+              "href": "https://www.youtube.com/@KalangoOS"
+            },
+            {
+              "label": "贡献",
+              "href": "@contribute"
+            },
+            {
+              "label": "报告错误",
+              "href": "https://github.com/kalangoos/kalangoos/issues/new/choose"
+            }
+          ]
+        },
+        {
+          "title": "项目",
+          "links": [
+            {
+              "label": "安全",
+              "href": "@security"
+            },
+            {
+              "label": "文档",
+              "href": "@docs"
+            },
+            {
+              "label": "执照",
+              "href": "https://github.com/kalangoos/kalangoos/blob/main/LICENSE"
+            },
+            {
+              "label": "支持",
+              "href": "#apoie"
+            },
+            {
+              "label": "会员专区",
+              "href": "@members"
+            }
+          ]
+        }
+      ],
+      "copyright": "© KalangoOS · 免费软件",
+      "theme": "主题",
+      "dark": "黑暗的",
+      "light": "光"
+    },
+    "designSystem": {
+      "eyebrow": "Design System",
+      "title": "在代码之前绘制的屏幕",
+      "lead": "FigCraft 展示来自kalangoos/设计。来源是 .figcraft 文件； .fig 和 live share 只是镜像。",
+      "cta": {
+        "label": "为设计做出贡献",
+        "href": "https://github.com/kalangoos/design",
+        "text": "FigCraft + Git LFS，带捕获的 PR。另请参见 ESPELHOS.md。"
+      },
+      "items": [
+        {
+          "shot": "ds-capa",
+          "caption": "覆盖",
+          "alt": "KalangoOS FigCraft 设计系统封面"
+        },
+        {
+          "shot": "ds-fundamentos",
+          "caption": "基础",
+          "alt": "基础：颜色、类型和空间"
+        },
+        {
+          "shot": "ds-marca",
+          "caption": "品牌",
+          "alt": "带有徽标和规则的品牌页面"
+        },
+        {
+          "shot": "ds-site",
+          "caption": "Site",
+          "alt": "设计系统中的登陆页面"
+        }
+      ],
+      "page": "页",
+      "open": "在存储库中查看"
+    }
+  }
+}
