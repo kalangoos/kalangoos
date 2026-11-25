@@ -1064,7 +1064,12 @@ mod tests {
         let mut cfg = crate::policy::Config::system_default();
         cfg.state_dir = estado.to_path_buf();
         cfg.protected_paths.push(format!("{}/Protegida", casa.display()));
-        let mut p = Peer::from_ids(std::process::id() as i32, 1000, 1000);
+        // (the person is whoever runs the tests: a command made for another uid cannot be started without root)
+        let (uid, gid) = {
+            let m = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap());
+            (m, std::os::unix::fs::MetadataExt::gid(&std::fs::metadata("/proc/self").unwrap()))
+        };
+        let mut p = Peer::from_ids(std::process::id() as i32, uid, gid);
         p.home = casa.to_path_buf();
         (cfg, p)
     }
@@ -1073,11 +1078,11 @@ mod tests {
     fn agents_may_use_an_app_until_the_person_turns_it_off() {
         let d = tempfile::tempdir().unwrap();
         let (cfg, mut p) = pessoa(d.path(), &d.path().join("estado"));
-        assert!(agentes_podem(&cfg.state_dir, 1000, "ai.storyteller.filmcraft"));
+        assert!(agentes_podem(&cfg.state_dir, p.uid, "ai.storyteller.filmcraft"));
         rpc(&cfg, &p, &json!({"acao": "definir", "app": "ai.storyteller.filmcraft", "agentes": false})).unwrap();
-        assert!(!agentes_podem(&cfg.state_dir, 1000, "ai.storyteller.filmcraft"));
-        p.uid = 1001;
-        assert!(agentes_podem(&cfg.state_dir, 1001, "ai.storyteller.filmcraft"), "per person");
+        assert!(!agentes_podem(&cfg.state_dir, p.uid, "ai.storyteller.filmcraft"));
+        p.uid += 1;
+        assert!(agentes_podem(&cfg.state_dir, p.uid, "ai.storyteller.filmcraft"), "per person");
         assert!(rpc(&cfg, &p, &json!({"acao": "definir", "app": "not-an-app", "agentes": true})).is_err());
     }
 
