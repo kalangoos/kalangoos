@@ -248,7 +248,15 @@ fn guarded_otlp(sp: &SpanData, first: &Redactor, guard: &Redactor, tally: &mut T
 fn request_body(spans: &[&SpanData], red: &Redactor, guard: &Redactor, tally: &mut Tally) -> Value {
     let mut by_mode: Vec<(&'static str, Vec<Value>)> = Vec::new();
     for s in spans {
-        let Some(v) = guarded_otlp(s, red, guard, tally) else { continue };
+        // (a bug in a detector costs this span only, never the sender thread: the text comes from outside)
+        let v = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| guarded_otlp(s, red, guard, tally))) {
+            Ok(Some(v)) => v,
+            Ok(None) => continue,
+            Err(_) => {
+                tally.dropped += 1;
+                continue;
+            }
+        };
         match by_mode.iter_mut().find(|(m, _)| *m == s.privacy) {
             Some((_, l)) => l.push(v),
             None => by_mode.push((s.privacy, vec![v])),
@@ -572,7 +580,11 @@ fn connect(path: &Path, timeout: Duration) -> std::io::Result<UnixStream> {
     loop {
         // SAFETY: addr is a valid sockaddr_un and the length is its size; fd is open (owned by `stream`).
         let r = unsafe {
-            libc::connect(stream.as_raw_fd(), &addr as *const libc::sockaddr_un as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t)
+            libc::connect(
+                stream.as_raw_fd(),
+                &addr as *const libc::sockaddr_un as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
+            )
         };
         if r == 0 {
             break;

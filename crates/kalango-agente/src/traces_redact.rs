@@ -41,6 +41,10 @@ pub const MAX_STRING_BYTES: usize = 64 * 1024;
 
 pub const REDACTED: &str = "[REDACTED]";
 
+/// In tests, a text with this makes the redactor panic, as a detector bug would.
+#[cfg(test)]
+pub const TEST_PANIC_MARKER: &str = "__kalango_test_panic_in_redactor__";
+
 /// What a redaction pass did (the span says it: `kalango.redactions`, `kalango.truncated`).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
@@ -116,6 +120,10 @@ impl Redactor {
 
     /// The text with every secret replaced.
     pub fn redact_str(&self, s: &str, stats: &mut Stats) -> String {
+        #[cfg(test)]
+        if s.contains(TEST_PANIC_MARKER) {
+            panic!("a detector bug (test)");
+        }
         if s.len() > MAX_STRING_BYTES {
             stats.omitted_large += 1;
             return large_marker(s);
@@ -249,7 +257,7 @@ impl Redactor {
             // `=` and `:`, also written for a URL (`password%3Dvalue`)
             let sep_len = if b[i] == b'=' || b[i] == b':' {
                 1
-            } else if b[i] == b'%' && b.len() >= i + 3 && matches!(&s[i + 1..i + 3], "3D" | "3d" | "3A" | "3a") {
+            } else if b[i] == b'%' && b.get(i + 1..i + 3).is_some_and(|w| w.eq_ignore_ascii_case(b"3D") || w.eq_ignore_ascii_case(b"3A")) {
                 3
             } else {
                 i += 1;
@@ -303,7 +311,9 @@ impl Redactor {
                 }
                 None => {
                     // (an encoded value ends at an encoded `&`, space or `;` too)
-                    let encoded_end = |at: usize| b[at] == b'%' && b.len() >= at + 3 && matches!(&s[at + 1..at + 3], "26" | "20" | "3B" | "3b");
+                    // (the bytes themselves: the text comes from outside and a character after `%` may be several bytes)
+                    let encoded_end =
+                        |at: usize| b[at] == b'%' && b.get(at + 1..at + 3).is_some_and(|w| w == b"26" || w == b"20" || w.eq_ignore_ascii_case(b"3B"));
                     while ve < b.len()
                         && !b[ve].is_ascii_whitespace()
                         && !matches!(b[ve], b'"' | b'\'' | b',' | b';' | b'&' | b')' | b'}' | b'>')
@@ -371,9 +381,25 @@ fn replace_ranges(s: &str, ranges: &[(usize, usize)], with: &str, stats: &mut St
     if ranges.is_empty() {
         return s.to_string();
     }
+    // (a range is widened to whole characters: a detector's offset inside a multi-byte character never panics)
+    let floor = |mut i: usize| {
+        i = i.min(s.len());
+        while !s.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    };
+    let ceil = |mut i: usize| {
+        i = i.min(s.len());
+        while !s.is_char_boundary(i) {
+            i += 1;
+        }
+        i
+    };
     let mut out = String::with_capacity(s.len());
     let mut at = 0;
     for &(a, b) in ranges {
+        let (a, b) = (floor(a), ceil(b));
         if a < at {
             continue;
         }
@@ -662,15 +688,9 @@ fn command_passwords(s: &str, stats: &mut Stats) -> String {
     let mut ranges = Vec::new();
     let mut line_start = 0;
     for line in s.split_inclusive('\n') {
-        let words: Vec<(usize, &str)> = line
-            .split(|c: char| c.is_whitespace())
-            .scan(0usize, |at, w| {
-                let here = *at;
-                *at += w.len() + 1;
-                Some((here, w))
-            })
-            .filter(|(_, w)| !w.is_empty())
-            .collect();
+        // (each word's offset from where it is in the line: separators may be several, and several bytes each)
+        let words: Vec<(usize, &str)> =
+            line.split(char::is_whitespace).filter(|w| !w.is_empty()).map(|w| (w.as_ptr() as usize - line.as_ptr() as usize, w)).collect();
         let command = |w: &str| w.rsplit('/').next().unwrap_or(w).to_string();
         let glued = words.iter().any(|(_, w)| GLUED.contains(&command(w).as_str()));
         let sshpass = words.iter().any(|(_, w)| command(w) == "sshpass");
@@ -1134,6 +1154,45 @@ mod tests {
         ] {
             assert_eq!(red(ok), ok, "{ok}");
         }
+    }
+
+    /// Text from outside with multi-byte characters where the detectors look byte by byte (after `%`, between the
+    /// words of a command, next to a key): no panic, the secret still goes, and nothing else is cut.
+    #[test]
+    fn multi_byte_text_never_panics_and_the_secrets_still_go() {
+        let r = Redactor::default();
+        // after '%': one byte then a multi-byte character, or one right away
+        for t in ["100%€", "%a\u{e9}x", "%😀", "a%3\u{e9}", "password%3Dabc%€ fim", "password%3Dabc%a\u{e9} fim", "%\u{a0}%\u{3000}%\u{2003}"] {
+            let out = red(t);
+            assert!(!out.contains("abc"), "{t:?} -> {out:?}");
+            let _ = r.scan_text(t);
+        }
+        // Unicode spaces (no-break, ideographic, em) and runs of separators between the words of a command line
+        for sep in ["\u{a0}", "\u{3000}", "\u{2003}", "  ", " \u{3000} "] {
+            let line = format!("mysql{sep}-u{sep}root{sep}-pSegredoForte1{sep}banco é ótimo 😀");
+            let out = red(&line);
+            assert!(!out.contains("SegredoForte1"), "{line:?} -> {out:?}");
+            assert_eq!(out, format!("mysql{sep}-u{sep}root{sep}-p{REDACTED}{sep}banco é ótimo 😀"), "exactly the password goes");
+            let ssh = format!("sshpass{sep}-p{sep}Outra-Senha-2{sep}ssh é");
+            let out = red(&ssh);
+            assert_eq!(out, format!("sshpass{sep}-p{sep}{REDACTED}{sep}ssh é"), "{ssh:?}");
+        }
+        // next to keys and in phrases
+        for t in ["é password=hunter9 😀", "\u{3000}senha\u{3000}é\u{3000}hunter9\u{3000}", "my password is\u{2003}hunter9 é"] {
+            let out = red(t);
+            assert!(!out.contains("hunter9"), "{t:?} -> {out:?}");
+        }
+    }
+
+    /// A range that does not fall on a character's edge is widened to whole characters, never sliced mid-character.
+    #[test]
+    fn replace_ranges_widens_to_whole_characters() {
+        let s = "aé😀b";
+        let mut st = Stats::default();
+        // 'é' is bytes 1..3, the emoji 3..7: ranges that start or end inside them
+        assert_eq!(replace_ranges(s, &[(2, 5)], "#", &mut st), "a#b");
+        assert_eq!(replace_ranges(s, &[(0, 2)], "#", &mut st), "#😀b");
+        assert_eq!(replace_ranges(s, &[(6, 99)], "#", &mut st), "aé#");
     }
 
     #[test]

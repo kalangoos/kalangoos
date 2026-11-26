@@ -1790,6 +1790,24 @@ fn without_a_daemon_nothing_is_recorded_and_nothing_fails() {
     assert_eq!(sink.counters(), Counters::default());
 }
 
+/// A bug in a detector (a panic while redacting one span) costs that span only: the sender thread lives on and the
+/// next turns are sent. (Before: the panic ended the thread, and nothing was sent again until the agent restarted.)
+#[test]
+fn a_panic_in_the_redactor_drops_that_span_and_the_sender_goes_on() {
+    let s = setup();
+    let bad = begin(&s, Config::default(), crate::traces_redact::TEST_PANIC_MARKER);
+    bad.end(&Ok(()));
+    // (the first turn's batch is redacted before the next one is queued)
+    std::thread::sleep(Duration::from_millis(300));
+    let good = begin(&s, Config::default(), "um pedido comum");
+    good.end(&Ok(()));
+    let spans = s.rx.wait_for(1);
+    assert_eq!(spans.len(), 1, "only the second turn");
+    assert!(!s.rx.raw().contains(crate::traces_redact::TEST_PANIC_MARKER));
+    assert!(s.rx.raw().contains("um pedido comum"));
+    assert!(s.sink.counters().dropped >= 1, "the span left out is counted");
+}
+
 /// A daemon that stopped accepting (its listen backlog full): connecting must give up after the I/O wait like the
 /// rest of the exchange, never block the sender thread for good.
 #[test]
