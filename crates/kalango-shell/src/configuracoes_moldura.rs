@@ -48,6 +48,8 @@ impl Moldura {
         let topo = caixa(Orientation::Horizontal, 16, "");
         let tt = caixa(Orientation::Vertical, 2, "");
         let titulo_l = esquerda(titulo, "cfg-titulo");
+        // (a long title — Japanese, German — gives way before the search does: the window keeps its width)
+        titulo_l.set_ellipsize(gtk::pango::EllipsizeMode::End);
         tt.append(&titulo_l);
         let sub = esquerda("", "cfg-sub");
         sub.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -83,7 +85,12 @@ impl Moldura {
                 linha_abas.append(&b);
                 lista.push((*id, b, sub));
             }
-            principal.append(&linha_abas);
+            // (tabs longer than the window — Russian, German — scroll sideways instead of widening the window)
+            let rolagem_abas = gtk::ScrolledWindow::new();
+            rolagem_abas.set_policy(gtk::PolicyType::External, gtk::PolicyType::Never);
+            rolagem_abas.set_propagate_natural_width(true);
+            rolagem_abas.set_child(Some(&linha_abas));
+            principal.append(&rolagem_abas);
             let linha = caixa(Orientation::Horizontal, 0, "cfg-div");
             linha.set_size_request(-1, 1);
             principal.append(&linha);

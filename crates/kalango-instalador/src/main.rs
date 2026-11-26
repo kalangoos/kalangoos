@@ -780,20 +780,26 @@ impl Instalador {
 
     /// The system as it is: the languages, the keyboards, the network, the disks.
     fn ler_sistema(self: &Rc<Self>) {
-        let mut locs: Vec<String> = std::process::Command::new("locale").arg("-a").output().map(|o| String::from_utf8_lossy(&o.stdout).lines()
+        // KalangoOS's languages first (their own names), then any other the image has
+        let installed: Vec<String> = std::process::Command::new("locale").arg("-a").output().map(|o| String::from_utf8_lossy(&o.stdout).lines()
             .filter(|l| l.contains("utf8") || l.contains("UTF-8")).map(|l| l.replace(".utf8", ".UTF-8")).collect()).unwrap_or_default();
-        if locs.is_empty() {
-            locs.push("pt_BR.UTF-8".into());
-        }
-        locs.sort();
-        locs.dedup();
-        let names: Vec<String> = locs.iter().map(|l| nome_do_idioma(l)).collect();
+        let locs = kalango_i18n::offered_languages(&installed);
+        let names: Vec<String> = locs.iter().map(|l| kalango_i18n::language_name(l)).collect();
         self.idioma.set_model(Some(&gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>())));
         let lang = std::env::var("LANG").unwrap_or_default().replace(".utf8", ".UTF-8");
         if let Some(i) = locs.iter().position(|l| *l == lang).or_else(|| locs.iter().position(|l| l.starts_with("pt_BR"))) {
             self.idioma.set_selected(i as u32);
         }
         *self.idiomas.borrow_mut() = locs;
+        // choosing another language on the first step shows the installer in it (the texts are read once per process)
+        let w = Rc::downgrade(self);
+        self.idioma.connect_selected_notify(move |d| {
+            let Some(i) = w.upgrade() else { return };
+            let Some(l) = i.idiomas.borrow().get(d.selected() as usize).cloned() else { return };
+            if i.passo.get() == 0 && kalango_i18n::normalize(&l) != kalango_i18n::active_locale() {
+                relaunch_in(&l);
+            }
+        });
         // keyboards: xkeyboard-config's (the layouts and their variants), the live session's first
         let teclados = catalogo_teclados();
         let names: Vec<String> = teclados.iter().map(|(_, _, n)| n.clone()).collect();
@@ -1323,21 +1329,16 @@ fn gio_list(f: &gtk::FileFilter) -> gtk::gio::ListStore {
     l
 }
 
-fn nome_do_idioma(l: &str) -> String {
-    let code = l.split('.').next().unwrap_or(l);
-    match code {
-        "pt_BR" => "Português (Brasil)".into(),
-        "pt_PT" => "Português (Portugal)".into(),
-        "en_US" => "English (US)".into(),
-        "en_GB" => "English (UK)".into(),
-        "es_ES" => "Español (España)".into(),
-        "es_MX" => "Español (México)".into(),
-        "fr_FR" => "Français".into(),
-        "de_DE" => "Deutsch".into(),
-        "it_IT" => "Italiano".into(),
-        "C" => "C".into(),
-        c => c.into(),
+/// Starts the installer again in another language (nothing is lost on the first step: the keyboard is already the
+/// session's). `LANG` decides; `LANGUAGE` and `LC_ALL` would override it, so they go.
+fn relaunch_in(locale: &str) {
+    use std::os::unix::process::CommandExt;
+    let Ok(exe) = std::env::current_exe() else { return };
+    if debug() {
+        eprintln!("debug instalador: idioma {locale}");
     }
+    let err = std::process::Command::new(exe).args(std::env::args_os().skip(1)).env("LANG", locale).env_remove("LANGUAGE").env_remove("LC_ALL").env_remove("LC_MESSAGES").exec();
+    eprintln!("kalango-instalador: {err}");
 }
 
 extern "C" {

@@ -85,6 +85,20 @@ recusado por ser depurável) e o pin do Remote na esteira de lançamento sobe ju
   `docs/VALIDACAO-HARDWARE.md` e o formulário de issue "Teste em hardware real".
 - A imagem mascara `NetworkManager-wait-online.service` (nada nela espera "rede no ar"; falhava depois de ~60 s sem cabo).
 
+## [Não lançado]
+
+### Idiomas
+
+- A interface passa a existir em nove idiomas, os do site: English, Português (Brasil), Español, Français,
+  Italiano, Deutsch, 日本語, Русский e 简体中文. O idioma vem do sistema (`LANGUAGE`, `LC_*`, `LANG`), e o instalador
+  e as Configurações › Idioma o escolhem.
+- **Aviso sobre a qualidade:** os sete catálogos novos (es, fr, it, de, ja, ru, zh_CN) foram **gerados por IA e
+  nenhuma pessoa nativa os revisou**. Os testes conferem a forma (chaves, marcadores, atalhos, caracteres ocultos,
+  palavras de consentimento), não o sentido nem o tom. As Configurações › Idioma dizem isso na tela. Como ajudar:
+  [docs/i18n/REVISAO.md](docs/i18n/REVISAO.md).
+- O texto que o modelo de IA lê (instruções, recusas, limites) fica em inglês nos idiomas novos, e as palavras de
+  outros idiomas que trazem ferramentas para o pedido casam por palavra, não por trecho.
+
 ## [0.1.0] — 2026-11-22
 
 Primeira prévia técnica: uma ISO instalável, testada numa máquina virtual, com o shell, o `kalangod` e os agentes
@@ -192,6 +206,8 @@ locais. Notas completas: [docs/NOTAS-0.1.0.md](docs/NOTAS-0.1.0.md).
 ---
 
 ## English summary
+
+**Unreleased.** The UI exists in nine languages (English, Brazilian Portuguese, Spanish, French, Italian, German, Japanese, Russian, Simplified Chinese). The seven catalogs beyond Portuguese are AI-generated and have not been reviewed by native speakers; Settings › Language says so, and [docs/i18n/REVISAO.md](docs/i18n/REVISAO.md) says where a review helps most. Text for the AI model stays in English in the new languages.
 
 **0.1.0 (2026-11-22), the first technical preview.** An installable ISO (x86_64, UEFI) that the release workflow
 builds and tests in a VM (live session, installer, installed system boots), the shell on a patched niri, `kalangod`

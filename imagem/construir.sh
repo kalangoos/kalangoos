@@ -2,7 +2,7 @@
 # KalangoOS · constrói a imagem do sistema: uma distribuição própria e mínima.
 #
 # A raiz vem dos pacotes binários do Ubuntu 26.04 LTS — só os de que a pilha do KalangoOS precisa, sem documentação,
-# manuais nem traduções além de pt_BR e inglês —, com Rust onde já é maduro (coreutils do uutils, sudo-rs, ntpd-rs).
+# manuais nem traduções além dos nove idiomas do KalangoOS —, com Rust onde já é maduro (coreutils do uutils, sudo-rs, ntpd-rs).
 # Por cima: o kernel do KalangoOS, o niri com os patches, o shell, o kalangod, o agente, a aprovação, a tela de entrada
 # e o instalador, como arquivos da imagem (nada aponta para o repositório).
 #
@@ -344,6 +344,12 @@ env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME="$HOME" TMPDIR="$W" /usr/bin/mmde
   --dpkgopt='path-exclude=/usr/share/man/*' --dpkgopt='path-exclude=/usr/share/info/*' \
   --dpkgopt='path-exclude=/usr/share/locale/*' --dpkgopt='path-include=/usr/share/locale/pt_BR/*' \
   --dpkgopt='path-include=/usr/share/locale/pt/*' --dpkgopt='path-include=/usr/share/locale/locale.alias' \
+  --dpkgopt='path-include=/usr/share/locale/es/*' --dpkgopt='path-include=/usr/share/locale/fr/*' \
+  --dpkgopt='path-include=/usr/share/locale/it/*' --dpkgopt='path-include=/usr/share/locale/de/*' \
+  --dpkgopt='path-include=/usr/share/locale/ja/*' --dpkgopt='path-include=/usr/share/locale/ru/*' \
+  --dpkgopt='path-include=/usr/share/locale/zh_CN/*' \
+  --dpkgopt='path-exclude=/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc' \
+  --dpkgopt='path-exclude=/usr/share/fonts/opentype/noto/NotoSerifCJK-*' \
   --include="$PAC" \
   --customize-hook="copy-in '$W/kernel.deb' /tmp" \
   --customize-hook='chroot "$1" dpkg -i /tmp/kernel.deb && rm -f "$1/tmp/kernel.deb"' \
@@ -351,7 +357,7 @@ env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME="$HOME" TMPDIR="$W" /usr/bin/mmde
   --customize-hook="cd '$C' && find . -print0 | (cd \"\$1\" && xargs -0 chown -h 0:0)" \
   --customize-hook='find "$1/usr/local" ! -type l -perm /022 -exec chmod go-w,g-s {} + ; chgrp -R -h 0 "$1/usr/local"' \
   --customize-hook='chroot "$1" useradd --system --create-home --home-dir /var/lib/greeter --shell /usr/sbin/nologin --groups video,render,input greeter || true' \
-  --customize-hook='echo "pt_BR.UTF-8 UTF-8" > "$1/etc/locale.gen" && echo "en_US.UTF-8 UTF-8" >> "$1/etc/locale.gen" && chroot "$1" locale-gen && printf "LANG=pt_BR.UTF-8\n" > "$1/etc/default/locale"' \
+  --customize-hook='printf "%s UTF-8\n" pt_BR.UTF-8 en_US.UTF-8 es_ES.UTF-8 fr_FR.UTF-8 it_IT.UTF-8 de_DE.UTF-8 ja_JP.UTF-8 ru_RU.UTF-8 zh_CN.UTF-8 > "$1/etc/locale.gen" && chroot "$1" locale-gen && printf "LANG=pt_BR.UTF-8\n" > "$1/etc/default/locale"' \
   --customize-hook='chroot "$1" sh -c "getent group sudo >/dev/null || groupadd --system sudo"' \
   --customize-hook="$CONTA" \
   --customize-hook="$SENHA" \

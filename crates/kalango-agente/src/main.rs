@@ -25,6 +25,8 @@ mod remote;
 mod grounding;
 mod search_query;
 mod motor;
+mod model_scope;
+mod intl_words;
 mod permissoes;
 mod recomendacao;
 mod resumo;
