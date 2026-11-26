@@ -236,7 +236,7 @@ impl Redactor {
         named
             && !self.keeps_number(key, v)
             && !matches!(v, Value::Bool(_) | Value::Null)
-            && !text.is_some_and(|t| mask(t) || (describes_a_secret(key) && (!credential_shaped(t) || timestamp(t))))
+            && !text.is_some_and(|t| mask(t) || (describes_a_secret(key) && (!credential_shaped(t) || (time_key(key) && timestamp(t)))))
     }
 
     /// A name in text that points at a secret: a denied key that does not only describe the secret (`password_policy:
@@ -620,7 +620,8 @@ impl Redactor {
             let value = &s[vs..ve];
             // (a label of several words with a preposition, "senha do usuário:", is a sentence as often as a label: its
             // value goes when it looks like a credential)
-            if (by_label && !strong && !credential_shaped(value)) || (shaped_only && (!literal_secret(value) || timestamp(value))) {
+            if (by_label && !strong && !credential_shaped(value)) || (shaped_only && (!literal_secret(value) || (time_key(name) && timestamp(value))))
+            {
                 i = ve.max(i + 1);
                 continue;
             }
@@ -1130,11 +1131,53 @@ fn cookie_values(s: &str, from: usize, end: usize) -> Vec<(usize, usize)> {
 /// Words before `pass` that make it a ticket ("Boarding pass: seat 14C").
 const PASS_TICKETS: &[&str] = &["boarding", "bus", "day", "season", "ski", "backstage", "press", "hall", "transit", "museum"];
 
-/// A date or a time (`2026-11-26`, `2026-11-26T10:00:00Z`): a value about a secret, not one.
+/// A date in a real layout: `YYYY-MM-DD`, optionally followed by `[T ]HH:MM`, `:SS`, a fraction and a zone (`Z` or
+/// `±HH:MM`), each field in its range (month 01–12, day 01–31, hour 00–23, minute and second 00–59).
 fn timestamp(t: &str) -> bool {
-    t.len() >= 8
-        && t.bytes().filter(|c| c.is_ascii_digit()).count() >= 6
-        && t.bytes().all(|c| c.is_ascii_digit() || matches!(c, b'-' | b':' | b'T' | b'Z' | b'.' | b'+' | b' '))
+    let b = t.as_bytes();
+    let num = |at: usize, len: usize| -> Option<u32> {
+        let d = b.get(at..at + len)?;
+        d.iter().all(u8::is_ascii_digit).then(|| d.iter().fold(0, |n, c| n * 10 + u32::from(c - b'0')))
+    };
+    let in_range = |at: usize, max: u32, min: u32| num(at, 2).is_some_and(|n| (min..=max).contains(&n));
+    // the date
+    if num(0, 4).is_none() || b.get(4) != Some(&b'-') || !in_range(5, 12, 1) || b.get(7) != Some(&b'-') || !in_range(8, 31, 1) {
+        return false;
+    }
+    if b.len() == 10 {
+        return true;
+    }
+    // the time
+    if !matches!(b.get(10), Some(b'T' | b' ')) || !in_range(11, 23, 0) || b.get(13) != Some(&b':') || !in_range(14, 59, 0) {
+        return false;
+    }
+    let mut i = 16;
+    if b.get(i) == Some(&b':') {
+        if !in_range(i + 1, 59, 0) {
+            return false;
+        }
+        i += 3;
+        if b.get(i) == Some(&b'.') {
+            let digits = b[i + 1..].iter().take_while(|c| c.is_ascii_digit()).count();
+            if digits == 0 {
+                return false;
+            }
+            i += 1 + digits;
+        }
+    }
+    // the zone
+    match b.get(i) {
+        None => true,
+        Some(b'Z') => i + 1 == b.len(),
+        Some(b'+' | b'-') => i + 6 == b.len() && in_range(i + 1, 23, 0) && b[i + 3] == b':' && in_range(i + 4, 59, 0),
+        _ => false,
+    }
+}
+
+/// A key about when something happened to a secret (`passwordChangedAt`, `token_updated_at`, `secret_since`): a date
+/// under it is about the secret.
+fn time_key(key: &str) -> bool {
+    key_words(key).last().is_some_and(|w| matches!(w.as_str(), "at" | "date" | "time" | "timestamp" | "changed" | "updated" | "created" | "since"))
 }
 
 /// A mask in place of a value (`***`, `...`, `xxxx`, `••••`): not a secret.
@@ -2581,7 +2624,17 @@ fn phrase_ranges(s: &str) -> Vec<(usize, usize)> {
             let mut j = after_name;
             let mut skipped = 0;
             while j < words.len() && skipped <= 2 {
-                if shaped_at(j) && !cleaned[j].is_empty() && !words[j].0.ends_with(':') {
+                // (a word with a colon before another value on its line is who the password is for: `admin: X`)
+                // (or, after a preposition, alone: "Password for ana@host:" is a prompt not yet answered)
+                let before_value = words.get(j + 1).is_some_and(|n| !s[words[j].2..n.1].contains('\n'));
+                let after_preposition = j > after_name && LABEL_PREPOSITIONS.contains(&cleaned[j - 1].as_str());
+                let who = words[j].0.ends_with(':') && (before_value || after_preposition);
+                if who {
+                    j += 1;
+                    skipped += 1;
+                    continue;
+                }
+                if shaped_at(j) && !cleaned[j].is_empty() {
                     return Some(j);
                 }
                 let w = cleaned[j].as_str();
@@ -2642,7 +2695,7 @@ fn phrase_ranges(s: &str) -> Vec<(usize, usize)> {
             }
         }
         let value = raw.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '(' | ')' | '«' | '»' | '“' | '”'));
-        let value = value.trim_end_matches([',', ';', '.', ')', '!', '?']);
+        let value = value.trim_end_matches([',', ';', '.', ')', '!', '?', ':']);
         let offset = raw.find(value).unwrap_or(0);
         let (vs, ve) = (ws + offset, ws + offset + value.len());
         // (a value that is the name of a secret, `self.password = password`, is the variable)
@@ -3845,6 +3898,8 @@ mod tests {
     #[test]
     fn compound_labels_and_spellings_go() {
         let pw = weak_pw();
+        // (a password's name and the word that says which one take a passphrase too)
+        assert_gone(concat!("senha nova: bolo de ", "cenoura"), "cenoura");
         for t in [
             format!("senha nova: {pw}"),
             format!("token de acesso: {pw}"),
@@ -4113,6 +4168,8 @@ mod tests {
         assert_eq!(red(&format!("[sudo] password for ana: {pw}")), format!("[sudo] password for ana: {REDACTED}"));
         assert_gone(&format!("Enter password for root: {pw}"), "4dor");
         assert_eq!(red("Password for ana@host:"), "Password for ana@host:");
+        // (the answer goes whatever its shape)
+        assert_eq!(red("Password for ana@host: correcthorse"), format!("Password for ana@host: {REDACTED}"));
     }
 
     /// Names that are about a password, not the password: a timestamp under `passwordChangedAt`, an i18n key
@@ -4150,6 +4207,46 @@ mod tests {
         let inner = format!("{{\"pass\\u0077ord\": \"{}\"}}", weak_pw());
         assert!(r.scan_plain_text(&inner) == 0, "the text alone does not show it");
         assert_eq!(r.scan_value_at(&json!({ "note": inner }), 0), 1, "decoding the JSON in the string does");
+    }
+
+    /// A value is a date only in a real layout (`YYYY-MM-DD`, then `THH:MM:SS`, a fraction and a zone), and only under a
+    /// key about time (`passwordChangedAt`, `token_updated_at`): a number with dashes or a `T` and a `Z` in it is not a
+    /// date, and under any other key a date-looking value is judged as a value.
+    #[test]
+    fn only_real_dates_under_time_keys_stay() {
+        let r = Redactor::default();
+        for (key, value) in [
+            ("passwordChangedAt", "2024-99-99"),
+            ("passwordChangedAt", "1234-5678-9012"),
+            ("token_updated_at", "2026-11-26T25:00:00Z"),
+            ("password_policy", "2026-11-26T10:00:00Z"),
+            ("secret_name", "88123311T9Z"),
+        ] {
+            let v = json!({ key: value });
+            assert_eq!(r.redact_value(&v, &mut Stats::default())[key], REDACTED, "{key}: {value}");
+            assert_eq!(r.scan_value(&v), 1, "{key}: {value}");
+        }
+        let code = concat!("8812-3", "311T9Z");
+        assert_gone(&format!("https://x/y?code={code}&a=1"), code);
+        assert_gone(&format!("password_policy: {code}"), code);
+        // (a real date under a name that is not about time is judged as a value)
+        assert_gone("password_policy: 2026-11-26T10:00:00Z", "10:00:00");
+        for ok in ["passwordChangedAt: 2026-11-26", "token_updated_at: 2026-11-26T10:00:00.123+03:00", "{\"password_changed\": \"2026-11-26 10:00\"}"]
+        {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+        assert!(timestamp("2026-11-26T10:00:00Z") && timestamp("2026-02-31") && !timestamp("2026-13-01") && !timestamp("2026-11-26T24:00"));
+    }
+
+    /// A word ending in `:` after a password's name is the value when nothing follows it on its line (`root password
+    /// X:`), and a "who:" when something does (`root password admin: X`): the value goes, without its colon.
+    #[test]
+    fn a_value_before_a_colon_still_goes() {
+        let pw = weak_pw();
+        assert_eq!(red(&format!("root password {pw}:")), format!("root password {REDACTED}:"));
+        assert_eq!(red(&format!("senha atual {pw}:\nfim")), format!("senha atual {REDACTED}:\nfim"));
+        assert_eq!(red(&format!("root password admin: {pw}")), format!("root password admin: {REDACTED}"));
+        assert_gone(&format!("pass ana@host: {pw}"), &pw);
     }
 
     /// Code and configuration that name a secret without holding one (the critic's false positives).
