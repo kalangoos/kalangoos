@@ -1052,16 +1052,7 @@ impl DesktopFiles {
             }
         }
         let f = gio::File::for_path(p);
-        // (a file a creative app opens by default: kalangod checks the app's folders first)
-        if let Some(id) = crate::apps::default_creative_for(&f) {
-            crate::criativos::open_creative(&id, vec![f]);
-            return;
-        }
-        gtk::FileLauncher::new(Some(&f)).launch(Some(&self.window), None::<&gio::Cancellable>, |r| {
-            if let Err(e) = r {
-                eprintln!("kalango-shell: área de trabalho: {e}");
-            }
-        });
+        crate::apps::launch_file(&f, Some(self.window.upcast_ref()));
         gtk::RecentManager::default().add_item(&f.uri());
         if debug() {
             eprintln!("debug desktop: aberto {}", p.display());

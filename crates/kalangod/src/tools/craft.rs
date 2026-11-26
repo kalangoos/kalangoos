@@ -209,11 +209,32 @@ pub fn rpc_with(cfg: &crate::policy::Config, peer: &Peer, params: &Value, gc: Gr
             kalango_craft::instalar::guardar_pontos(&repositorio(cfg), peer.uid, &app.id, &pontos)?;
             Ok(json!({"pontos": pontos}))
         }
-        // (also right before the shell opens the app: the folders are checked again and the override made again from here)
+        // (the App Center, after installing or changing something: the folders checked again and the override made again)
         "aplicar" => {
             let app = catalogo().app(params["app"].as_str().ok_or("app?")?).ok_or_else(|| tr("not a creative app of the catalog").to_string())?;
             let c = aplicar_permissoes(cfg, peer, app, gc)?;
             Ok(json!({"aplicado": app.id, "recusadas": dropped_json(&c.dropped), "novas_recusas": dropped_json(&c.newly_dropped)}))
+        }
+        // right before the shell opens the app (launcher, dock, a file): the same, except in a test session without a
+        // test installation of Flatpak, where it would make the real installation's override from the test's state
+        "abrir" => {
+            let app = catalogo().app(params["app"].as_str().ok_or("app?")?).ok_or_else(|| tr("not a creative app of the catalog").to_string())?;
+            if touches_real_installation(peer) {
+                return Ok(json!({"aplicado": false, "recusadas": [], "novas_recusas": []}));
+            }
+            let c = aplicar_permissoes(cfg, peer, app, gc)?;
+            Ok(json!({"aplicado": app.id, "recusadas": dropped_json(&c.dropped), "novas_recusas": dropped_json(&c.newly_dropped)}))
+        }
+        // at the start of the session: every installed creative app, each on its own (one that fails does not stop the others)
+        "reaplicar" => {
+            let apps: Vec<Value> = reapply_installed(cfg, peer, gc, None)
+                .into_iter()
+                .map(|(id, r)| match r {
+                    Ok(c) => json!({"app": id, "recusadas": dropped_json(&c.dropped), "novas_recusas": dropped_json(&c.newly_dropped)}),
+                    Err(e) => json!({"app": id, "erro": e}),
+                })
+                .collect();
+            Ok(json!({"apps": apps}))
         }
         _ => Err(tr("unknown action").into()),
     }
@@ -394,18 +415,28 @@ pub fn aplicar_permissoes(cfg: &crate::policy::Config, peer: &Peer, app: &App, g
 /// (but `except`) has its folders checked and its permissions made again now, so a folder that is now inside a folder
 /// someone else writes in leaves the override before it could be swapped (and the Timeline says so) — whatever opens
 /// the app next, through kalangod or not.
-pub fn reapply_installed(cfg: &crate::policy::Config, peer: &Peer, gc: GrantContext, except: Option<&str>) {
-    // (a test session without a test installation of Flatpak would make the overrides of the real one again)
-    if peer.home != peer.passwd_home && std::env::var_os("KALANGO_CRAFT_FLATPAK_USER_DIR").is_none() {
-        return;
+/// Returns what each app gave (an app of the installation that is not in the catalog is left alone).
+pub fn reapply_installed(cfg: &crate::policy::Config, peer: &Peer, gc: GrantContext, except: Option<&str>) -> Vec<(String, Result<Checked, String>)> {
+    if touches_real_installation(peer) {
+        return Vec::new();
     }
+    let mut out = Vec::new();
     for id in instalados(peer).into_iter().filter(|id| Some(id.as_str()) != except) {
-        if let Some(app) = catalogo().app(&id) {
-            if let Err(e) = aplicar_permissoes(cfg, peer, app, gc) {
+        if let Some(app) = catalogo().app(&id).filter(|a| a.id == id) {
+            let r = aplicar_permissoes(cfg, peer, app, gc);
+            if let Err(e) = &r {
                 eprintln!("kalangod: {id}: {e}");
             }
+            out.push((id, r));
         }
     }
+    out
+}
+
+/// A test session without a test installation of Flatpak (`KALANGO_CRAFT_FLATPAK_USER_DIR`): the flatpak kalangod runs
+/// is the real installation's (`flatpak_como`), so what is made again by itself (not asked for by the person) is not.
+fn touches_real_installation(peer: &Peer) -> bool {
+    peer.home != peer.passwd_home && std::env::var_os("KALANGO_CRAFT_FLATPAK_USER_DIR").is_none()
 }
 
 // ------------------------------------------------------------------------------------------------ what was granted
@@ -2082,6 +2113,47 @@ done
         rpc_with(&cfg, &p, &json!({"acao": "definir", "app": "filmcraft", "pastas": ["~/Estudio"]}), gc).unwrap();
         assert!(!last_override("ai.storyteller.anicraft").contains("Estudio/b"), "{}", last_override("ai.storyteller.anicraft"));
         assert_eq!(estado_do_app(&cfg, p.uid, "ai.storyteller.anicraft")["recusadas"][0]["pasta"], "~/Estudio/b");
+        std::env::remove_var("KALANGO_FLATPAK");
+        std::env::remove_var("KALANGO_CRAFT_FLATPAK_USER_DIR");
+    }
+
+    #[test]
+    fn the_session_start_makes_each_app_again_on_its_own_and_a_test_session_leaves_the_real_one_alone() {
+        let _g = AMBIENTE.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("casa");
+        std::fs::create_dir_all(home.join("Videos")).unwrap();
+        // a stand-in flatpak: FilmCraft, an app the catalog does not know and AniCraft are installed; FilmCraft's reset fails
+        let log = d.path().join("flatpak.log");
+        let fake = d.path().join("flatpak");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {}\ncase \"$*\" in *\"list --app\"*) echo ai.storyteller.filmcraft; echo ai.storyteller.desconhecido; echo ai.storyteller.anicraft;; *\"--reset ai.storyteller.filmcraft\"*) echo no >&2; exit 1;; esac\nexit 0\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::env::set_var("KALANGO_FLATPAK", &fake);
+        std::env::remove_var("KALANGO_CRAFT_FLATPAK_USER_DIR");
+        let (cfg, p) = pessoa(&home, &d.path().join("estado"));
+        let overrides = || std::fs::read_to_string(&log).unwrap_or_default().lines().filter(|l| l.starts_with("override")).map(str::to_string).collect::<Vec<_>>();
+        // a test session without a test installation: nothing is made again by itself, nor before opening
+        assert_eq!(rpc(&cfg, &p, &json!({"acao": "reaplicar"})).unwrap()["apps"], json!([]));
+        assert_eq!(rpc(&cfg, &p, &json!({"acao": "abrir", "app": "anicraft"})).unwrap()["aplicado"], false);
+        assert!(overrides().is_empty(), "{:?}", overrides());
+        // with a test installation: each app on its own; the one that fails does not stop the next; the unknown one is left alone
+        std::env::set_var("KALANGO_CRAFT_FLATPAK_USER_DIR", d.path().join("instalacao"));
+        let r = rpc(&cfg, &p, &json!({"acao": "reaplicar"})).unwrap();
+        let apps = r["apps"].as_array().unwrap();
+        let ids: Vec<&str> = apps.iter().map(|a| a["app"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["ai.storyteller.filmcraft", "ai.storyteller.anicraft"], "{r}");
+        assert!(apps[0]["erro"].is_string() && apps[1]["erro"].is_null(), "{r}");
+        assert!(overrides().iter().any(|l| l.contains("--unshare=network") && l.ends_with("ai.storyteller.anicraft")), "{:?}", overrides());
+        assert!(!overrides().iter().any(|l| l.contains("desconhecido")), "{:?}", overrides());
+        // and right before opening: made again
+        assert_eq!(rpc(&cfg, &p, &json!({"acao": "abrir", "app": "anicraft"})).unwrap()["aplicado"], "ai.storyteller.anicraft");
         std::env::remove_var("KALANGO_FLATPAK");
         std::env::remove_var("KALANGO_CRAFT_FLATPAK_USER_DIR");
     }

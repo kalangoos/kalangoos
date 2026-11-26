@@ -3539,14 +3539,7 @@ impl Arquivos {
             }
             return;
         }
-        // (a file a creative app opens by default: kalangod checks the app's folders first)
-        if let Some(id) = crate::apps::default_creative_for(&gio::File::for_path(p)) {
-            crate::criativos::open_creative(&id, vec![gio::File::for_path(p)]);
-            gtk::RecentManager::default().add_item(&gio::File::for_path(p).uri());
-            return;
-        }
-        let l = gtk::FileLauncher::new(Some(&gio::File::for_path(p)));
-        l.launch(Some(&self.janela), None::<&gio::Cancellable>, |_| {});
+        crate::apps::launch_file(&gio::File::for_path(p), Some(self.janela.upcast_ref()));
         gtk::RecentManager::default().add_item(&gio::File::for_path(p).uri());
     }
 

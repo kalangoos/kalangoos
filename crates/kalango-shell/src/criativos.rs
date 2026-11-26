@@ -1641,7 +1641,7 @@ pub fn open_creative(id: &str, files: Vec<gio::File>) {
     let id = id.to_string();
     glib::spawn_future_local(async move {
         let i = id.clone();
-        match gio::spawn_blocking(move || permissoes(&i)).await {
+        match gio::spawn_blocking(move || check_before_opening(&i)).await {
             Ok(Ok(dropped)) => tell_dropped(&id, &dropped),
             Ok(Err(e)) => eprintln!("kalango-shell: {id}: {e}"),
             Err(_) => eprintln!("kalango-shell: {id}: the permissions were not checked"),
@@ -1668,24 +1668,38 @@ pub fn open_creative(id: &str, files: Vec<gio::File>) {
 pub fn refresh_permissions_at_start() {
     glib::spawn_future_local(async {
         for _ in 0..10 {
-            let r = gio::spawn_blocking(|| {
-                let mut all = Vec::new();
-                for id in instalar::instalados() {
-                    let v = crate::servicos::kalangod_rpc("kalango/craft", serde_json::json!({"acao": "aplicar", "app": id}))?;
-                    all.push((id, newly_dropped(&v)));
-                }
-                Ok::<_, String>(all)
-            })
-            .await;
-            if let Ok(Ok(all)) = r {
-                for (id, d) in all {
-                    tell_dropped(&id, &d);
+            // (kalangod does each app on its own: one it cannot do is said in "erro" and does not stop the others)
+            let r = gio::spawn_blocking(|| crate::servicos::kalangod_rpc("kalango/craft", serde_json::json!({"acao": "reaplicar"}))).await;
+            if let Ok(Ok(v)) = r {
+                for a in v["apps"].as_array().into_iter().flatten() {
+                    let id = a["app"].as_str().unwrap_or("");
+                    if let Some(e) = a["erro"].as_str() {
+                        eprintln!("kalango-shell: apps criativos: {id}: {e}");
+                    }
+                    tell_dropped(id, &newly_dropped(a));
                 }
                 return;
             }
+            // (kalangod is not answering yet: again in a while)
             glib::timeout_future_seconds(30).await;
         }
     });
+}
+
+/// Right before the shell opens a creative app: kalangod checks its folders again and makes its permissions again
+/// (`abrir`; without kalangod, as `permissoes`, the app sees no folder). Returns the folders it has just left out.
+fn check_before_opening(id: &str) -> Result<Vec<(String, String)>, String> {
+    let r = crate::servicos::kalangod_rpc("kalango/craft", serde_json::json!({"acao": "abrir", "app": id}));
+    sem_kalangod(id, r)
+}
+
+/// `tell_dropped` from another thread (the install and the restore run outside the interface's thread).
+fn tell_dropped_later(id: &str, dropped: Vec<(String, String)>) {
+    if dropped.is_empty() {
+        return;
+    }
+    let id = id.to_string();
+    glib::MainContext::default().invoke(move || tell_dropped(&id, &dropped));
 }
 
 /// The folders kalangod has just left out of an app's permissions (`novas_recusas` of `aplicar`): (folder, why).
@@ -1844,7 +1858,7 @@ fn trabalhar(app: &App, _anuncio: Option<Anuncio>, t: &Trabalho, prontas: &Pront
 fn instalar_preparado(app: &App, pr: &Preparado) -> Result<(), Erro> {
     instalar::instalar_commit(app, &pr.repo, &pr.commit, &pr.versao, &pr.digest)?;
     crate::servicos::kalangod_rpc("kalango/craft", serde_json::json!({"acao": "instalado", "app": app.id, "commit": pr.commit})).map_err(Erro::Flatpak)?;
-    permissoes(&app.id).map(drop).map_err(Erro::Flatpak)
+    permissoes(&app.id).map(|d| tell_dropped_later(&app.id, d)).map_err(Erro::Flatpak)
 }
 
 fn voltar_ao_anterior(app: &App) -> Result<String, String> {
@@ -1855,7 +1869,9 @@ fn voltar_ao_anterior(app: &App) -> Result<String, String> {
     let (commit, versao, repo) = (v["commit"].as_str().unwrap_or(""), v["versao"].as_str().unwrap_or(""), PathBuf::from(v["repo"].as_str().unwrap_or("")));
     instalar::instalar_commit(app, &repo, commit, versao, "").map_err(|e| e.to_string())?;
     crate::servicos::kalangod_rpc("kalango/craft", serde_json::json!({"acao": "voltou", "app": app.id, "commit": commit}))?;
-    let _ = permissoes(&app.id);
+    if let Ok(d) = permissoes(&app.id) {
+        tell_dropped_later(&app.id, d);
+    }
     Ok(versao.to_string())
 }
 

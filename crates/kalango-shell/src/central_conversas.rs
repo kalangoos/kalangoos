@@ -2528,13 +2528,7 @@ impl Conversas {
                 abrir.set_valign(Align::Center);
                 let p2 = path.clone();
                 abrir.connect_clicked(move |b| {
-                    // (a file a creative app opens by default: kalangod checks the app's folders first)
-                    if let Some(id) = crate::apps::default_creative_for(&gio::File::for_path(&p2)) {
-                        crate::criativos::open_creative(&id, vec![gio::File::for_path(&p2)]);
-                        return;
-                    }
-                    let l = gtk::FileLauncher::new(Some(&gio::File::for_path(&p2)));
-                    l.launch(b.root().and_downcast::<gtk::Window>().as_ref(), None::<&gio::Cancellable>, |_| {});
+                    crate::apps::launch_file(&gio::File::for_path(&p2), b.root().and_downcast::<gtk::Window>().as_ref());
                 });
                 r.append(&abrir);
             }

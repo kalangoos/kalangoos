@@ -346,6 +346,29 @@ pub fn open_default(file: &gio::File, ctx: Option<&gio::AppLaunchContext>) -> Re
     gio::AppInfo::launch_default_for_uri(&file.uri(), ctx).map_err(|e| e.to_string())
 }
 
+/// Opens a URI with its default app: a local file goes through `open_default` (a creative app is checked first).
+pub fn open_uri(uri: &str, ctx: Option<&gio::AppLaunchContext>) -> Result<(), String> {
+    let f = gio::File::for_uri(uri);
+    if f.is_native() {
+        return open_default(&f, ctx);
+    }
+    gio::AppInfo::launch_default_for_uri(uri, ctx).map_err(|e| e.to_string())
+}
+
+/// Opens a file as `gtk::FileLauncher` does (the app the person chose for its type, asking when there is none): a
+/// creative app goes through kalangod first.
+pub fn launch_file(file: &gio::File, parent: Option<&gtk::Window>) {
+    if let Some(id) = default_creative_for(file) {
+        crate::criativos::open_creative(&id, vec![file.clone()]);
+        return;
+    }
+    gtk::FileLauncher::new(Some(file)).launch(parent, None::<&gio::Cancellable>, |r| {
+        if let Err(e) = r {
+            eprintln!("kalango-shell: abrir: {e}");
+        }
+    });
+}
+
 /// Starts an app from its desktop entry, with `files` if any, without what the shell itself preloads.
 pub fn launch_info(info: &gio::DesktopAppInfo, files: &[gio::File]) -> Result<(), String> {
     let ctx = gtk::gdk::Display::default().map(|d| d.app_launch_context());
@@ -591,7 +614,7 @@ mod icon_tests {
         };
         let criativos = include_str!("criativos.rs");
         let open = body(criativos, "pub fn open_creative");
-        assert!(open.find("permissoes(&i)").unwrap() < open.find("launch_info(&d, &files)").unwrap(), "kalangod first, then the app");
+        assert!(open.find("check_before_opening(&i)").unwrap() < open.find("launch_info(&d, &files)").unwrap(), "kalangod first, then the app");
         let perms = body(criativos, "pub fn permissoes");
         assert!(perms.contains("\"acao\": \"aplicar\""), "{perms}");
         // the helpers send a creative app there before anything else starts it
@@ -605,28 +628,37 @@ mod icon_tests {
             assert!(b.find(check).unwrap() < b.find(start).unwrap(), "{f}");
             assert!(b.contains("open_creative("), "{f}");
         }
-        // and no other place starts an app with files, a launcher or a local file's default app by itself
-        let files: [(&str, &str); 11] = [
-            ("grade.rs", include_str!("grade.rs")),
-            ("superficies.rs", include_str!("superficies.rs")),
-            ("arquivos_dialogos.rs", include_str!("arquivos_dialogos.rs")),
-            ("desktop_files.rs", include_str!("desktop_files.rs")),
-            ("arquivos.rs", include_str!("arquivos.rs")),
-            ("start_menu.rs", include_str!("start_menu.rs")),
-            ("shelf.rs", include_str!("shelf.rs")),
-            ("widgets/geral.rs", include_str!("widgets/geral.rs")),
-            ("screenshot_tool.rs", include_str!("screenshot_tool.rs")),
-            ("central_conversas.rs", include_str!("central_conversas.rs")),
-            ("app_store.rs", include_str!("app_store.rs")),
-        ];
-        for (name, src) in files {
-            for bad in [".launch(&[", "launch_default_for_uri(&gio::File::for_path", "launch_default_for_uri(&gtk::gio::File::for_path"] {
-                assert!(!src.contains(bad), "{name} starts an app by itself ({bad}): use apps::launch_with or apps::open_default");
-            }
-            if let Some(i) = src.find("FileLauncher::new") {
-                let before = &src[i.saturating_sub(400)..i];
-                assert!(before.contains("default_creative_for("), "{name}: a FileLauncher without the creative apps' check before it");
+        let opens = body(criativos, "fn check_before_opening");
+        assert!(opens.contains("\"acao\": \"abrir\""), "{opens}");
+        assert!(body(criativos, "pub fn refresh_permissions_at_start").contains("\"acao\": \"reaplicar\""));
+        for (f, check) in [("pub fn open_uri", "open_default(&f"), ("pub fn launch_file", "default_creative_for(file)")] {
+            let b = body(apps, f);
+            assert!(b.contains(check), "{f}");
+        }
+        // and no other source file of the shell starts an app, a launcher or a file's or a URI's default app by itself:
+        // every one goes through the helpers above (only the help's link to the community, a web page, uses UriLauncher)
+        let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        let mut seen = 0;
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|x| x != "rs") || path.ends_with("src/apps.rs") {
+                    continue;
+                }
+                seen += 1;
+                let src = std::fs::read_to_string(&path).unwrap();
+                for bad in [".launch(&[", "launch_default_for_uri(", "launch_uris", "FileLauncher::new", "launch_default_for_uri_async"] {
+                    assert!(!src.contains(bad), "{} starts an app by itself ({bad}): use apps::launch_with, open_default, open_uri or launch_file", path.display());
+                }
+                if src.contains("UriLauncher::new") {
+                    assert!(path.ends_with("src/help_app.rs"), "{}: UriLauncher outside the help's web link", path.display());
+                }
             }
         }
+        assert!(seen > 100, "only {seen} files looked at");
     }
 }

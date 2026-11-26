@@ -577,8 +577,7 @@ impl Agora {
                     (trf("{file} mentions “{event}” (line {line})", &[("file", nome.clone()), ("event", e.title.clone()), ("line", linha.to_string())]),
                      trf("Open {file}", &[("file", nome)]),
                      Rc::new(move || {
-                         let uri = gtk::gio::File::for_path(&caminho).uri();
-                         let _ = gtk::gio::AppInfo::launch_default_for_uri(&uri, gtk::gdk::Display::default().map(|d| d.app_launch_context()).as_ref());
+                         let _ = crate::apps::open_default(&gtk::gio::File::for_path(&caminho), gtk::gdk::Display::default().map(|d| d.app_launch_context()).as_ref().map(|c| c.upcast_ref()));
                      }))
                 }
                 None => (String::new(), tr("Open calendar").to_string(), Rc::new(|| {

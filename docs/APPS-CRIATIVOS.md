@@ -161,9 +161,12 @@ cada app com o nível que vale), `craft.chamar` (`app`, `ferramenta`, `argumento
   (o override de antes é apagado mesmo assim), fica em `recusadas` no estado e vai para a linha do tempo da pessoa
   (`craft.pasta_recusada`) com o porquê; o shell avisa também, numa notificação. Nunca é trocada por outra nem concedida
   em silêncio. O kalangod refaz as permissões antes de iniciar o servidor MCP, quando a Central pede, quando os agentes
-  ganham uma pasta de projeto ou de tarefa e quando outro app ganha pastas; o shell pede ao entrar na sessão (um
-  override de antes desta conferência não sobrevive) e logo antes de abrir um app criativo — pela Central, pelo
-  lançador, pela doca, por "Abrir com", por um arquivo aberto em Arquivos ou na área de trabalho com o app padrão.
+  ganham uma pasta de projeto ou de tarefa e quando outro app ganha pastas; o shell pede ao entrar na sessão
+  (`reaplicar`: cada app por si, um que falha não para os outros; um override de antes desta conferência não sobrevive)
+  e logo antes de abrir um app criativo de qualquer lugar do shell (`abrir`: lançador, doca, Central, busca, "Abrir
+  com", um arquivo ou link aberto com o app padrão). Todo lançamento do shell passa por `apps.rs`, e um teste confere
+  que nenhum outro arquivo abre apps por conta própria. Numa sessão de teste sem instalação de teste do Flatpak
+  (`KALANGO_CRAFT_FLATPAK_USER_DIR`), o que é refeito por si só não mexe na instalação real.
   Até um `XDG_PICTURES_DIR="/"` escrito no `user-dirs.dirs` é recusado.
 
 ### Níveis por ferramenta

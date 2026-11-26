@@ -1332,7 +1332,7 @@ fn local_model_label() -> String {
 fn open_uri(path_or_url: &str) {
     let uri = if path_or_url.contains("://") { path_or_url.to_string() } else { gio::File::for_path(path_or_url).uri().to_string() };
     let ctx = gdk::Display::default().map(|d| d.app_launch_context());
-    let _ = gio::AppInfo::launch_default_for_uri(&uri, ctx.as_ref());
+    let _ = crate::apps::open_uri(&uri, ctx.as_ref().map(|c| c.upcast_ref()));
 }
 
 /// A context chip (design "Chip de contexto"): icon, text and an × that removes it.

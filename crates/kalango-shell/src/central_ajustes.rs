@@ -665,8 +665,7 @@ impl Ajustes {
         });
         editor.connect_clicked(move |b| {
             let _ = std::fs::create_dir_all(pasta());
-            let l = gtk::FileLauncher::new(Some(&gio::File::for_path(pasta())));
-            l.launch(b.root().and_downcast::<gtk::Window>().as_ref(), None::<&gio::Cancellable>, |_| {});
+            crate::apps::launch_file(&gio::File::for_path(pasta()), b.root().and_downcast::<gtk::Window>().as_ref());
         });
         let w = Rc::downgrade(&a);
         a.p_chave.connect_state_set(move |_, on| {
@@ -692,16 +691,14 @@ impl Ajustes {
                 let _ = std::fs::create_dir_all(p.parent().unwrap());
                 let _ = std::fs::write(&p, "");
             }
-            let l = gtk::FileLauncher::new(Some(&gio::File::for_path(&p)));
-            l.launch(b.root().and_downcast::<gtk::Window>().as_ref(), None::<&gio::Cancellable>, |_| {});
+            crate::apps::launch_file(&gio::File::for_path(&p), b.root().and_downcast::<gtk::Window>().as_ref());
         });
         let w = Rc::downgrade(&a);
         d_editar.connect_clicked(move |b| {
             let Some(a) = w.upgrade() else { return };
             let esc = a.escolhido.borrow().clone();
             if let Some(nome) = esc.strip_prefix("ext:") {
-                let l = gtk::FileLauncher::new(Some(&gio::File::for_path(pasta().join(format!("{nome}.toml")))));
-                l.launch(b.root().and_downcast::<gtk::Window>().as_ref(), None::<&gio::Cancellable>, |_| {});
+                crate::apps::launch_file(&gio::File::for_path(pasta().join(format!("{nome}.toml"))), b.root().and_downcast::<gtk::Window>().as_ref());
             }
         });
         let w = Rc::downgrade(&a);
