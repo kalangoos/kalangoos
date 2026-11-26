@@ -5,23 +5,85 @@ Todas as mudanças relevantes do KalangoOS ficam aqui. O formato segue o
 [kalangoos/kalangoos](https://github.com/kalangoos/kalangoos/pulls?q=is%3Apr+is%3Amerged). As versões 0.x são
 prévias de desenvolvimento ([docs/LANCAMENTO.md](docs/LANCAMENTO.md)).
 
-## [Não lançado]
+## [0.1.2] — 2026-11-26
+
+Prévia técnica, como a 0.1.0 e a 0.1.1. Traz a interface em nove idiomas, os Apps criativos instaláveis a pedido, o
+gatilho de entrada pela internet e a criação de fluxos pelo chat por etapas para o modelo pequeno. O Kalango Remote e o
+Kalango Audio fixados na esteira de lançamento sobem para os commits com os mesmos idiomas; o que o `kalangod` exige do
+Remote não mudou desde a 0.1.1 (o commit novo do Remote só traz catálogos de idioma).
 
 ### Mudanças de padrão
 
-- **Fluxos pelo chat: `fluxos.criar` (o JSON inteiro) deixou de ser oferecido ao modelo por padrão.** Um fluxo novo nasce
-  só pelas ferramentas de rascunho (`fluxos.planejar`, `fluxos.adicionar_bloco`, `fluxos.ligar`, `fluxos.ajustar`,
+- **Fluxos pelo chat: `fluxos.criar` (o JSON inteiro) deixou de ser oferecido ao modelo por padrão** (#61). Um fluxo novo
+  nasce só pelas ferramentas de rascunho (`fluxos.planejar`, `fluxos.adicionar_bloco`, `fluxos.ligar`, `fluxos.ajustar`,
   `fluxos.concluir`), que leem os passos com o modelo de decisão d1 e sempre terminam na aprovação da pessoa.
   `KALANGOD_FLUXOS_AUTORIA=classico` (só o JSON) ou `=etapas` (as duas formas) restauram o comportamento anterior;
   `fluxos.editar` continua disponível. Detalhes e medições: [docs/FLUXOS-NO-CHAT.md](docs/FLUXOS-NO-CHAT.md).
 - **Pedidos para criar um fluxo começam por `fluxos.planejar`** (a primeira chamada do modelo é forçada) e o motor lembra
-  de chamar `fluxos.concluir` quando o modelo tenta responder com um rascunho aberto. Nada é forçado para ações que a
+  de chamar `fluxos.concluir` quando o modelo tenta responder com um rascunho aberto (#61). Nada é forçado para ações que a
   pessoa pôs em "nunca" ou desligou, e a criação continua pedindo aprovação.
 
 ### Adicionado
 
+- **Idiomas** (#64): a interface passa a existir em nove idiomas, os do site: English, Português (Brasil), Español,
+  Français, Italiano, Deutsch, 日本語, Русский e 简体中文. O idioma vem do sistema (`LANGUAGE`, `LC_*`, `LANG`), e o
+  instalador e as Configurações › Idioma o escolhem. A imagem leva a fonte Noto Sans CJK (peso regular).
+- **Aviso sobre a qualidade:** os sete catálogos novos (es, fr, it, de, ja, ru, zh_CN) foram **gerados por IA e
+  nenhuma pessoa nativa os revisou**. Os testes conferem a forma (chaves, marcadores, atalhos, caracteres ocultos,
+  palavras de consentimento), não o sentido nem o tom. As Configurações › Idioma dizem isso na tela. Como ajudar:
+  [docs/i18n/REVISAO.md](docs/i18n/REVISAO.md).
+- O texto que o modelo de IA lê (instruções, recusas, limites) fica em inglês nos idiomas novos, e as palavras de
+  outros idiomas que trazem ferramentas para o pedido casam por palavra, não por trecho.
+- **Gatilho de entrada pela internet** (#60): um endereço público e assinado (HMAC-SHA256) que inicia um fluxo, por um
+  túnel da Cloudflare aberto só depois de uma aprovação. Ferramentas no `kalangod`, a tela de túneis em Ajustes e o
+  gatilho no editor de fluxos do shell. O receptor e o túnel moram no serviço de fluxos da pessoa (`kalango-fluxosd`, do
+  Kalango Fluxos). Detalhes e modelo de ameaça: [docs/GATILHO-INTERNET.md](docs/GATILHO-INTERNET.md).
+- **Apps criativos** (#62): os 17 apps do projeto Craft podem ser instalados pela Central de Apps, a pedido, e usados
+  pelos agentes pelo servidor MCP de cada um, com níveis (confirmar ou aprovar) e cartão de aprovação. O download confere a
+  assinatura do projeto; a instalação é por Flatpak, com permissões (override) que negam as pastas sensíveis. Os apps
+  **não vão na ISO**. Um override global amplo do Flatpak feito pela própria pessoa (por exemplo no Flatseal) bloqueia o
+  uso dos apps pelos agentes até ser removido. Detalhes: [docs/APPS-CRIATIVOS.md](docs/APPS-CRIATIVOS.md).
 - `agentes.criar` e `agentes.editar` aceitam `output_fields` (os campos da saída estruturada de um agente), para que um
-  passo seguinte do fluxo leia cada campo.
+  passo seguinte do fluxo leia cada campo (#61).
+
+### Segurança
+
+- **Apps criativos: uma pasta concedida não pode mais ser trocada por um link** (#65). Uma pasta escolhida para um app
+  virava um override permanente do Flatpak; quem escrevesse num ancestral podia trocá-la por um link para `~/.ssh`, e,
+  quando a pasta deixava de passar, o override antigo continuava valendo. Agora a escolha recusa caminhos com link,
+  pastas dentro das pastas onde os agentes escrevem, pastas de outro app criativo e ancestrais que outros usuários podem
+  mudar (permissões ou ACL), guarda a identidade (dispositivo, inode) de cada pasta até a casa e confere tudo de novo a
+  cada vez que refaz o override: ao entrar na sessão, antes de o shell abrir um app criativo por qualquer caminho, antes
+  do servidor MCP e quando quem escreve em volta muda. Uma pasta que mudou sai do override e vai para a Linha do tempo.
+- **Gatilho pela internet: o cartão para ligar um gatilho diz o que ele é** (#65). O pedido do serviço mostrava um cartão
+  genérico ("quem tem a chave…") mesmo para um gatilho público; agora os dois caminhos mostram assinatura (NENHUMA =
+  público), nível e endereço, e depois do sim o `kalangod` lê o gatilho de novo e só confirma se ele ainda é o do cartão.
+
+### Esteira de lançamento e repositório
+
+- O Kalango Remote fixado sobe para `e1795114` (interface nos mesmos nove idiomas, kalangoos/kalango-remote#14) e o
+  Kalango Audio para `3e68e343` (kalangoos/kalango-audio#9, só idiomas). O isolamento de voz do Audio
+  (kalangoos/kalango-audio#10) fica para a próxima versão.
+- A ação `preparar` da CI instala o Flatpak, para que o teste do override real dos Apps criativos rode (#63).
+- Saíram dois restos de mescla esquecidos no repositório (`server.rs.orig` e `pt_BR.json.orig`).
+- O Kalango VirtualDesk e o Kalango Fluxos continuam fora da ISO: a leitura dos repositórios privados pela esteira (o
+  GitHub App só de leitura) ainda não está ligada e fica fora da 0.1.2.
+
+### Problemas conhecidos da 0.1.2
+
+- Traduções de IA sem revisão por pessoas nativas; sem conferência visual das telas em cada idioma, nem de datas,
+  números e glifos CJK na ISO instalada; o modelo local não foi testado com conversas nos idiomas novos.
+- Criar fluxos pelo chat com o modelo pequeno acerta cerca de **2 em 3** pedidos novos (67 % no conjunto C; 64 % e 62 %
+  nos conjuntos D e E, mais recentes), abaixo do alvo de 90 %; por isso o `fluxos.criar` ficou desligado por padrão.
+- O serviço de fluxos (`kalango-fluxosd`) não está na ISO, então o gatilho pela internet e os fluxos não rodam na imagem
+  publicada. O gatilho nunca foi exercitado com um túnel real da Cloudflare, e o serviço ainda ignora o `esperado` da
+  resposta de `autorizar_ampliacao` (a recusa acontece no `kalangod`).
+- Apps criativos: a instalação ponta a ponta pelo `kalangod` (o runtime de 283 MB), o modo em janela, a atualização
+  automática e abrir os 17 apps com as novas negações não foram validados; o detalhe da Central ainda não marca uma pasta
+  recusada (o aviso chega por notificação e pela Linha do tempo).
+- O teste da ISO na esteira não exercita a tela de aprovação gráfica nem a tela do Remote; elas foram corrigidas na 0.1.1,
+  e as listas do `kalangod` que as liberam não mudaram desde então.
+- Continuam valendo os problemas conhecidos da 0.1.1 e as limitações da 0.1.0.
 
 ## [0.1.1] — 2026-11-25
 
@@ -84,20 +146,6 @@ recusado por ser depurável) e o pin do Remote na esteira de lançamento sobe ju
 - `imagem/validar-hardware.sh` (relatório sem dados pessoais, com testes em `imagem/testar-validar-hardware.sh`),
   `docs/VALIDACAO-HARDWARE.md` e o formulário de issue "Teste em hardware real".
 - A imagem mascara `NetworkManager-wait-online.service` (nada nela espera "rede no ar"; falhava depois de ~60 s sem cabo).
-
-## [Não lançado]
-
-### Idiomas
-
-- A interface passa a existir em nove idiomas, os do site: English, Português (Brasil), Español, Français,
-  Italiano, Deutsch, 日本語, Русский e 简体中文. O idioma vem do sistema (`LANGUAGE`, `LC_*`, `LANG`), e o instalador
-  e as Configurações › Idioma o escolhem.
-- **Aviso sobre a qualidade:** os sete catálogos novos (es, fr, it, de, ja, ru, zh_CN) foram **gerados por IA e
-  nenhuma pessoa nativa os revisou**. Os testes conferem a forma (chaves, marcadores, atalhos, caracteres ocultos,
-  palavras de consentimento), não o sentido nem o tom. As Configurações › Idioma dizem isso na tela. Como ajudar:
-  [docs/i18n/REVISAO.md](docs/i18n/REVISAO.md).
-- O texto que o modelo de IA lê (instruções, recusas, limites) fica em inglês nos idiomas novos, e as palavras de
-  outros idiomas que trazem ferramentas para o pedido casam por palavra, não por trecho.
 
 ## [0.1.0] — 2026-11-22
 
