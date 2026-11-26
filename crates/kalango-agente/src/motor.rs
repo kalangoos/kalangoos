@@ -676,10 +676,75 @@ pub struct Agent {
     /// what the traces keep of this conversation between turns: its id, what it holds from outside (`external:web`…,
     /// `kalango.taint`) and whether a secret came into it (`kalango.secret_in_context`)
     trace_conv: crate::traces::Conversation,
-    /// the character ranges of the next request that the person pasted (the shell says so, see request.rs): taken by `ask`
-    pub pasted: Vec<(usize, usize)>,
-    /// the request being answered had pasted text (its message in the archive is marked: `context::PASTED_KEY`)
-    request_pasted: bool,
+    /// what the person pasted into the next request (the shell says so, see request.rs) and whether the request being
+    /// answered had any: see `PasteMarks`
+    pub pasted: PasteMarks,
+}
+
+/// The person's pasted text across one request: the shell gives its ranges before the request (`pending`); when the
+/// request starts they go to the trace and the request's message in the archive is marked (`context::PASTED_KEY`), so
+/// later turns, and the conversation picked up again, still know it was not the person's own words.
+#[derive(Debug, Default)]
+pub struct PasteMarks {
+    /// the character ranges of the next request that the person pasted
+    pub pending: Vec<(usize, usize)>,
+    /// the request being answered had pasted text
+    current: bool,
+}
+
+impl PasteMarks {
+    /// A request starts: its pasted ranges (for the trace), taken; from now on `message` marks it.
+    pub fn start(&mut self) -> Vec<(usize, usize)> {
+        let ranges = std::mem::take(&mut self.pending);
+        self.current = !ranges.is_empty();
+        ranges
+    }
+
+    /// The request's message for the archive: marked when part of it was pasted.
+    pub fn message(&self, request: &str) -> Value {
+        let mut m = json!({"role": "user", "content": request});
+        if self.current {
+            m[context::PASTED_KEY] = json!(true);
+        }
+        m
+    }
+}
+
+/// What a kept conversation brings back when it is picked up in a new process (`Agent::continuar`, without the model
+/// or kalangod, so it can be tested): its messages (not the system prompt: the current one stays), what the person said
+/// (the taint check compares against it), the tools' results that came from outside (for the taint check), and, for
+/// the traces, its id, its turns, what it holds from outside (a pasted request, a page read) and a secret in it.
+pub struct PickedUp {
+    pub messages: Vec<Value>,
+    pub person_text: String,
+    /// (tool, its result) for every result in an envelope of outside data
+    pub outside: Vec<(String, String)>,
+    pub conv: crate::traces::Conversation,
+}
+
+pub fn picked_up(saved: Vec<Value>, id: &str) -> PickedUp {
+    let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut p = PickedUp { messages: Vec::new(), person_text: String::new(), outside: Vec::new(), conv: crate::traces::Conversation::new() };
+    p.conv.session = id.to_string();
+    for m in saved.into_iter().filter(|m| m["role"] != "system") {
+        if m["role"] == "user" && m.get(context::NOTE_KEY).is_none() {
+            p.conv.turns += 1;
+            p.person_text.push('\n');
+            p.person_text.push_str(m["content"].as_str().unwrap_or(""));
+        }
+        for c in m["tool_calls"].as_array().into_iter().flatten() {
+            names.insert(c["id"].as_str().unwrap_or("").to_string(), tool_name(c["function"]["name"].as_str().unwrap_or("")));
+        }
+        // what tools read before stays external content for the taint check (a new process forgot it)
+        if m["role"] == "tool" && m["content"].as_str().is_some_and(|c| c.contains("<<<DADOS EXTERNOS")) {
+            let tool = names.get(m["tool_call_id"].as_str().unwrap_or("")).cloned().unwrap_or_default();
+            p.outside.push((tool, m["content"].as_str().unwrap_or("").to_string()));
+        }
+        p.messages.push(m);
+    }
+    // (for the traces: a pasted request, what came from outside and a secret tool's result mark every later turn)
+    p.conv.restore(&p.messages);
+    p
 }
 
 impl Agent {
@@ -712,7 +777,7 @@ impl Agent {
         Ok(Agent { kalangod, model, tools, messages, person_text: String::new(), last_request: String::new(), draft_open: false, draft_nudges: 0, force_plan: false, force_conclude: false, no_block: false, unsupported_named: false, flow_created: false, external: Vec::new(), external_web: Vec::new(), allow_web: true, next_ask: 0, d1_auto_in_request: 0, d1_conversation_tainted: false, d1_read_in_request: false, base_prompt, moves: Default::default(), external_at_request: 0,
             conectores: crate::conectores::abrir_todos(), conectores_assinatura: crate::conectores::assinatura(), desligadas: Vec::new(), conversa: None, autonomia: None, escopo: Escopo::default(), simular: false, buscas_seguidas: 0, resultados_busca: Vec::new(), fontes: String::new(), conferida: false, buscas: 0, consultas: Vec::new(), lidas: 0, plan: Vec::new(), plan_done: 0, nome: None,
             context: context::State::default(), n_ctx, search: false, largest_prompt: 0, tail_note: String::new(),
-            trace: crate::traces::Turn::disabled(), trace_conv: crate::traces::Conversation::new(), pasted: Vec::new(), request_pasted: false })
+            trace: crate::traces::Turn::disabled(), trace_conv: crate::traces::Conversation::new(), pasted: PasteMarks::default() })
     }
 
     /// The agent's name as the person sees it (the screen indicator and the approval card say it).
@@ -788,10 +853,10 @@ impl Agent {
     pub fn ask(&mut self, request: &str, on_event: &dyn Fn(Event), confirm: &mut dyn FnMut(u64) -> Answer) -> Result<(), String> {
         // the turn is recorded for Kalango Train when the person allows it and its daemon is there (traces.rs); else this
         // is the plain call
-        self.request_pasted = !self.pasted.is_empty();
+        let pasted = self.pasted.start();
         self.trace = crate::traces::Turn::begin_default(crate::traces::Begin {
             session: &self.trace_conv.session, agent: &self.agent_name_id(), index: self.trace_conv.turns, request, tools: &self.tools, local_tools,
-            connectors: self.conectores.iter().map(|c| c.nome.clone()).collect(), taint: self.trace_conv.taint.clone(), secret: self.trace_conv.secret, pasted: std::mem::take(&mut self.pasted),
+            connectors: self.conectores.iter().map(|c| c.nome.clone()).collect(), taint: self.trace_conv.taint.clone(), secret: self.trace_conv.secret, pasted,
         });
         // (a secret tool's result already in the kept history marks the turn, whatever the earlier turns recorded: they may
         // have been paused)
@@ -854,11 +919,7 @@ impl Agent {
         self.no_block = false;
         self.unsupported_named = false;
         self.flow_created = false;
-        let mut asked = json!({"role": "user", "content": request});
-        if self.request_pasted {
-            asked[context::PASTED_KEY] = json!(true);
-        }
-        self.messages.push(asked);
+        self.messages.push(self.pasted.message(request));
         // the actions the person turned off are named (they can change between requests), so the model does not
         // rebuild one out of others; and what it remembers about the person
         let memory = memoria::carregar().ok();
@@ -1438,23 +1499,17 @@ impl Agent {
         let dir = conversas_dir().join(id);
         let _ = std::fs::create_dir_all(&dir);
         if let Some(v) = std::fs::read_to_string(dir.join("mensagens.json")).ok().and_then(|t| serde_json::from_str::<Vec<Value>>(&t).ok()) {
-            let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-            for m in v.into_iter().filter(|m| m["role"] != "system") {
-                if m["role"] == "user" && m.get(context::NOTE_KEY).is_none() {
-                    self.trace_conv.turns += 1;
-                    self.person_text.push('\n');
-                    self.person_text.push_str(m["content"].as_str().unwrap_or(""));
-                }
-                for c in m["tool_calls"].as_array().into_iter().flatten() {
-                    names.insert(c["id"].as_str().unwrap_or("").to_string(), tool_name(c["function"]["name"].as_str().unwrap_or("")));
-                }
-                // what tools read before stays external content for the taint check (a new process forgot it)
-                if m["role"] == "tool" && m["content"].as_str().is_some_and(|c| c.contains("<<<DADOS EXTERNOS")) {
-                    let tool = names.get(m["tool_call_id"].as_str().unwrap_or("")).cloned().unwrap_or_default();
-                    self.remember_external(&tool, m["content"].as_str().unwrap_or(""));
-                }
-                self.messages.push(m);
+            let p = picked_up(v, id);
+            for (tool, content) in &p.outside {
+                self.remember_external(tool, content);
             }
+            self.person_text.push_str(&p.person_text);
+            self.messages.extend(p.messages);
+            self.trace_conv.turns += p.conv.turns;
+            for t in &p.conv.taint {
+                self.trace_conv.add_taint(t);
+            }
+            self.trace_conv.secret |= p.conv.secret;
         }
         if let Some(v) = std::fs::read_to_string(dir.join("contexto.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
             self.context = context::State::from_json(&v).checked(&self.messages[1..]);
@@ -1463,8 +1518,6 @@ impl Agent {
         }
         // (the conversation's turns share its id in the traces)
         self.trace_conv.session = id.to_string();
-        // (for the traces: what came from outside and a secret tool's result in the kept history mark every later turn)
-        self.trace_conv.restore(&self.messages);
         self.conversa = Some(dir);
     }
 

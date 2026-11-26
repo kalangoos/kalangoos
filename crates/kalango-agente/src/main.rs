@@ -1497,7 +1497,7 @@ fn main() {
         // a line can also be a JSON string (a request with line breaks, from the shell)
         let request = match parts {
             Some(r) => {
-                agent.pasted = r.pasted;
+                agent.pasted.pending = r.pasted;
                 r.text
             }
             None => serde_json::from_str::<String>(line.trim()).unwrap_or_else(|_| line.trim().to_string()),
