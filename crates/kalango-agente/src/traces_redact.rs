@@ -25,6 +25,14 @@ pub const DENY_KEYS: &[&str] = &[
     "segredo",
 ];
 
+/// Short key names that are secrets only as a whole word at the end of the key (`pwd`, `db_pass`, `X-Auth`, `userPin`),
+/// never as a piece of another word (`author`, `passageiro`, `mapping`, `spin`).
+pub const SUFFIX_KEYS: &[&str] = &["pwd", "pass", "auth", "pin"];
+
+/// Keys whose value is a secret even when it is a number (a PIN, a numeric password); under the other denied keys a
+/// number is a count (`max_tokens`) and stays.
+const NUMERIC_SECRET_KEYS: &[&str] = &["password", "passwd", "passphrase", "senha", "secret", "segredo"];
+
 /// Keys that hold a whole environment: their value is dropped.
 const ENV_KEYS: &[&str] = &["env", "environ", "environment", "envp", "variaveis_de_ambiente"];
 
@@ -62,7 +70,13 @@ impl Redactor {
 
     fn denied(&self, key: &str) -> bool {
         let k = normalize(key);
-        !k.is_empty() && self.deny.iter().any(|d| k.contains(d.as_str()))
+        !k.is_empty() && (self.deny.iter().any(|d| k.contains(d.as_str())) || suffix_key(key).is_some())
+    }
+
+    /// A denied key whose value goes even when it is a number.
+    fn numbers_are_secret(&self, key: &str) -> bool {
+        let k = normalize(key);
+        NUMERIC_SECRET_KEYS.iter().any(|d| k.contains(d)) || matches!(suffix_key(key), Some("pwd" | "pass" | "pin"))
     }
 
     /// The value with every secret replaced. Objects: a denied key loses its value (unless it is a number or a
@@ -79,7 +93,8 @@ impl Redactor {
                             stats.redacted += 1;
                             return (k.clone(), Value::String("[REDACTED:env]".into()));
                         }
-                        if self.denied(k) && !matches!(x, Value::Number(_) | Value::Bool(_) | Value::Null) {
+                        let kept_number = matches!(x, Value::Number(_)) && !self.numbers_are_secret(k);
+                        if self.denied(k) && !kept_number && !matches!(x, Value::Bool(_) | Value::Null) {
                             stats.redacted += 1;
                             return (k.clone(), Value::String(REDACTED.into()));
                         }
@@ -136,7 +151,8 @@ impl Redactor {
                     // (an environment key with anything but its marker, or a denied key whose value is not a number, a boolean,
                     // empty or a marker: the first pass missed it)
                     let leaked_env = ENV_KEYS.contains(&kn.as_str()) && !x.is_null();
-                    let leaked_secret = self.denied(k) && !matches!(x, Value::Number(_) | Value::Bool(_) | Value::Null);
+                    let kept_number = matches!(x, Value::Number(_)) && !self.numbers_are_secret(k);
+                    let leaked_secret = self.denied(k) && !kept_number && !matches!(x, Value::Bool(_) | Value::Null);
                     if (leaked_env || leaked_secret) && !marker(x) {
                         n += 1;
                     }
@@ -174,6 +190,8 @@ impl Redactor {
         let s = private_keys(s, stats);
         let s = url_credentials(&s, stats);
         let s = self.key_values(&s, stats);
+        let s = phrase_secrets(&s, stats);
+        let s = command_passwords(&s, stats);
         let s = env_dump(&s, stats);
         tokens(&s, stats)
     }
@@ -228,10 +246,15 @@ impl Redactor {
         let mut ranges: Vec<(usize, usize)> = Vec::new();
         let mut i = 0;
         while i < b.len() {
-            if b[i] != b'=' && b[i] != b':' {
+            // `=` and `:`, also written for a URL (`password%3Dvalue`)
+            let sep_len = if b[i] == b'=' || b[i] == b':' {
+                1
+            } else if b[i] == b'%' && b.len() >= i + 3 && matches!(&s[i + 1..i + 3], "3D" | "3d" | "3A" | "3a") {
+                3
+            } else {
                 i += 1;
                 continue;
-            }
+            };
             // the name before the separator (quotes and spaces between them allowed)
             let mut e = i;
             while e > 0 && matches!(b[e - 1], b'"' | b'\'' | b' ' | b'\t' | b'\\') {
@@ -246,7 +269,7 @@ impl Redactor {
                 continue;
             }
             // the value after it
-            let mut vs = i + 1;
+            let mut vs = i + sep_len;
             while vs < b.len() && matches!(b[vs], b' ' | b'\t') {
                 vs += 1;
             }
@@ -279,7 +302,13 @@ impl Redactor {
                     }
                 }
                 None => {
-                    while ve < b.len() && !b[ve].is_ascii_whitespace() && !matches!(b[ve], b'"' | b'\'' | b',' | b';' | b'&' | b')' | b'}' | b'>') {
+                    // (an encoded value ends at an encoded `&`, space or `;` too)
+                    let encoded_end = |at: usize| b[at] == b'%' && b.len() >= at + 3 && matches!(&s[at + 1..at + 3], "26" | "20" | "3B" | "3b");
+                    while ve < b.len()
+                        && !b[ve].is_ascii_whitespace()
+                        && !matches!(b[ve], b'"' | b'\'' | b',' | b';' | b'&' | b')' | b'}' | b'>')
+                        && !encoded_end(ve)
+                    {
                         ve += 1;
                     }
                     // "Authorization: Bearer abc": the scheme is not the secret
@@ -300,7 +329,8 @@ impl Redactor {
                 }
             }
             let value = &s[vs..ve];
-            let numeric = !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit() || c == b'.');
+            // (a number is a count, `tokens: 120`, except under a password or PIN key)
+            let numeric = !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit() || c == b'.') && !self.numbers_are_secret(&s[st..e]);
             if value.is_empty() || numeric || value.starts_with("[REDACTED") || matches!(value, "null" | "true" | "false") {
                 i = ve.max(i + 1);
                 continue;
@@ -442,6 +472,222 @@ fn env_dump(s: &str, stats: &mut Stats) -> String {
     out
 }
 
+/// The short secret word a key ends with as a whole word (`pwd`, `db_pass`, `X-Auth`, `userPin`): after a separator, at
+/// a lower-to-upper case change, or the whole key.
+fn suffix_key(key: &str) -> Option<&'static str> {
+    let k = key.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    let lower = k.to_ascii_lowercase();
+    SUFFIX_KEYS.iter().copied().find(|w| {
+        lower.ends_with(w) && {
+            let at = k.len() - w.len();
+            at == 0 || {
+                let (prev, first) = (k.as_bytes()[at - 1], k.as_bytes()[at]);
+                !prev.is_ascii_alphanumeric() || (prev.is_ascii_lowercase() && first.is_ascii_uppercase())
+            }
+        }
+    })
+}
+
+/// Words that name a password in a sentence ("a senha é …", "my password is …").
+const PHRASE_KEYS: &[&str] = &["senha", "password", "passwd", "passphrase", "pwd", "pin"];
+/// The verb between the name and the value.
+const PHRASE_VERBS: &[&str] = &["é", "eh", "era", "será", "sera", "fica", "is", "was", "=", ":"];
+/// What follows "the password is" in ordinary prose: not a value.
+const PHRASE_NOT_VALUES: &[&str] = &[
+    "a",
+    "o",
+    "um",
+    "uma",
+    "the",
+    "an",
+    "sua",
+    "minha",
+    "seu",
+    "meu",
+    "your",
+    "my",
+    "isso",
+    "essa",
+    "esta",
+    "este",
+    "this",
+    "that",
+    "it",
+    "obrigatoria",
+    "obrigatorio",
+    "forte",
+    "fraca",
+    "fraco",
+    "segura",
+    "seguro",
+    "errada",
+    "errado",
+    "incorreta",
+    "incorreto",
+    "invalida",
+    "invalido",
+    "valida",
+    "valido",
+    "nova",
+    "novo",
+    "antiga",
+    "antigo",
+    "curta",
+    "longa",
+    "necessaria",
+    "pessoal",
+    "secreta",
+    "vazia",
+    "igual",
+    "diferente",
+    "outra",
+    "trocada",
+    "alterada",
+    "expirada",
+    "nao",
+    "não",
+    "muito",
+    "ainda",
+    "sempre",
+    "wrong",
+    "incorrect",
+    "invalid",
+    "valid",
+    "required",
+    "weak",
+    "strong",
+    "correct",
+    "too",
+    "not",
+    "very",
+    "still",
+    "expired",
+    "empty",
+    "blank",
+    "set",
+    "missing",
+    "needed",
+    "mandatory",
+    "optional",
+    "opcional",
+    "same",
+    "different",
+    "changed",
+    "case",
+    "sensitive",
+    "reset",
+    "secret",
+    "new",
+    "old",
+    "short",
+    "long",
+    "[redacted]",
+];
+
+/// "a senha é hunter2", "Minha senha do wifi é: X", "my password is X", "the password was X": the value after the verb
+/// goes (the name may be followed by up to three words, "do wifi", "for the server", before the verb).
+fn phrase_secrets(s: &str, stats: &mut Stats) -> String {
+    // (word, start, end) for every run of non-space characters
+    let mut words: Vec<(&str, usize, usize)> = Vec::new();
+    let mut start = None;
+    for (i, c) in s.char_indices().chain(std::iter::once((s.len(), ' '))) {
+        match (c.is_whitespace(), start) {
+            (true, Some(st)) => {
+                words.push((&s[st..i], st, i));
+                start = None;
+            }
+            (false, None) => start = Some(i),
+            _ => {}
+        }
+    }
+    let clean = |w: &str| w.trim_matches(|c: char| matches!(c, ',' | ';' | '.' | '!' | '?' | '"' | '\'' | '`' | '(' | ')')).to_lowercase();
+    let mut ranges = Vec::new();
+    let mut k = 0;
+    while k < words.len() {
+        let name = clean(words[k].0);
+        let name = name.trim_end_matches(':');
+        if !PHRASE_KEYS.contains(&name) {
+            k += 1;
+            continue;
+        }
+        // "senha: X" is the key-value detector's; here a verb comes first, within three words
+        let verb = (k + 1..(k + 5).min(words.len())).find(|&j| PHRASE_VERBS.contains(&clean(words[j].0).trim_end_matches(':')));
+        let Some(v) = verb else {
+            k += 1;
+            continue;
+        };
+        let mut j = v + 1;
+        if j < words.len() && words[j].0 == ":" {
+            j += 1;
+        }
+        if j >= words.len() {
+            break;
+        }
+        let (raw, ws, _) = words[j];
+        let value = raw.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '(' | ')' | '«' | '»' | '“' | '”'));
+        let value = value.trim_end_matches([',', ';', '.', ')']);
+        if value.is_empty() || PHRASE_NOT_VALUES.contains(&fold_accents(value).as_str()) || value.starts_with("[REDACTED") {
+            k = j;
+            continue;
+        }
+        let offset = raw.find(value).unwrap_or(0);
+        ranges.push((ws + offset, ws + offset + value.len()));
+        k = j + 1;
+    }
+    replace_ranges(s, &ranges, REDACTED, stats)
+}
+
+/// Lower case without the accents of Portuguese (`obrigatória` → `obrigatoria`).
+fn fold_accents(w: &str) -> String {
+    w.to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ã' => 'a',
+            'é' | 'ê' => 'e',
+            'í' => 'i',
+            'ó' | 'ô' | 'õ' => 'o',
+            'ú' | 'ü' => 'u',
+            'ç' => 'c',
+            c => c,
+        })
+        .collect()
+}
+
+/// A password given to a command line: `mysql -pX` (and the other MySQL/MariaDB tools), `sshpass -p X`.
+fn command_passwords(s: &str, stats: &mut Stats) -> String {
+    const GLUED: &[&str] = &["mysql", "mysqldump", "mysqladmin", "mysqlimport", "mysqlcheck", "mysqlshow", "mariadb", "mariadb-dump"];
+    if !s.contains("-p") {
+        return s.to_string();
+    }
+    let mut ranges = Vec::new();
+    let mut line_start = 0;
+    for line in s.split_inclusive('\n') {
+        let words: Vec<(usize, &str)> = line
+            .split(|c: char| c.is_whitespace())
+            .scan(0usize, |at, w| {
+                let here = *at;
+                *at += w.len() + 1;
+                Some((here, w))
+            })
+            .filter(|(_, w)| !w.is_empty())
+            .collect();
+        let command = |w: &str| w.rsplit('/').next().unwrap_or(w).to_string();
+        let glued = words.iter().any(|(_, w)| GLUED.contains(&command(w).as_str()));
+        let sshpass = words.iter().any(|(_, w)| command(w) == "sshpass");
+        for (n, (at, w)) in words.iter().enumerate() {
+            if glued && w.len() > 2 && w.starts_with("-p") && !w.starts_with("-p-") && !w[2..].starts_with('-') {
+                ranges.push((line_start + at + 2, line_start + at + w.len()));
+            } else if sshpass && *w == "-p" {
+                if let Some((vat, v)) = words.get(n + 1) {
+                    ranges.push((line_start + vat, line_start + vat + v.len()));
+                }
+            }
+        }
+        line_start += line.len();
+    }
+    replace_ranges(s, &ranges, REDACTED, stats)
+}
+
 fn is_token_char(c: u8) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.' | b'+')
 }
@@ -503,12 +749,50 @@ pub fn is_secret_token(t: &str) -> bool {
     if t.starts_with("eyJ") && t.matches('.').count() == 2 && t.len() >= 30 {
         return true;
     }
-    if t.len() < 24 || looks_like_uuid(t) || t.bytes().all(|c| c.is_ascii_hexdigit()) {
+    if looks_like_uuid(t) || t.bytes().all(|c| c.is_ascii_hexdigit()) {
         return false;
     }
     let has_digit = t.bytes().any(|c| c.is_ascii_digit());
     let has_alpha = t.bytes().any(|c| c.is_ascii_alphabetic());
+    if t.len() < 24 {
+        // 16 to 23 characters: random-looking only when it mixes all three kinds and keeps switching between them (an
+        // identifier like `HttpClient2Builder` switches a few times; a random key nearly every character)
+        let has_upper = t.bytes().any(|c| c.is_ascii_uppercase());
+        let has_lower = t.bytes().any(|c| c.is_ascii_lowercase());
+        let class = |c: u8| {
+            if c.is_ascii_digit() {
+                0
+            } else if c.is_ascii_uppercase() {
+                1
+            } else if c.is_ascii_lowercase() {
+                2
+            } else {
+                3
+            }
+        };
+        let switches = t.as_bytes().windows(2).filter(|w| class(w[0]) != class(w[1])).count();
+        return has_upper && has_lower && has_digit && switches * 2 >= t.len() && shannon(t) >= 3.5;
+    }
     has_digit && has_alpha && shannon(t) >= 4.0
+}
+
+/// A run of base64 with `/` or `+` in it that is a key (an AWS secret access key: 40 characters, `/` inside): mixed,
+/// random-looking, not a path (a path starts with `/` or has short words between its slashes).
+fn is_secret_base64(t: &str) -> bool {
+    let t = t.trim_end_matches('=');
+    if t.len() < 30 || t.starts_with('/') || !(t.contains('/') || t.contains('+')) || t.matches('/').count() > 4 {
+        return false;
+    }
+    let segments_long = t.split(['/', '+']).all(|p| p.len() >= 4);
+    let has = |f: fn(&u8) -> bool| t.as_bytes().iter().any(f);
+    segments_long && has(u8::is_ascii_uppercase) && has(u8::is_ascii_lowercase) && has(u8::is_ascii_digit) && shannon(t) >= 4.0
+}
+
+/// A known prefix written too short: the start of a token that a space split (`ghp_ABC… DEF…`).
+fn known_prefix_too_short(t: &str) -> bool {
+    ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "xoxb-", "xoxp-", "sk-", "sk_live_", "hf_", "glpat-", "npm_", "AIza", "AKIA", "ASIA"]
+        .iter()
+        .any(|p| t.starts_with(p) && t.len() > p.len())
 }
 
 /// Known-prefix and high-entropy tokens inside free text.
@@ -527,8 +811,45 @@ fn tokens(s: &str, stats: &mut Stats) -> String {
         }
         if i - st >= 16 && is_secret_token(&s[st..i]) {
             ranges.push((st, i));
+        } else if known_prefix_too_short(&s[st..i]) && i + 1 < b.len() && b[i] == b' ' && b[i + 1].is_ascii_alphanumeric() {
+            // the rest of a split token after one space: the two together are the secret
+            let mut e = i + 1;
+            while e < b.len() && is_token_char(b[e]) {
+                e += 1;
+            }
+            let joined = format!("{}{}", &s[st..i], &s[i + 1..e]);
+            if e - (i + 1) >= 8 && is_secret_token(&joined) {
+                ranges.push((st, e));
+                i = e;
+            }
         }
     }
+    // keys written in base64 with `/` or `+` (the run above stops at them)
+    let mut i = 0;
+    while i < b.len() {
+        if !(b[i].is_ascii_alphanumeric() || matches!(b[i], b'/' | b'+' | b'=')) {
+            i += 1;
+            continue;
+        }
+        let st = i;
+        while i < b.len() && (b[i].is_ascii_alphanumeric() || matches!(b[i], b'/' | b'+' | b'=')) {
+            i += 1;
+        }
+        if is_secret_base64(&s[st..i]) {
+            // (a piece of it may already be marked by the run above: the whole key goes, as one)
+            let (mut a, mut e) = (st, i);
+            ranges.retain(|&(x, y)| {
+                let overlaps = x < e && a < y;
+                if overlaps {
+                    a = a.min(x);
+                    e = e.max(y);
+                }
+                !overlaps
+            });
+            ranges.push((a, e));
+        }
+    }
+    ranges.sort();
     replace_ranges(s, &ranges, REDACTED, stats)
 }
 
@@ -745,6 +1066,74 @@ mod tests {
         let l2 = r#"{\\\"api_key\\\":\\\"chave\\\\ncauda-dois\\\",\\\"ok\\\":1}"#;
         let out2 = red(l2);
         assert!(!out2.contains("cauda-dois") && !out2.contains("chave"), "{out2}");
+    }
+
+    /// The gaps the blind critic found (E2E-4, round 3): each value must go, in the redacted text and for the final
+    /// scan, and the ordinary text next to them stays.
+    #[test]
+    fn the_critics_leaks_are_closed() {
+        let aws = concat!("wJalrXUtnFEMI", "/K7MDENG/bPxRfi", "CYzx9Q2KEYk3Lp7");
+        let short = concat!("aB3dE5fG", "7hJ9kL1mN");
+        let split = format!("{} {}", concat!("ghp", "_ABCDEFGHIJ"), "KLMNOPQRSTUVWXYZ0123456789");
+        let cases: Vec<(String, &str)> = vec![
+            ("a senha é hunter2 e o resto".into(), "hunter2"),
+            ("Minha senha do wifi é: Kalango-2024!".into(), "Kalango-2024"),
+            ("my password is s3cr3tP4ss.".into(), "s3cr3tP4ss"),
+            ("The password was correct-horse-9 yesterday".into(), "correct-horse-9"),
+            ("GET /login?user=ana&password%3Dhunter3%26next%3D1".into(), "hunter3"),
+            ("next=%2Fx%26passwd%3dvalor-escondido".into(), "valor-escondido"),
+            (r#"{"pwd": "pw-um", "pass": "pw-dois", "auth": "pw-tres", "pin": "4321", "db_pass": "pw-quatro"}"#.into(), "pw-"),
+            (r#"{"user_pin": 98765}"#.into(), "98765"),
+            ("password=123456 depois".into(), "123456"),
+            ("mysql -u root -pS3nhaForte banco".into(), "S3nhaForte"),
+            ("mysqldump -uroot -phunter4 app > a.sql".into(), "hunter4"),
+            (format!("aws_secret {aws} fim"), aws),
+            (format!("chave {short} fim"), short),
+            (format!("token {split} fim"), "KLMNOPQRSTUVWXYZ0123456789"),
+            ("curl -H 'X-Auth: abc123xyz' https://x".into(), "abc123xyz"),
+        ];
+        let r = Redactor::default();
+        for (text, secret) in &cases {
+            let out = red(text);
+            assert!(!out.contains(secret), "{secret} leaked from {text:?}: {out}");
+            assert!(r.scan_text(text) > 0, "the final scan must see the secret in {text:?}");
+        }
+        let split_head = concat!("ghp", "_ABCDEFGHIJ");
+        assert!(!red(&format!("token {split} fim")).contains(split_head), "both parts of a split token go");
+        // the JSON keys: what is not a secret key stays (a substring is not enough)
+        let v = r.redact_value(
+            &json!({"pwd": "a", "pass": "b", "auth": "c", "pin": 1234, "x_auth": "d", "author": "Ana", "mapping": "m", "passageiro": "Rui", "shipping": "s", "spin": 3, "max_tokens": 512}),
+            &mut Stats::default(),
+        );
+        for k in ["pwd", "pass", "auth", "pin", "x_auth"] {
+            assert_eq!(v[k], REDACTED, "{k}");
+        }
+        assert_eq!(
+            (v["author"].as_str(), v["mapping"].as_str(), v["passageiro"].as_str(), v["shipping"].as_str()),
+            (Some("Ana"), Some("m"), Some("Rui"), Some("s"))
+        );
+        assert_eq!(v["max_tokens"], 512, "a count under a token-like key stays");
+        assert_eq!(r.scan_value(&json!({"pin": 1234})), 1, "a PIN left as a number is a leak for the final scan");
+    }
+
+    /// What must not be touched by the new detectors (false positives).
+    #[test]
+    fn the_new_detectors_leave_ordinary_text_alone() {
+        for ok in [
+            "the token is rotated daily",
+            "a senha é obrigatória para entrar",
+            "the password is wrong, try again",
+            "a senha é forte",
+            "mkdir -p /tmp/x && grep -p foo",
+            "tokens: 120 used, pin_required: true",
+            "/home/ana/Documentos/Relatorio2024/final",
+            "HttpClient2Builder relatorio2024final kalango_agente_motor_turn_state",
+            "o passageiro Rui comprou o mapping de rotas, author Ana",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "123e4567-e89b-12d3-a456-426614174000",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
     }
 
     #[test]
