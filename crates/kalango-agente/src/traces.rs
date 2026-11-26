@@ -497,6 +497,20 @@ enum Outcome {
     Down,
 }
 
+/// The body to write for `chunk`, or None when nothing may be sent. The last look (`scan`, the final detector over the
+/// whole body as it will be written to the socket) runs here: after the spans were each cleaned it should never find
+/// anything, and if it does, or if it fails (a panic), nothing is sent and the spans are counted as dropped.
+fn final_body(chunk: &[&SpanData], red: &Redactor, guard: &Redactor, tally: &mut Tally, scan: &dyn Fn(&str) -> usize) -> Option<String> {
+    let body = request_body(chunk, red, guard, tally).to_string();
+    let found = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scan(&body))).unwrap_or(1);
+    if found > 0 {
+        tally.hits += 1;
+        tally.dropped += chunk.len() as u64;
+        return None;
+    }
+    Some(body)
+}
+
 fn send_batch(s: &Shared, batch: &[SpanData], red: &Redactor, guard: &Redactor) -> (Outcome, Tally) {
     // chunks of at most the body size the contract recommends
     let mut chunk: Vec<&SpanData> = Vec::new();
@@ -507,16 +521,10 @@ fn send_batch(s: &Shared, batch: &[SpanData], red: &Redactor, guard: &Redactor) 
         if chunk.is_empty() {
             return;
         }
-        let body = request_body(chunk, red, guard, &mut tally.borrow_mut()).to_string();
-        // the last look, over the whole body as it will be written to the socket: after the spans were each cleaned this
-        // should never find anything, and if it does nothing is sent
-        if guard.scan_text(&body) > 0 {
-            let mut t = tally.borrow_mut();
-            t.hits += 1;
-            t.dropped += chunk.len() as u64;
+        let Some(body) = final_body(chunk, red, guard, &mut tally.borrow_mut(), &|b| guard.scan_text(b)) else {
             chunk.clear();
             return;
-        }
+        };
         match post(&s.path, &body, s.tuning.io_timeout) {
             Ok(200..=299) => {}
             Ok(503) | Err(_) => *worst = Outcome::Down,
@@ -933,6 +941,12 @@ pub fn external_kind(name: &str, connectors: &[String]) -> Option<&'static str> 
     // the calls that came into an internet trigger (their paths, headers and bodies are the internet's)
     if matches!(name, "gatilho_internet.chamadas" | "internet.calls" | "internet.call_body") {
         return Some("external:web");
+    }
+    // tools under the agent's own prefixes whose results are someone else's: an MCP server's tool (only registering one
+    // is the agent's), a creative app's tool (its documents), the Wi-Fi networks in range (their names are the
+    // neighbours')
+    if (name.starts_with("mcp.") && name != "mcp.registrar") || matches!(name, "craft.chamar" | "rede.wifi") {
+        return Some("external:tool");
     }
     let prefix = name.split('.').next().unwrap_or("");
     match prefix {

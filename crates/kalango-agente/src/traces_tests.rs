@@ -1790,6 +1790,83 @@ fn without_a_daemon_nothing_is_recorded_and_nothing_fails() {
     assert_eq!(sink.counters(), Counters::default());
 }
 
+/// The engine's wiring of a paste, without the model: the shell's ranges are taken when the request starts and its
+/// message in the archive is marked; the next request, typed, is not.
+#[test]
+fn the_engine_marks_a_pasted_request_in_the_archive_and_not_a_typed_one() {
+    use crate::context::PASTED_KEY;
+    use crate::motor::PasteMarks;
+    let mut p = PasteMarks::default();
+    p.pending = vec![(4, 9)];
+    assert_eq!(p.start(), [(4, 9)], "the ranges go to the trace");
+    assert!(p.pending.is_empty(), "taken");
+    assert_eq!(p.message("cole: texto")[PASTED_KEY], true, "the pasted request is marked");
+    assert_eq!(p.message("cole: texto")["content"], "cole: texto");
+    // the next request was typed
+    assert!(p.start().is_empty());
+    assert!(p.message("e agora?").get(PASTED_KEY).is_none());
+}
+
+/// Picking a kept conversation up in a new process (the engine's `continuar`, without the model or kalangod): the
+/// paste and the page in its history taint it again, its turns and id are kept, and the page is outside content for the
+/// engine's own check too.
+#[test]
+fn a_conversation_picked_up_again_brings_its_taint_turns_and_outside_results() {
+    use crate::context::PASTED_KEY;
+    let page = crate::defesa::envelope("web.ler", "uma página");
+    let saved = vec![
+        json!({"role": "system", "content": "o prompt antigo"}),
+        json!({"role": "user", "content": "resuma: TEXTO COLADO", PASTED_KEY: true}),
+        assistant_call("c1", "web.ler", "{}"),
+        json!({"role": "tool", "tool_call_id": "c1", "content": page}),
+        json!({"role": "assistant", "content": "resumo"}),
+        json!({"role": "user", "content": "e agora?"}),
+    ];
+    let p = crate::motor::picked_up(saved, "conv-antiga");
+    assert_eq!(p.conv.taint, ["external:paste", "external:web"]);
+    assert_eq!((p.conv.turns, p.conv.session.as_str()), (2, "conv-antiga"));
+    assert!(p.messages.iter().all(|m| m["role"] != "system"), "the current system prompt stays");
+    assert_eq!(p.messages.len(), 5);
+    assert!(p.person_text.contains("TEXTO COLADO") && p.person_text.contains("e agora?"));
+    assert_eq!(p.outside.len(), 1);
+    assert_eq!(p.outside[0].0, "web.ler");
+    // all typed: clean
+    let p = crate::motor::picked_up(vec![json!({"role": "user", "content": "oi"}), json!({"role": "assistant", "content": "olá"})], "c");
+    assert!(p.conv.taint.is_empty() && !p.conv.secret);
+}
+
+/// The last look over the whole body before it is written: when it finds something, or fails, nothing is sent and
+/// the spans are counted as dropped.
+#[test]
+fn the_last_look_over_the_body_stops_it_and_a_panic_in_it_does_too() {
+    let (red, guard) = (Redactor::default(), Redactor::default());
+    let sp = span_with(Attr::Str("um texto comum".into()));
+    let chunk = [&sp];
+    let mut t = Tally::default();
+    let body = final_body(&chunk, &red, &guard, &mut t, &|b| guard.scan_text(b)).expect("a clean body goes");
+    assert!(body.contains("um texto comum") && t.dropped == 0);
+    let mut t = Tally::default();
+    assert!(final_body(&chunk, &red, &guard, &mut t, &|_| 1).is_none(), "a finding stops the body");
+    assert_eq!((t.hits, t.dropped), (1, 1));
+    let mut t = Tally::default();
+    assert!(final_body(&chunk, &red, &guard, &mut t, &|_| panic!("a detector bug (test)")).is_none(), "a panic stops it too");
+    assert_eq!(t.dropped, 1);
+}
+
+/// Tools under the agent's own prefixes whose results are someone else's.
+#[test]
+fn mcp_tools_a_creative_apps_tool_and_the_wifi_list_are_outside_content() {
+    let c = vec![];
+    for name in ["mcp.clima", "mcp.qualquer_ferramenta", "craft.chamar", "rede.wifi"] {
+        assert_eq!(external_kind(name, &c), Some("external:tool"), "{name}");
+        assert_eq!(result_kind(name, "{}", &c), Some("external:tool"), "{name}");
+    }
+    // what only configures or lists the agent's own
+    for name in ["mcp.registrar", "craft.apps", "craft.encerrar", "rede.estado", "rede.conexoes"] {
+        assert_eq!(external_kind(name, &c), None, "{name}");
+    }
+}
+
 /// A bug in a detector (a panic while redacting one span) costs that span only: the sender thread lives on and the
 /// next turns are sent. (Before: the panic ended the thread, and nothing was sent again until the agent restarted.)
 #[test]
