@@ -678,6 +678,8 @@ pub struct Agent {
     trace_conv: crate::traces::Conversation,
     /// the character ranges of the next request that the person pasted (the shell says so, see request.rs): taken by `ask`
     pub pasted: Vec<(usize, usize)>,
+    /// the request being answered had pasted text (its message in the archive is marked: `context::PASTED_KEY`)
+    request_pasted: bool,
 }
 
 impl Agent {
@@ -710,7 +712,7 @@ impl Agent {
         Ok(Agent { kalangod, model, tools, messages, person_text: String::new(), last_request: String::new(), draft_open: false, draft_nudges: 0, force_plan: false, force_conclude: false, no_block: false, unsupported_named: false, flow_created: false, external: Vec::new(), external_web: Vec::new(), allow_web: true, next_ask: 0, d1_auto_in_request: 0, d1_conversation_tainted: false, d1_read_in_request: false, base_prompt, moves: Default::default(), external_at_request: 0,
             conectores: crate::conectores::abrir_todos(), conectores_assinatura: crate::conectores::assinatura(), desligadas: Vec::new(), conversa: None, autonomia: None, escopo: Escopo::default(), simular: false, buscas_seguidas: 0, resultados_busca: Vec::new(), fontes: String::new(), conferida: false, buscas: 0, consultas: Vec::new(), lidas: 0, plan: Vec::new(), plan_done: 0, nome: None,
             context: context::State::default(), n_ctx, search: false, largest_prompt: 0, tail_note: String::new(),
-            trace: crate::traces::Turn::disabled(), trace_conv: crate::traces::Conversation::new(), pasted: Vec::new() })
+            trace: crate::traces::Turn::disabled(), trace_conv: crate::traces::Conversation::new(), pasted: Vec::new(), request_pasted: false })
     }
 
     /// The agent's name as the person sees it (the screen indicator and the approval card say it).
@@ -786,6 +788,7 @@ impl Agent {
     pub fn ask(&mut self, request: &str, on_event: &dyn Fn(Event), confirm: &mut dyn FnMut(u64) -> Answer) -> Result<(), String> {
         // the turn is recorded for Kalango Train when the person allows it and its daemon is there (traces.rs); else this
         // is the plain call
+        self.request_pasted = !self.pasted.is_empty();
         self.trace = crate::traces::Turn::begin_default(crate::traces::Begin {
             session: &self.trace_conv.session, agent: &self.agent_name_id(), index: self.trace_conv.turns, request, tools: &self.tools, local_tools,
             connectors: self.conectores.iter().map(|c| c.nome.clone()).collect(), taint: self.trace_conv.taint.clone(), secret: self.trace_conv.secret, pasted: std::mem::take(&mut self.pasted),
@@ -851,7 +854,11 @@ impl Agent {
         self.no_block = false;
         self.unsupported_named = false;
         self.flow_created = false;
-        self.messages.push(json!({"role": "user", "content": request}));
+        let mut asked = json!({"role": "user", "content": request});
+        if self.request_pasted {
+            asked[context::PASTED_KEY] = json!(true);
+        }
+        self.messages.push(asked);
         // the actions the person turned off are named (they can change between requests), so the model does not
         // rebuild one out of others; and what it remembers about the person
         let memory = memoria::carregar().ok();
@@ -983,7 +990,7 @@ impl Agent {
             self.force_conclude = false;
             let chat_clock = self.trace.clock();
             let chat_result = self.model.chat(&window.messages, &turn_tools, required);
-            self.trace.chat(&self.model.name, &window.messages, chat_clock, &chat_result);
+            self.trace.chat_marked(&self.model.name, &window.messages, &window.marks, chat_clock, &chat_result);
             let Reply { content, tool_calls, cut, tokens, prompt_tokens, evaluated } = chat_result?;
             self.largest_prompt = self.largest_prompt.max(prompt_tokens as usize);
             if tokens > 0 {

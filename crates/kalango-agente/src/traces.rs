@@ -1121,7 +1121,14 @@ impl Turn {
     }
 
     /// One call of the model, finished (or failed). `input` is what was sent.
+    #[cfg(test)]
     pub fn chat(&self, model: &str, input: &[Value], clock: Clock, result: &Result<Reply, String>) {
+        self.chat_marked(model, input, &[], clock, result)
+    }
+
+    /// `chat` with where each message of `input` came from when the conversation's own marks say so (the context
+    /// window's `marks`: an engine's note is `agent`, a request with pasted text is `external:paste`, in any turn).
+    pub fn chat_marked(&self, model: &str, input: &[Value], marks: &[Option<&str>], clock: Clock, result: &Result<Reply, String>) {
         let (Some(i), Some((start_ns, started))) = (&self.0, clock.0) else { return };
         let end_ns = start_ns + started.elapsed().as_nanos() as u64;
         let span_id = random_id();
@@ -1187,7 +1194,7 @@ impl Turn {
                     if !calls.is_empty() {
                         msg["tool_calls"] = json!(calls);
                     }
-                    events = content_events(i, input, start_ns, secret_before);
+                    events = content_events(i, input, marks, start_ns, secret_before);
                     let omitted = input.len().saturating_sub(events.len());
                     if omitted > 0 {
                         attrs.push(("kalango.input.omitted_messages".into(), Attr::Int(omitted as i64)));
@@ -1303,8 +1310,9 @@ impl Turn {
         }
         // what the person pasted (the ranges are offsets in the request: they say where, never what)
         let pasted = (!i.pasted.is_empty()).then(|| json!(i.pasted).to_string());
+        // (the root is the person's request: theirs, or with text pasted from somewhere else; in every mode)
+        attrs.push(("kalango.provenance".into(), Attr::Str(if pasted.is_some() { PASTE } else { "user" }.into())));
         if let Some(r) = &pasted {
-            attrs.push(("kalango.provenance".into(), Attr::Str(PASTE.into())));
             attrs.push(("kalango.paste.ranges".into(), Attr::Str(r.clone())));
         }
         if secret {
@@ -1410,7 +1418,7 @@ pub fn context_has_secret(input: &[Value]) -> bool {
 
 /// The model's input as `gen_ai.*.message` events: the first message (the system prompt) and as many of the latest
 /// as fit; what is left out is counted. Each says where it came from (`kalango.provenance`).
-fn content_events(i: &Inner, input: &[Value], t: u64, secret_before: bool) -> Vec<EventData> {
+fn content_events(i: &Inner, input: &[Value], marks: &[Option<&str>], t: u64, secret_before: bool) -> Vec<EventData> {
     let by_call = call_names(input);
     // from the first secret result on, what the assistant said may repeat it
     // (when a secret was already in the conversation before this call, everything the assistant said is after it)
@@ -1428,6 +1436,7 @@ fn content_events(i: &Inner, input: &[Value], t: u64, secret_before: bool) -> Ve
             "tool" => "gen_ai.tool.message",
             _ => "gen_ai.user.message",
         };
+        let mark = marks.get(idx).copied().flatten();
         let provenance = match role {
             "system" | "assistant" => "agent".to_string(),
             "tool" => m["tool_call_id"]
@@ -1435,10 +1444,15 @@ fn content_events(i: &Inner, input: &[Value], t: u64, secret_before: bool) -> Ve
                 .and_then(|id| by_call.get(id))
                 .map(|n| external_kind(n, &i.connectors).unwrap_or("tool_local").to_string())
                 .unwrap_or_else(|| "unknown".into()),
-            _ if m.get("nota_do_motor").is_some() => "agent".to_string(),
-            // (the same kind as on the root)
-            _ if pasted_request == Some(idx) => PASTE.to_string(),
-            _ => "user".to_string(),
+            // the conversation's own marks first (an engine's note; a request of this or an earlier turn with pasted
+            // text); without them (an input built by hand), the note's key and this turn's request (as on the root)
+            _ => match mark {
+                Some(p) => p,
+                None if m.get(crate::context::NOTE_KEY).is_some() => "agent",
+                None if pasted_request == Some(idx) => PASTE,
+                None => "user",
+            }
+            .to_string(),
         };
         let text = m["content"].as_str().map(str::to_string).unwrap_or_else(|| m["content"].to_string());
         // a secret tool's result: its name, size and hash say what happened; the text does not go

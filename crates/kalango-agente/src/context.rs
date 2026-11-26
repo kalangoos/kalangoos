@@ -44,6 +44,9 @@ pub const SUMMARY_INPUT_CHARS: usize = 12_000;
 pub const SUMMARY_MAX_TOKENS: u32 = 1_000;
 /// Marks a "user" message written by the engine (a check of the answer), not a request of the person.
 pub const NOTE_KEY: &str = "nota_do_motor";
+/// Marks a request of the person that has text pasted from somewhere else (kept with the conversation, so later turns
+/// still know it was not their own words).
+pub const PASTED_KEY: &str = "colado_pela_pessoa";
 /// Characters per token for estimates (LFM3 on Portuguese and JSON is ~2.6–3.4; the model's own count decides near
 /// the budget).
 pub const CHARS_PER_TOKEN: f64 = 2.8;
@@ -197,8 +200,21 @@ fn clean(m: &Value) -> Value {
     let mut m = m.clone();
     if let Some(o) = m.as_object_mut() {
         o.remove(NOTE_KEY);
+        o.remove(PASTED_KEY);
     }
     m
+}
+
+/// Where a message of the archive came from, when its own marks say (the window drops the marks: the model never
+/// sees them): an engine's note is the agent's, a request with pasted text is `external:paste`.
+fn mark_of(m: &Value) -> Option<&'static str> {
+    if m.get(NOTE_KEY).is_some() {
+        Some("agent")
+    } else if m.get(PASTED_KEY).and_then(Value::as_bool) == Some(true) {
+        Some("external:paste")
+    } else {
+        None
+    }
 }
 
 /// The origin and the text inside a data envelope (`defesa::envelope`), if the content has one.
@@ -339,6 +355,8 @@ pub struct Window {
     pub partial: bool,
     /// the last result had to be cut to fit the hard limit (nothing else was left to shrink)
     pub cut: bool,
+    /// for each of `messages`, where it came from when the archive's marks say so (see `mark_of`): the traces use it
+    pub marks: Vec<Option<&'static str>>,
 }
 
 /// Builds the window. `system` is the system prompt of this request (memories and notes included), `history` the
@@ -451,7 +469,10 @@ pub fn build_with_tail(system: &str, history: &[Value], state: &State, s: &Setti
         }
     }
     let reopenable = !big_results(start, current).is_empty();
+    // (the window is the system prompt and then the archive from `start`, message for message)
+    let marks = std::iter::once(None).chain(history.iter().skip(start).map(mark_of)).collect();
     Window {
+        marks,
         tokens,
         stubbed: stubs.len(),
         reopenable,

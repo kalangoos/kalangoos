@@ -1375,6 +1375,67 @@ fn the_pasted_message_is_external_paste_inside_the_model_inputs_too() {
     assert_eq!(users.iter().map(|e| prov(e)).collect::<Vec<_>>(), ["user", "user", "user", "external:paste"], "only this turn's request");
 }
 
+/// The window the engine really sends (context.rs, with the clock note at the end), built from an archive that has
+/// an engine's note and a request pasted in an earlier turn: the marks the window drops still reach the traces.
+#[test]
+fn through_the_real_context_window_notes_are_agent_and_an_earlier_paste_stays_external_paste() {
+    use crate::context::{build_with_tail, estimate, Settings, State, NOTE_KEY, PASTED_KEY};
+    let s = setup();
+    let request = "e agora, o que falta?";
+    let history = vec![
+        json!({"role": "user", "content": "uma pergunta digitada"}),
+        json!({"role": "assistant", "content": "ok"}),
+        json!({"role": "user", "content": "resuma: TEXTO COLADO ANTIGO", PASTED_KEY: true}),
+        json!({"role": "assistant", "content": "feito"}),
+        json!({"role": "user", "content": request}),
+        json!({"role": "assistant", "content": "faltam dois"}),
+        json!({"role": "user", "content": "Confira a resposta antes de concluir.", NOTE_KEY: true}),
+    ];
+    let w = build_with_tail("sys", &history, &State::default(), &Settings::from_prefs(&Value::Null, 262_144), "Agora é 10:00", &mut |m| {
+        estimate(m, 0, 2.8)
+    });
+    // (the model never sees the marks)
+    assert!(w.messages.iter().all(|m| m.get(NOTE_KEY).is_none() && m.get(PASTED_KEY).is_none()));
+    assert_eq!(w.marks.len(), w.messages.len());
+    // this turn was typed
+    let t = begin_pasted(&s, Config::default(), request, vec![]);
+    let c = t.clock();
+    t.chat_marked("m", &w.messages, &w.marks, c, &reply("ok", &[]));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(2);
+    let users = event_named(by_name(&spans, "chat")[0], "gen_ai.user.message");
+    let prov = |e: &Value| ev_attr(e, "kalango.provenance").unwrap()["stringValue"].as_str().unwrap().to_string();
+    assert_eq!(users.iter().map(|e| prov(e)).collect::<Vec<_>>(), ["user", "external:paste", "user", "agent"]);
+}
+
+/// A pasted request keeps its mark in the archive the engine saves, so a later turn (or the conversation picked up
+/// again) still sends it as `external:paste`, while this turn's typed request is `user`.
+#[test]
+fn a_request_pasted_in_an_earlier_turn_stays_external_paste_in_the_next_turns() {
+    use crate::context::{build_with_tail, estimate, Settings, State, PASTED_KEY};
+    let s = setup();
+    let pasted = "texto colado: RELATORIO-123";
+    let typed = "obrigado; e o total?";
+    let saved: Vec<Value> = serde_json::from_str(
+        &json!([
+            {"role": "user", "content": pasted, PASTED_KEY: true},
+            {"role": "assistant", "content": "lido"},
+            {"role": "user", "content": typed},
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let w = build_with_tail("sys", &saved, &State::default(), &Settings::from_prefs(&Value::Null, 262_144), "", &mut |m| estimate(m, 0, 2.8));
+    let t = begin_pasted(&s, Config::default(), typed, vec![]);
+    let c = t.clock();
+    t.chat_marked("m", &w.messages, &w.marks, c, &reply("ok", &[]));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(2);
+    let users = event_named(by_name(&spans, "chat")[0], "gen_ai.user.message");
+    let prov = |e: &Value| ev_attr(e, "kalango.provenance").unwrap()["stringValue"].as_str().unwrap().to_string();
+    assert_eq!(users.iter().map(|e| prov(e)).collect::<Vec<_>>(), ["external:paste", "user"]);
+}
+
 #[test]
 fn a_typed_request_is_user_inside_the_model_inputs() {
     let s = setup();
@@ -1397,9 +1458,19 @@ fn what_the_person_typed_is_user_and_not_tainted() {
     t.end(&Ok(()));
     let spans = s.rx.wait_for(1);
     let root = by_name(&spans, "kalango.turn")[0];
-    assert_eq!(s_attr(root, "kalango.provenance"), None);
+    // (the root says it too, so the receiver does not take its default, `agent`)
+    assert_eq!(s_attr(root, "kalango.provenance"), Some("user"));
     assert!(list_attr(root, "kalango.taint").is_none() && attr(&root["attributes"], "kalango.paste.ranges").is_none());
     assert_eq!(ev_attr(event_named(root, "gen_ai.user.message")[0], "kalango.provenance").unwrap()["stringValue"], "user");
+}
+
+#[test]
+fn a_typed_root_is_user_in_metadata_mode_too() {
+    let s = setup();
+    let t = begin_pasted(&s, Config { record: true, content: false }, "oi", vec![]);
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(1);
+    assert_eq!(s_attr(by_name(&spans, "kalango.turn")[0], "kalango.provenance"), Some("user"));
 }
 
 #[test]

@@ -6335,7 +6335,8 @@
  "What is recorded": "Ce qui est enregistré",
  "Everything": "Tout",
  "Only metadata": "Métadonnées seulement",
- "Prompts, answers and actions are recorded": "Les demandes, les réponses et les actions sont enregistrées",
  "Only names, times and counts are recorded": "Seuls les noms, les heures et les compteurs sont enregistrés",
- "Nothing is recorded": "Rien n'est enregistré"
+ "Nothing is recorded": "Rien n'est enregistré",
+ "Prompts, answers and actions are recorded as they are, personal data included": "Les demandes, les réponses et les actions sont enregistrées telles quelles, données personnelles comprises",
+ "“Everything” keeps the text as it came, on this computer only: e-mails, phone numbers, CPFs and names that you type or paste, or that the agent reads, stay in the traces. Kalango Train cleans them only when an item is prepared for a dataset. Choose “Only metadata” to keep no text.": "« Tout » garde le texte tel qu’il est arrivé, sur cet ordinateur seulement : les e-mails, numéros de téléphone, CPF et noms que vous tapez ou collez, ou que l’agent lit, restent dans les traces. Kalango Train ne les nettoie que lorsqu’un élément est préparé pour un jeu de données. Choisissez « Métadonnées seulement » pour ne garder aucun texte."
 }

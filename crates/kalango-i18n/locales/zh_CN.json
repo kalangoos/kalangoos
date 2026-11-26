@@ -6335,7 +6335,8 @@
  "What is recorded": "记录的内容",
  "Everything": "全部",
  "Only metadata": "仅元数据",
- "Prompts, answers and actions are recorded": "记录请求、回答和操作",
  "Only names, times and counts are recorded": "仅记录名称、时间和计数",
- "Nothing is recorded": "不记录任何内容"
+ "Nothing is recorded": "不记录任何内容",
+ "Prompts, answers and actions are recorded as they are, personal data included": "按原样记录请求、回答和操作，包括个人数据",
+ "“Everything” keeps the text as it came, on this computer only: e-mails, phone numbers, CPFs and names that you type or paste, or that the agent reads, stay in the traces. Kalango Train cleans them only when an item is prepared for a dataset. Choose “Only metadata” to keep no text.": "“全部”会按原样保存文本，仅保存在这台电脑上：你输入或粘贴的、或代理读取的电子邮件、电话号码、CPF 和姓名都会留在追踪记录中。Kalango Train 只在为数据集准备条目时才清理它们。选择“仅元数据”则不保存任何文本。"
 }

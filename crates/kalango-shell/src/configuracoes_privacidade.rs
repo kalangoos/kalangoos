@@ -408,6 +408,11 @@ impl PrivacyPage {
         let nomes_r = vec![tr("Everything").to_string(), tr("Only metadata").to_string()];
         let rastros_sel = seletor(&nomes_r, 140);
         let rcs = gtk::Label::new(Some(" "));
+        // (what "Everything" means for personal data, said where it is chosen: kept as it came until Kalango Train
+        // prepares a dataset item, which is where it is cleaned)
+        let aviso_dados = tr("“Everything” keeps the text as it came, on this computer only: e-mails, phone numbers, CPFs and names that you type or paste, or that the agent reads, stay in the traces. Kalango Train cleans them only when an item is prepared for a dataset. Choose “Only metadata” to keep no text.");
+        rastros_sel.set_tooltip_text(Some(aviso_dados));
+        rcs.set_tooltip_text(Some(aviso_dados));
         rastros_card.append(&linha("", tr("What is recorded"), &rcs, &rastros_sel));
         m.painel.append(&rastros_card);
         let page = Rc::new(PrivacyPage {
@@ -526,7 +531,7 @@ impl PrivacyPage {
         self.rastros.set_state(gravar);
         self.rastros_conteudo.1.set_selected(if completo { 0 } else { 1 });
         self.rastros_conteudo.1.set_sensitive(gravar);
-        self.rastros_conteudo.0.set_text(if !gravar { tr("Nothing is recorded") } else if completo { tr("Prompts, answers and actions are recorded") } else { tr("Only names, times and counts are recorded") });
+        self.rastros_conteudo.0.set_text(if !gravar { tr("Nothing is recorded") } else if completo { tr("Prompts, answers and actions are recorded as they are, personal data included") } else { tr("Only names, times and counts are recorded") });
         self.loading.set(antes);
     }
 
