@@ -410,7 +410,7 @@ impl PrivacyPage {
         let rcs = gtk::Label::new(Some(" "));
         // (what "Everything" means for personal data, said where it is chosen: kept as it came until Kalango Train
         // prepares a dataset item, which is where it is cleaned)
-        let aviso_dados = tr("“Everything” keeps the text as it came, on this computer only: e-mails, phone numbers, CPFs and names that you type or paste, or that the agent reads, stay in the traces. Kalango Train cleans them only when an item is prepared for a dataset. Choose “Only metadata” to keep no text.");
+        let aviso_dados = tr("“Everything” keeps the text as it came, on this computer only: e-mails, phone numbers, CPFs and names that you type or paste, or that the agent reads, stay in the traces. Passwords and keys are cut out before recording, but only by their form: it is a safety net and does not catch everything. Kalango Train cleans personal data only when an item is prepared for a dataset. Choose “Only metadata” to keep no text.");
         rastros_sel.set_tooltip_text(Some(aviso_dados));
         rcs.set_tooltip_text(Some(aviso_dados));
         rastros_card.append(&linha("", tr("What is recorded"), &rcs, &rastros_sel));

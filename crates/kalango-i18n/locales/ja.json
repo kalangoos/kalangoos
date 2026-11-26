@@ -6338,5 +6338,5 @@
  "Only names, times and counts are recorded": "名前、時刻、回数だけを記録します",
  "Nothing is recorded": "何も記録しません",
  "Prompts, answers and actions are recorded as they are, personal data included": "依頼、回答、操作を個人データも含めてそのまま記録します",
- "“Everything” keeps the text as it came, on this computer only: e-mails, phone numbers, CPFs and names that you type or paste, or that the agent reads, stay in the traces. Kalango Train cleans them only when an item is prepared for a dataset. Choose “Only metadata” to keep no text.": "「すべて」はテキストを届いたまま、このコンピューターだけに保存します。入力または貼り付けたメールアドレス、電話番号、CPF、名前や、エージェントが読んだものはトレースに残ります。Kalango Train がそれらを消去するのは、項目をデータセット用に準備するときだけです。テキストを残さないには「メタデータのみ」を選んでください。"
+ "“Everything” keeps the text as it came, on this computer only: e-mails, phone numbers, CPFs and names that you type or paste, or that the agent reads, stay in the traces. Passwords and keys are cut out before recording, but only by their form: it is a safety net and does not catch everything. Kalango Train cleans personal data only when an item is prepared for a dataset. Choose “Only metadata” to keep no text.": "「すべて」はテキストを届いたまま、このコンピューターだけに保存します。入力または貼り付けたメールアドレス、電話番号、CPF、名前や、エージェントが読んだものはトレースに残ります。パスワードとキーは記録前に取り除かれますが、形だけで判断します。これは安全網であり、すべてを捕まえるわけではありません。Kalango Train が個人データを消去するのは、項目をデータセット用に準備するときだけです。テキストを残さないには「メタデータのみ」を選んでください。"
 }
