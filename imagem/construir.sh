@@ -393,6 +393,9 @@ HOOKS=(
   --customize-hook='[ ! -x "$1/usr/bin/glib-compile-schemas" ] || chroot "$1" glib-compile-schemas /usr/share/glib-2.0/schemas'
   --customize-hook='chroot "$1" update-initramfs -u -k all'
   --customize-hook='ln -sf ../usr/lib/os-release "$1/etc/os-release"; rm -f "$1"/etc/update-motd.d/*; rm -f "$1"/etc/legal; : > "$1/etc/motd"'
+  # (o mmdebstrap copia o /etc/resolv.conf de quem monta para dentro da raiz — o DNS do computador ou do runner iria na ISO
+  # publicada, e na raiz guardada em cache viria de outro run: sem servidores aqui; o NetworkManager grava o arquivo quando a rede liga)
+  --customize-hook='rm -f "$1/etc/resolv.conf"; printf "# gravado pelo NetworkManager quando a rede liga\n" > "$1/etc/resolv.conf"'
   --customize-hook="rm -f \"\$1/etc/apt/sources.list\" && printf 'Types: deb\\nURIs: http://archive.ubuntu.com/ubuntu\\nSuites: $SUITE $SUITE-updates $SUITE-backports\\nComponents: main restricted universe multiverse\\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\\n\\nTypes: deb\\nURIs: http://security.ubuntu.com/ubuntu\\nSuites: $SUITE-security\\nComponents: main restricted universe multiverse\\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\\n' > \"\$1/etc/apt/sources.list.d/ubuntu.sources\""
   --customize-hook='rm -rf "$1"/var/cache/apt/archives/*.deb "$1"/var/lib/apt/lists/*'
 )
