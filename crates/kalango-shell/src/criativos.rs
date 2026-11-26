@@ -787,13 +787,7 @@ impl Criativos {
             ab.add_css_class("cr-cheio");
             crate::central::posicao_debug_sempre("criativos abrir", ab.upcast_ref());
             let ida = app.id.clone();
-            ab.connect_clicked(move |_| {
-                let r = gio::DesktopAppInfo::new(&format!("{ida}.desktop")).map(|d| d.launch(&[], gdk::Display::default().map(|d| d.app_launch_context()).as_ref()).map_err(|e| e.to_string()))
-                    .unwrap_or_else(|| std::process::Command::new(instalar::flatpak()).args(["run", &ida]).spawn().map(|_| ()).map_err(|e| e.to_string()));
-                if let Err(e) = r {
-                    eprintln!("kalango-shell: abrir {ida}: {e}");
-                }
-            });
+            ab.connect_clicked(move |_| open_creative(&ida, Vec::new()));
             bt.append(&ab);
         } else {
             bt.append(&self.acao(app, None));
@@ -1079,7 +1073,13 @@ impl Criativos {
         // (o kalangod confere, guarda e refaz as permissões; uma pasta recusada, ou sem o kalangod, nada muda)
         match crate::servicos::kalangod_rpc("kalango/craft", serde_json::json!({"acao": "definir", "app": id, "pastas": v})) {
             Ok(x) => *self.agentes.borrow_mut() = x,
-            Err(e) => eprintln!("kalango-shell: apps criativos: pastas não mudaram: {e}"),
+            Err(e) => {
+                // (why the folder was refused, said to the person: kalangod's own words)
+                eprintln!("kalango-shell: apps criativos: pastas não mudaram: {e}");
+                if let Some(sh) = crate::shell_atual() {
+                    sh.notificar(tr("App Center"), tr("The folders did not change"), &e);
+                }
+            }
         }
         self.mostrar_detalhe(id);
     }
@@ -1338,13 +1338,15 @@ impl Criativos {
                     *t.fase.lock().unwrap() = Fase::Instalando;
                 }
                 let r = instalar_preparado(app, &pr);
+                // (opened only once it installed and kalangod made its permissions again: a failed update keeps it closed)
+                let installed = r.is_ok();
                 if let Some(t) = &t {
                     *t.fase.lock().unwrap() = match r {
                         Ok(_) => Fase::Feito,
                         Err(e) => Fase::Falhou(e),
                     };
                 }
-                if logo && abertos.is_empty() {
+                if installed && logo && abertos.is_empty() {
                     let _ = std::process::Command::new(instalar::flatpak()).args(["run", &id]).spawn();
                 }
             }
@@ -1622,15 +1624,109 @@ impl AjustesApp {
 
 /// As permissões de um app instalado: quem as faz é o kalangod, do estado dele (pastas conferidas, rede escolhida). Sem
 /// o kalangod, só as restrições: sem rede, sem o serviço do Flatpak, sem pasta nenhuma — e o erro volta (a tela mostra).
-pub fn permissoes(id: &str) -> Result<(), String> {
+/// Devolve as pastas que o kalangod acabou de deixar de fora (com o porquê), para a pessoa ficar sabendo.
+pub fn permissoes(id: &str) -> Result<Vec<(String, String)>, String> {
     let r = crate::servicos::kalangod_rpc("kalango/craft", serde_json::json!({"acao": "aplicar", "app": id}));
     sem_kalangod(id, r)
 }
 
+/// Whether a desktop id is one of the creative apps of the catalog (exactly its id).
+pub fn is_creative(id: &str) -> bool {
+    catalogo().apps.iter().any(|a| a.id == id)
+}
+
+/// Opens an installed creative app from the shell, with `files` if any (the App Center's Open, the launcher, the dock,
+/// Files and the desktop, "Open with"): first kalangod checks its folders again and makes its Flatpak permissions again
+/// (`permissoes`: a folder swapped since the person chose it is dropped there, and the person is told why; without
+/// kalangod the app sees no folder), then the app starts.
+pub fn open_creative(id: &str, files: Vec<gio::File>) {
+    let id = id.to_string();
+    glib::spawn_future_local(async move {
+        let i = id.clone();
+        match gio::spawn_blocking(move || check_before_opening(&i)).await {
+            Ok(Ok(dropped)) => tell_dropped(&id, &dropped),
+            Ok(Err(e)) => eprintln!("kalango-shell: {id}: {e}"),
+            Err(_) => eprintln!("kalango-shell: {id}: the permissions were not checked"),
+        }
+        let r = match gio::DesktopAppInfo::new(&format!("{id}.desktop")) {
+            Some(d) => crate::apps::launch_info(&d, &files),
+            None => std::process::Command::new(instalar::flatpak())
+                .args(["run", &id])
+                .args(files.iter().filter_map(|f| f.path()))
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+        };
+        if let Err(e) = r {
+            eprintln!("kalango-shell: abrir {id}: {e}");
+        }
+    });
+}
+
+/// At the start of the session kalangod checks every installed creative app's folders again and makes its permissions
+/// again, so an override written before (by an older KalangoOS, say) never outlives the rules, whatever opens the app
+/// later; the person is told of each folder left out. Kalangod not answering yet: tried again a little later, and nothing
+/// is changed meanwhile.
+pub fn refresh_permissions_at_start() {
+    glib::spawn_future_local(async {
+        for _ in 0..10 {
+            // (kalangod does each app on its own: one it cannot do is said in "erro" and does not stop the others)
+            let r = gio::spawn_blocking(|| crate::servicos::kalangod_rpc("kalango/craft", serde_json::json!({"acao": "reaplicar"}))).await;
+            if let Ok(Ok(v)) = r {
+                for a in v["apps"].as_array().into_iter().flatten() {
+                    let id = a["app"].as_str().unwrap_or("");
+                    if let Some(e) = a["erro"].as_str() {
+                        eprintln!("kalango-shell: apps criativos: {id}: {e}");
+                    }
+                    tell_dropped(id, &newly_dropped(a));
+                }
+                return;
+            }
+            // (kalangod is not answering yet: again in a while)
+            glib::timeout_future_seconds(30).await;
+        }
+    });
+}
+
+/// Right before the shell opens a creative app: kalangod checks its folders again and makes its permissions again
+/// (`abrir`; without kalangod, as `permissoes`, the app sees no folder). Returns the folders it has just left out.
+fn check_before_opening(id: &str) -> Result<Vec<(String, String)>, String> {
+    let r = crate::servicos::kalangod_rpc("kalango/craft", serde_json::json!({"acao": "abrir", "app": id}));
+    sem_kalangod(id, r)
+}
+
+/// `tell_dropped` from another thread (the install and the restore run outside the interface's thread).
+fn tell_dropped_later(id: &str, dropped: Vec<(String, String)>) {
+    if dropped.is_empty() {
+        return;
+    }
+    let id = id.to_string();
+    glib::MainContext::default().invoke(move || tell_dropped(&id, &dropped));
+}
+
+/// The folders kalangod has just left out of an app's permissions (`novas_recusas` of `aplicar`): (folder, why).
+fn newly_dropped(v: &serde_json::Value) -> Vec<(String, String)> {
+    v["novas_recusas"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|x| Some((x["pasta"].as_str()?.to_string(), x["motivo"].as_str()?.to_string())))
+        .collect()
+}
+
+/// Tells the person, in a notification, of each folder kalangod has just left out of a creative app, and why (also in
+/// the Timeline, from kalangod).
+fn tell_dropped(id: &str, dropped: &[(String, String)]) {
+    let (Some(app), Some(sh)) = (catalogo().app(id), crate::shell_atual()) else { return };
+    for (_, why) in dropped {
+        sh.notificar(tr("App Center"), &trf("{app} no longer sees a folder", &[("app", app.nome.clone())]), why);
+    }
+}
+
 /// O que fazer com a resposta do kalangod (separado para o teste).
-fn sem_kalangod(id: &str, r: Result<serde_json::Value, String>) -> Result<(), String> {
+fn sem_kalangod(id: &str, r: Result<serde_json::Value, String>) -> Result<Vec<(String, String)>, String> {
     match r {
-        Ok(_) => Ok(()),
+        Ok(v) => Ok(newly_dropped(&v)),
         Err(e) => {
             let _ = instalar::aplicar_permissoes(id, false, &[]);
             Err(trf("the folders and the network were not granted ({e}): the app sees no folder of yours until KalangoOS's service answers", &[("e", e)]))
@@ -1764,7 +1860,7 @@ fn trabalhar(app: &App, _anuncio: Option<Anuncio>, t: &Trabalho, prontas: &Pront
 fn instalar_preparado(app: &App, pr: &Preparado) -> Result<(), Erro> {
     instalar::instalar_commit(app, &pr.repo, &pr.commit, &pr.versao, &pr.digest)?;
     crate::servicos::kalangod_rpc("kalango/craft", serde_json::json!({"acao": "instalado", "app": app.id, "commit": pr.commit})).map_err(Erro::Flatpak)?;
-    permissoes(&app.id).map_err(Erro::Flatpak)
+    permissoes(&app.id).map(|d| tell_dropped_later(&app.id, d)).map_err(Erro::Flatpak)
 }
 
 fn voltar_ao_anterior(app: &App) -> Result<String, String> {
@@ -1775,7 +1871,9 @@ fn voltar_ao_anterior(app: &App) -> Result<String, String> {
     let (commit, versao, repo) = (v["commit"].as_str().unwrap_or(""), v["versao"].as_str().unwrap_or(""), PathBuf::from(v["repo"].as_str().unwrap_or("")));
     instalar::instalar_commit(app, &repo, commit, versao, "").map_err(|e| e.to_string())?;
     crate::servicos::kalangod_rpc("kalango/craft", serde_json::json!({"acao": "voltou", "app": app.id, "commit": commit}))?;
-    let _ = permissoes(&app.id);
+    if let Ok(d) = permissoes(&app.id) {
+        tell_dropped_later(&app.id, d);
+    }
     Ok(versao.to_string())
 }
 
@@ -1830,6 +1928,14 @@ pub fn agendar() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_catalogs_own_ids_open_through_kalangod() {
+        assert!(is_creative("ai.storyteller.filmcraft") && is_creative("ai.storyteller.anicraft"));
+        for other in ["filmcraft", "FilmCraft", "ai.storyteller.filmcraft.desktop", "os.kalango.Arquivos", ""] {
+            assert!(!is_creative(other), "{other}");
+        }
+    }
 
     #[test]
     fn sizes_read_like_the_design() {

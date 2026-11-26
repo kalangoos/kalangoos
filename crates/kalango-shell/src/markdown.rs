@@ -164,7 +164,7 @@ pub fn open_links(l: &gtk::Label) {
                 eprintln!("debug link: {uri}");
             }
             let ctx = gtk::gdk::Display::default().map(|d| d.app_launch_context());
-            let _ = gtk::gio::AppInfo::launch_default_for_uri(uri, ctx.as_ref());
+            let _ = crate::apps::open_uri(uri, ctx.as_ref().map(|c| c.upcast_ref()));
         }
         glib::Propagation::Stop
     });

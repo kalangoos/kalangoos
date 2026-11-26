@@ -302,6 +302,75 @@ pub(crate) fn redraw_icons_at(scale: f64) {
 }
 
 pub fn abrir(app: &App) -> Result<(), String> {
+    // a creative app opens after kalangod checked its folders and made its permissions again (`criativos::open_creative`)
+    if crate::criativos::is_creative(&app.id) {
+        crate::criativos::open_creative(&app.id, Vec::new());
+        record_use(&app.id);
+        return Ok(());
+    }
+    launch_info(&app.info, &[])?;
+    record_use(&app.id);
+    Ok(())
+}
+
+/// The creative app an app entry starts, if it is one: by its desktop id, or by the Flatpak app a desktop file names
+/// (a copy of its launcher on the desktop).
+pub fn creative_of(info: &gio::AppInfo) -> Option<String> {
+    let by_id = info.id().map(|i| i.trim_end_matches(".desktop").to_string());
+    let by_flatpak = info.downcast_ref::<gio::DesktopAppInfo>().and_then(|d| d.string("X-Flatpak")).map(|s| s.to_string());
+    by_id.into_iter().chain(by_flatpak).find(|i| crate::criativos::is_creative(i))
+}
+
+/// Opens `files` with an app ("Open with", recent files of an app, a launcher): a creative app goes through kalangod
+/// first (`criativos::open_creative`), as from the launcher.
+pub fn launch_with(info: &gio::AppInfo, files: &[gio::File], ctx: Option<&gio::AppLaunchContext>) -> Result<(), String> {
+    if let Some(id) = creative_of(info) {
+        crate::criativos::open_creative(&id, files.to_vec());
+        return Ok(());
+    }
+    info.launch(files, ctx).map_err(|e| e.to_string())
+}
+
+/// The creative app that opens this file by default, if it is one (a project file of a creative app, say).
+pub fn default_creative_for(file: &gio::File) -> Option<String> {
+    let info = file.query_info("standard::content-type", gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE).ok()?;
+    creative_of(&gio::AppInfo::default_for_type(&info.content_type()?, false)?)
+}
+
+/// Opens a file with its default app: a creative app goes through kalangod first.
+pub fn open_default(file: &gio::File, ctx: Option<&gio::AppLaunchContext>) -> Result<(), String> {
+    if let Some(id) = default_creative_for(file) {
+        crate::criativos::open_creative(&id, vec![file.clone()]);
+        return Ok(());
+    }
+    gio::AppInfo::launch_default_for_uri(&file.uri(), ctx).map_err(|e| e.to_string())
+}
+
+/// Opens a URI with its default app: a local file goes through `open_default` (a creative app is checked first).
+pub fn open_uri(uri: &str, ctx: Option<&gio::AppLaunchContext>) -> Result<(), String> {
+    let f = gio::File::for_uri(uri);
+    if f.is_native() {
+        return open_default(&f, ctx);
+    }
+    gio::AppInfo::launch_default_for_uri(uri, ctx).map_err(|e| e.to_string())
+}
+
+/// Opens a file as `gtk::FileLauncher` does (the app the person chose for its type, asking when there is none): a
+/// creative app goes through kalangod first.
+pub fn launch_file(file: &gio::File, parent: Option<&gtk::Window>) {
+    if let Some(id) = default_creative_for(file) {
+        crate::criativos::open_creative(&id, vec![file.clone()]);
+        return;
+    }
+    gtk::FileLauncher::new(Some(file)).launch(parent, None::<&gio::Cancellable>, |r| {
+        if let Err(e) = r {
+            eprintln!("kalango-shell: abrir: {e}");
+        }
+    });
+}
+
+/// Starts an app from its desktop entry, with `files` if any, without what the shell itself preloads.
+pub fn launch_info(info: &gio::DesktopAppInfo, files: &[gio::File]) -> Result<(), String> {
     let ctx = gtk::gdk::Display::default().map(|d| d.app_launch_context());
     // the shell runs with LD_PRELOAD=libgtk4-layer-shell and its apps do not need it (and the Remote's permission is refused
     // for anything preloaded): what the shell preloaded does not pass on to the apps it opens
@@ -309,9 +378,7 @@ pub fn abrir(app: &App) -> Result<(), String> {
         c.unsetenv("LD_PRELOAD");
         c.unsetenv("LD_AUDIT");
     }
-    app.info.launch(&[], ctx.as_ref()).map_err(|e| e.to_string())?;
-    record_use(&app.id);
-    Ok(())
+    info.launch(files, ctx.as_ref()).map_err(|e| e.to_string())
 }
 
 // ------------------------------------------------------------------ use (for "Sugeridos agora")
@@ -521,12 +588,77 @@ mod icon_tests {
     #[test]
     fn what_the_shell_preloaded_does_not_pass_to_the_apps_it_opens() {
         let src = include_str!("apps.rs");
-        let from = src.find("pub fn abrir").expect("abrir");
-        let body = &src[from..from + src[from..].find("\n}\n").expect("end of abrir")];
-        let launch = body.find("app.info.launch").expect("the launch");
+        let body = |name: &str| {
+            let from = src.find(name).unwrap_or_else(|| panic!("{name}"));
+            &src[from..from + src[from..].find("\n}\n").expect("end of the function")]
+        };
+        let start = body("pub fn launch_info");
+        let launch = start.find("info.launch(").expect("the launch");
         for var in ["LD_PRELOAD", "LD_AUDIT"] {
-            let call = body.find(&format!("unsetenv(\"{var}\")")).unwrap_or_else(|| panic!("abrir must unset {var}"));
+            let call = start.find(&format!("unsetenv(\"{var}\")")).unwrap_or_else(|| panic!("launch_info must unset {var}"));
             assert!(call < launch, "{var} is unset before the app is launched");
         }
+        // every app the shell opens starts there: the creative apps too, once kalangod made their permissions again
+        assert!(body("pub fn abrir").contains("launch_info(&app.info, &[])"));
+        assert!(include_str!("criativos.rs").contains("crate::apps::launch_info(&d, &files)"));
+    }
+
+    /// A creative app is opened only after kalangod checked its folders again (`criativos::open_creative` asks for
+    /// `aplicar` before it starts the app), from every place the shell opens apps or files with an app. A source check:
+    /// starting an app needs a display and an installed app.
+    #[test]
+    fn the_shell_opens_a_creative_app_only_after_kalangod_checked_its_folders() {
+        let body = |src: &'static str, name: &str| {
+            let from = src.find(name).unwrap_or_else(|| panic!("{name}"));
+            &src[from..from + src[from..].find("\n}\n").expect("end of the function")]
+        };
+        let criativos = include_str!("criativos.rs");
+        let open = body(criativos, "pub fn open_creative");
+        assert!(open.find("check_before_opening(&i)").unwrap() < open.find("launch_info(&d, &files)").unwrap(), "kalangod first, then the app");
+        let perms = body(criativos, "pub fn permissoes");
+        assert!(perms.contains("\"acao\": \"aplicar\""), "{perms}");
+        // the helpers send a creative app there before anything else starts it
+        let apps = include_str!("apps.rs");
+        for (f, check, start) in [
+            ("pub fn abrir", "is_creative(&app.id)", "launch_info(&app.info"),
+            ("pub fn launch_with", "creative_of(info)", "info.launch("),
+            ("pub fn open_default", "default_creative_for(file)", "launch_default_for_uri("),
+        ] {
+            let b = body(apps, f);
+            assert!(b.find(check).unwrap() < b.find(start).unwrap(), "{f}");
+            assert!(b.contains("open_creative("), "{f}");
+        }
+        let opens = body(criativos, "fn check_before_opening");
+        assert!(opens.contains("\"acao\": \"abrir\""), "{opens}");
+        assert!(body(criativos, "pub fn refresh_permissions_at_start").contains("\"acao\": \"reaplicar\""));
+        for (f, check) in [("pub fn open_uri", "open_default(&f"), ("pub fn launch_file", "default_creative_for(file)")] {
+            let b = body(apps, f);
+            assert!(b.contains(check), "{f}");
+        }
+        // and no other source file of the shell starts an app, a launcher or a file's or a URI's default app by itself:
+        // every one goes through the helpers above (only the help's link to the community, a web page, uses UriLauncher)
+        let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        let mut seen = 0;
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|x| x != "rs") || path.ends_with("src/apps.rs") {
+                    continue;
+                }
+                seen += 1;
+                let src = std::fs::read_to_string(&path).unwrap();
+                for bad in [".launch(&[", "launch_default_for_uri(", "launch_uris", "FileLauncher::new", "launch_default_for_uri_async"] {
+                    assert!(!src.contains(bad), "{} starts an app by itself ({bad}): use apps::launch_with, open_default, open_uri or launch_file", path.display());
+                }
+                if src.contains("UriLauncher::new") {
+                    assert!(path.ends_with("src/help_app.rs"), "{}: UriLauncher outside the help's web link", path.display());
+                }
+            }
+        }
+        assert!(seen > 100, "only {seen} files looked at");
     }
 }

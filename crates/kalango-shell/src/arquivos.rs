@@ -3539,8 +3539,7 @@ impl Arquivos {
             }
             return;
         }
-        let l = gtk::FileLauncher::new(Some(&gio::File::for_path(p)));
-        l.launch(Some(&self.janela), None::<&gio::Cancellable>, |_| {});
+        crate::apps::launch_file(&gio::File::for_path(p), Some(self.janela.upcast_ref()));
         gtk::RecentManager::default().add_item(&gio::File::for_path(p).uri());
     }
 

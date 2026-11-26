@@ -398,7 +398,7 @@ impl HtmlCanvas {
         abrir.connect_clicked(move |b| {
             let Some(f) = w.upgrade().and_then(|c| c.file.borrow().clone()) else { return };
             let uri = gio::File::for_path(&f).uri();
-            let _ = gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>);
+            let _ = crate::apps::open_uri(&uri, None);
             if debug() {
                 eprintln!("debug canvas: abrir no navegador {uri}");
             }

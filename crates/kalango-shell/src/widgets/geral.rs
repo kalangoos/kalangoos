@@ -466,7 +466,7 @@ pub fn acoes(shell: &Rc<Shell>) -> gtk::Widget {
         if !p.exists() {
             let _ = std::fs::write(&p, "");
         }
-        let _ = gtk::gio::AppInfo::launch_default_for_uri(&gtk::gio::File::for_path(&p).uri(), gtk::gdk::Display::default().map(|d| d.app_launch_context()).as_ref());
+        let _ = crate::apps::open_default(&gtk::gio::File::for_path(&p), gtk::gdk::Display::default().map(|d| d.app_launch_context()).as_ref().map(|c| c.upcast_ref()));
     });
     let (resumir, _) = botao("spark", tr("Summarize this screen"), true);
     let s = Rc::downgrade(shell);

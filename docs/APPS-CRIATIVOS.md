@@ -147,12 +147,29 @@ cada app com o nível que vale), `craft.chamar` (`app`, `ferramenta`, `argumento
 - **"Agentes podem usar este app"** e **as pastas que o servidor do app vê** (no detalhe do app) ficam no estado do
   kalangod (`/var/lib/kalango/craft/<uid>.json`), mudados só pela interface da pessoa (`kalango/craft`,
   `is_person_ui`); nunca de um arquivo da casa, que os programas da pessoa — os agentes inclusive — podem escrever.
-  Cada pasta é conferida ao entrar e de novo a cada sessão (`pasta_segura`), por uma lista do que pode: só as pastas
-  de mídia e documentos do XDG (Vídeos, Imagens, Documentos, Música, Downloads) ou uma pasta que a pessoa escolheu;
-  resolvida pelo kalangod (links seguidos), uma pasta que existe, dentro da casa (não a própria casa), sem nenhum
-  componente com ponto nem de programas (`bin`, `scripts`…) e fora das pastas protegidas do kalangod.
-  Até um `XDG_PICTURES_DIR="/"` escrito no `user-dirs.dirs` é recusado; uma pasta que não passa recusa a chamada
-  (erro na linha do tempo), nunca é trocada por outra.
+  Cada pasta é conferida ao entrar (`grantable_folder`), por uma lista do que pode: só as pastas de mídia e documentos
+  do XDG (Vídeos, Imagens, Documentos, Música, Downloads) ou uma pasta que a pessoa escolheu; uma pasta que existe,
+  dentro da casa (não a própria casa), sem nenhum componente com ponto nem de programas (`bin`, `scripts`…), fora das
+  pastas protegidas do kalangod, e a própria pasta (um caminho que passa por um link é recusado). Também é recusada uma
+  pasta **dentro** de uma pasta onde outros escrevem — os comandos dos agentes (as pastas de trabalho, as de projeto e as
+  liberadas para uma tarefa) ou outro app criativo (as pastas que a pessoa escolheu para ele); a própria pasta vale — e
+  uma em que ela ou uma pasta acima dela, até a casa, não é da pessoa ou pode ser mudada por outros usuários (gravável por
+  "outros", por um grupo que não seja só da pessoa, ou por uma ACL): quem escreve num ancestral pode trocar a pasta por
+  um link para `~/.ssh` depois da concessão, e o override, que é permanente, levaria o app a ela na próxima abertura. Ao
+  entrar, o kalangod guarda a identidade (dispositivo, inode, abertos sem seguir links) da pasta e de cada pasta acima
+  dela até a casa. A cada vez que ele refaz as permissões, cada pasta é conferida de novo: uma que mudou sai do override
+  (o override de antes é apagado mesmo assim), fica em `recusadas` no estado e vai para a linha do tempo da pessoa
+  (`craft.pasta_recusada`) com o porquê; o shell avisa também, numa notificação. Nunca é trocada por outra nem concedida
+  em silêncio. O kalangod refaz as permissões antes de iniciar o servidor MCP, quando a Central pede, quando os agentes
+  ganham uma pasta de projeto ou de tarefa e quando outro app ganha pastas; o shell pede ao entrar na sessão
+  (`reaplicar`: cada app por si, um que falha não para os outros; um override de antes desta conferência não sobrevive)
+  e logo antes de abrir um app criativo de qualquer lugar do shell (`abrir`: lançador, doca, Central, busca, "Abrir
+  com", um arquivo ou link aberto com o app padrão). Os lançamentos do shell passam por `apps.rs`, e um teste confere
+  que nenhum outro arquivo usa por conta própria as chamadas de lançamento do GIO e do GTK (`launch`,
+  `launch_default_for_uri`, `FileLauncher`); o único `flatpak run` direto abre o app logo depois de uma atualização
+  instalada, quando o kalangod acabou de refazer as permissões. Numa sessão de teste sem instalação de teste do Flatpak
+  (`KALANGO_CRAFT_FLATPAK_USER_DIR`), o que é refeito por si só não mexe na instalação real.
+  Até um `XDG_PICTURES_DIR="/"` escrito no `user-dirs.dirs` é recusado.
 
 ### Níveis por ferramenta
 
@@ -302,6 +319,14 @@ Limites conhecidos do modelo de ameaça:
   comparamos um hash dos arquivos instalados com o repositório (custo alto para o ganho).
 - O interruptor e as permissões valem para os servidores que o kalangod inicia; um app aberto pela pessoa na Central
   roda com o override que o kalangod fez (sem sockets amplos), mas as sessões dos agentes são só as dele.
+- **Aberturas que não passam pelo shell nem pelo kalangod.** Um app aberto por `flatpak run` num terminal, ou por outro
+  programa da pessoa, usa o override que o kalangod escreveu da última vez, sem conferir as pastas de novo. O que segura
+  esse caso é a conferência na entrada (nenhum ancestral gravável por outros, pelos agentes ou por outro app) e refazer
+  as permissões quando quem escreve em volta muda e a cada sessão. Uma pasta apagada e criada de novo pode receber o
+  mesmo inode (vazia, ela não leva a lugar nenhum).
+- **A Central ainda não mostra as `recusadas`.** O detalhe do app continua listando a escolha da pessoa; o porquê de
+  uma pasta recusada chega por notificação e pela linha do tempo. Marcar a pasta no próprio detalhe é uma mudança de
+  tela e espera o estado no Design System.
 
 Validado de verdade, contra o servidor do projeto (teste ignorado `preparar_anicraft_sem_instalar`, ~20 MB, numa pasta
 e numa instalação do Flatpak de teste): índice, assinatura, download das camadas, importação com

@@ -157,6 +157,19 @@ aprovação da pessoa, com o texto exato, sem a opção "sempre permitir"; nenhu
 O estado que a barra pode ler está em `$XDG_RUNTIME_DIR/kalango/tunel.json` (`open`, `mode`, `url`, `opened_at`,
 `last_activity`, `idle_close_s`, `healthy`, `connections`, `closed_reason`), reescrito a cada mudança.
 
+## Revisão de segurança, rodada 7: o que mudou
+
+- **Um cartão só para ligar um gatilho.** Quando um programa da pessoa liga um gatilho pelo soquete do serviço, o serviço
+  pergunta (`gatilho_internet.autorizar_ampliacao`, "enable") e o kalangod mostra agora o mesmo cartão de
+  `gatilho_internet.ativar`, montado pela mesma função a partir do que o serviço diz do gatilho naquele momento: assinatura
+  (NENHUMA = público, aviso coral), nível e endereço. Antes, esse caminho mostrava um cartão genérico que falava sempre de
+  chave, mesmo de um gatilho público.
+- **Os fatos do cartão conferidos depois do "sim".** O kalangod lê o gatilho de novo e só responde que sim se ele ainda é o
+  que o cartão mostrou (nível, assinatura, fluxo, lista de endereços, endereço); se mudou, nada é ligado. Os fatos voltam na
+  resposta (`esperado`). **Limite:** o serviço ainda não usa esse `esperado`; entre a resposta do kalangod e a gravação, ele
+  confere o gatilho contra o que ele mesmo leu antes de perguntar (assinatura, nível, lista de endereços), não contra o
+  cartão. Comparar com o `esperado` é uma mudança do `kalango-fluxosd` (outro repositório).
+
 ## Revisão de segurança, rodada 6: o que mudou
 
 - **Arquivos de transcribe e describe-image.** Em execuções vindas de fora, o arquivo é escrito no próprio fluxo: um nome de

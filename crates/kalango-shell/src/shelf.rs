@@ -394,7 +394,7 @@ impl Shelf {
     }
 
     fn open(path: &Path) {
-        let _ = gio::AppInfo::launch_default_for_uri(&gio::File::for_path(path).uri(), gio::AppLaunchContext::NONE);
+        let _ = crate::apps::open_default(&gio::File::for_path(path), None);
         if debug() {
             eprintln!("debug prateleira: abrir «{}»", path.display());
         }

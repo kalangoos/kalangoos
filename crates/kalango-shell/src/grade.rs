@@ -437,7 +437,7 @@ impl Grade {
                     if let Some(g) = me.upgrade() {
                         g.fechar();
                     }
-                    let _ = gio::AppInfo::launch_default_for_uri(&gio::File::for_path(&d).uri(), gdk::Display::default().map(|x| x.app_launch_context()).as_ref());
+                    let _ = crate::apps::open_default(&gio::File::for_path(&d), gdk::Display::default().map(|x| x.app_launch_context()).as_ref().map(|c| c.upcast_ref()));
                 }), tr("Downloads changed").to_string()));
                 usados.push(a.id.clone());
             }
@@ -533,7 +533,7 @@ impl Grade {
                 if let Some(g) = w.upgrade() {
                     g.fechar();
                 }
-                let _ = gio::AppInfo::launch_default_for_uri(&gio::File::for_path(&p).uri(), gdk::Display::default().map(|x| x.app_launch_context()).as_ref());
+                let _ = crate::apps::open_default(&gio::File::for_path(&p), gdk::Display::default().map(|x| x.app_launch_context()).as_ref().map(|c| c.upcast_ref()));
             });
             self.recentes.append(&b);
         }
@@ -692,7 +692,7 @@ impl Grade {
                 if let Some(g) = w.upgrade() {
                     g.fechar();
                 }
-                let _ = info.launch(&[gio::File::for_path(&p)], gdk::Display::default().map(|x| x.app_launch_context()).as_ref());
+                let _ = crate::apps::launch_with(info.upcast_ref(), &[gio::File::for_path(&p)], gdk::Display::default().map(|x| x.app_launch_context()).as_ref().map(|c| c.upcast_ref()));
             });
         }
         if self.agente.first_child().and_then(|c| c.next_sibling()).is_none() {

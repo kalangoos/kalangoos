@@ -1053,8 +1053,13 @@ impl AppStore {
             crate::central::posicao_debug_sempre(&format!("loja abrir {}", it.id), b.upcast_ref());
             let it2 = it.clone();
             b.connect_clicked(move |_| {
+                // (a creative app: kalangod checks its folders first)
+                if crate::criativos::is_creative(&it2.id) {
+                    crate::criativos::open_creative(&it2.id, Vec::new());
+                    return;
+                }
                 let r = match &it2.desktop {
-                    Some(d) => d.launch(&[], gdk::Display::default().map(|d| d.app_launch_context()).as_ref()).map_err(|e| e.to_string()),
+                    Some(d) => crate::apps::launch_with(d.upcast_ref(), &[], gdk::Display::default().map(|d| d.app_launch_context()).as_ref().map(|c| c.upcast_ref())),
                     None => std::process::Command::new(data::flatpak()).args(["run", &it2.id]).spawn().map(|_| ()).map_err(|e| e.to_string()),
                 };
                 if let Err(e) = r {

@@ -2528,8 +2528,7 @@ impl Conversas {
                 abrir.set_valign(Align::Center);
                 let p2 = path.clone();
                 abrir.connect_clicked(move |b| {
-                    let l = gtk::FileLauncher::new(Some(&gio::File::for_path(&p2)));
-                    l.launch(b.root().and_downcast::<gtk::Window>().as_ref(), None::<&gio::Cancellable>, |_| {});
+                    crate::apps::launch_file(&gio::File::for_path(&p2), b.root().and_downcast::<gtk::Window>().as_ref());
                 });
                 r.append(&abrir);
             }
