@@ -1042,7 +1042,7 @@ impl DesktopFiles {
         if p.extension().is_some_and(|e| e == "desktop") && executable(p) {
             if let Some(a) = gio::DesktopAppInfo::from_filename(p) {
                 let ctx = WidgetExt::display(&self.window).app_launch_context();
-                if let Err(e) = a.launch(&[], Some(&ctx)) {
+                if let Err(e) = crate::apps::launch_with(a.upcast_ref(), &[], Some(ctx.upcast_ref())) {
                     eprintln!("kalango-shell: área de trabalho: {e}");
                 }
                 if debug() {
@@ -1052,6 +1052,11 @@ impl DesktopFiles {
             }
         }
         let f = gio::File::for_path(p);
+        // (a file a creative app opens by default: kalangod checks the app's folders first)
+        if let Some(id) = crate::apps::default_creative_for(&f) {
+            crate::criativos::open_creative(&id, vec![f]);
+            return;
+        }
         gtk::FileLauncher::new(Some(&f)).launch(Some(&self.window), None::<&gio::Cancellable>, |r| {
             if let Err(e) = r {
                 eprintln!("kalango-shell: área de trabalho: {e}");
@@ -1342,7 +1347,7 @@ impl DesktopFiles {
                 let is_default = default.as_ref().is_some_and(|d| d.id() == a.id());
                 m.item(&page, "apps-n", &a.display_name(), if is_default { tr("default") } else { "" }, "", move || {
                     let ctx = WidgetExt::display(&win).app_launch_context();
-                    if let Err(e) = a2.launch(&[gio::File::for_path(&pp)], Some(&ctx)) {
+                    if let Err(e) = crate::apps::launch_with(&a2, &[gio::File::for_path(&pp)], Some(ctx.upcast_ref())) {
                         eprintln!("kalango-shell: abrir com: {e}");
                     }
                 });

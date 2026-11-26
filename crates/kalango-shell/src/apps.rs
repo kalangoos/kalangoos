@@ -304,17 +304,50 @@ pub(crate) fn redraw_icons_at(scale: f64) {
 pub fn abrir(app: &App) -> Result<(), String> {
     // a creative app opens after kalangod checked its folders and made its permissions again (`criativos::open_creative`)
     if crate::criativos::is_creative(&app.id) {
-        crate::criativos::open_creative(&app.id);
+        crate::criativos::open_creative(&app.id, Vec::new());
         record_use(&app.id);
         return Ok(());
     }
-    launch_info(&app.info)?;
+    launch_info(&app.info, &[])?;
     record_use(&app.id);
     Ok(())
 }
 
-/// Starts an app from its desktop entry, without what the shell itself preloads.
-pub fn launch_info(info: &gio::DesktopAppInfo) -> Result<(), String> {
+/// The creative app an app entry starts, if it is one: by its desktop id, or by the Flatpak app a desktop file names
+/// (a copy of its launcher on the desktop).
+pub fn creative_of(info: &gio::AppInfo) -> Option<String> {
+    let by_id = info.id().map(|i| i.trim_end_matches(".desktop").to_string());
+    let by_flatpak = info.downcast_ref::<gio::DesktopAppInfo>().and_then(|d| d.string("X-Flatpak")).map(|s| s.to_string());
+    by_id.into_iter().chain(by_flatpak).find(|i| crate::criativos::is_creative(i))
+}
+
+/// Opens `files` with an app ("Open with", recent files of an app, a launcher): a creative app goes through kalangod
+/// first (`criativos::open_creative`), as from the launcher.
+pub fn launch_with(info: &gio::AppInfo, files: &[gio::File], ctx: Option<&gio::AppLaunchContext>) -> Result<(), String> {
+    if let Some(id) = creative_of(info) {
+        crate::criativos::open_creative(&id, files.to_vec());
+        return Ok(());
+    }
+    info.launch(files, ctx).map_err(|e| e.to_string())
+}
+
+/// The creative app that opens this file by default, if it is one (a project file of a creative app, say).
+pub fn default_creative_for(file: &gio::File) -> Option<String> {
+    let info = file.query_info("standard::content-type", gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE).ok()?;
+    creative_of(&gio::AppInfo::default_for_type(&info.content_type()?, false)?)
+}
+
+/// Opens a file with its default app: a creative app goes through kalangod first.
+pub fn open_default(file: &gio::File, ctx: Option<&gio::AppLaunchContext>) -> Result<(), String> {
+    if let Some(id) = default_creative_for(file) {
+        crate::criativos::open_creative(&id, vec![file.clone()]);
+        return Ok(());
+    }
+    gio::AppInfo::launch_default_for_uri(&file.uri(), ctx).map_err(|e| e.to_string())
+}
+
+/// Starts an app from its desktop entry, with `files` if any, without what the shell itself preloads.
+pub fn launch_info(info: &gio::DesktopAppInfo, files: &[gio::File]) -> Result<(), String> {
     let ctx = gtk::gdk::Display::default().map(|d| d.app_launch_context());
     // the shell runs with LD_PRELOAD=libgtk4-layer-shell and its apps do not need it (and the Remote's permission is refused
     // for anything preloaded): what the shell preloaded does not pass on to the apps it opens
@@ -322,7 +355,7 @@ pub fn launch_info(info: &gio::DesktopAppInfo) -> Result<(), String> {
         c.unsetenv("LD_PRELOAD");
         c.unsetenv("LD_AUDIT");
     }
-    info.launch(&[], ctx.as_ref()).map_err(|e| e.to_string())
+    info.launch(files, ctx.as_ref()).map_err(|e| e.to_string())
 }
 
 // ------------------------------------------------------------------ use (for "Sugeridos agora")
@@ -543,7 +576,57 @@ mod icon_tests {
             assert!(call < launch, "{var} is unset before the app is launched");
         }
         // every app the shell opens starts there: the creative apps too, once kalangod made their permissions again
-        assert!(body("pub fn abrir").contains("launch_info(&app.info)"));
-        assert!(include_str!("criativos.rs").contains("crate::apps::launch_info(&d)"));
+        assert!(body("pub fn abrir").contains("launch_info(&app.info, &[])"));
+        assert!(include_str!("criativos.rs").contains("crate::apps::launch_info(&d, &files)"));
+    }
+
+    /// A creative app is opened only after kalangod checked its folders again (`criativos::open_creative` asks for
+    /// `aplicar` before it starts the app), from every place the shell opens apps or files with an app. A source check:
+    /// starting an app needs a display and an installed app.
+    #[test]
+    fn the_shell_opens_a_creative_app_only_after_kalangod_checked_its_folders() {
+        let body = |src: &'static str, name: &str| {
+            let from = src.find(name).unwrap_or_else(|| panic!("{name}"));
+            &src[from..from + src[from..].find("\n}\n").expect("end of the function")]
+        };
+        let criativos = include_str!("criativos.rs");
+        let open = body(criativos, "pub fn open_creative");
+        assert!(open.find("permissoes(&i)").unwrap() < open.find("launch_info(&d, &files)").unwrap(), "kalangod first, then the app");
+        let perms = body(criativos, "pub fn permissoes");
+        assert!(perms.contains("\"acao\": \"aplicar\""), "{perms}");
+        // the helpers send a creative app there before anything else starts it
+        let apps = include_str!("apps.rs");
+        for (f, check, start) in [
+            ("pub fn abrir", "is_creative(&app.id)", "launch_info(&app.info"),
+            ("pub fn launch_with", "creative_of(info)", "info.launch("),
+            ("pub fn open_default", "default_creative_for(file)", "launch_default_for_uri("),
+        ] {
+            let b = body(apps, f);
+            assert!(b.find(check).unwrap() < b.find(start).unwrap(), "{f}");
+            assert!(b.contains("open_creative("), "{f}");
+        }
+        // and no other place starts an app with files, a launcher or a local file's default app by itself
+        let files: [(&str, &str); 11] = [
+            ("grade.rs", include_str!("grade.rs")),
+            ("superficies.rs", include_str!("superficies.rs")),
+            ("arquivos_dialogos.rs", include_str!("arquivos_dialogos.rs")),
+            ("desktop_files.rs", include_str!("desktop_files.rs")),
+            ("arquivos.rs", include_str!("arquivos.rs")),
+            ("start_menu.rs", include_str!("start_menu.rs")),
+            ("shelf.rs", include_str!("shelf.rs")),
+            ("widgets/geral.rs", include_str!("widgets/geral.rs")),
+            ("screenshot_tool.rs", include_str!("screenshot_tool.rs")),
+            ("central_conversas.rs", include_str!("central_conversas.rs")),
+            ("app_store.rs", include_str!("app_store.rs")),
+        ];
+        for (name, src) in files {
+            for bad in [".launch(&[", "launch_default_for_uri(&gio::File::for_path", "launch_default_for_uri(&gtk::gio::File::for_path"] {
+                assert!(!src.contains(bad), "{name} starts an app by itself ({bad}): use apps::launch_with or apps::open_default");
+            }
+            if let Some(i) = src.find("FileLauncher::new") {
+                let before = &src[i.saturating_sub(400)..i];
+                assert!(before.contains("default_creative_for("), "{name}: a FileLauncher without the creative apps' check before it");
+            }
+        }
     }
 }

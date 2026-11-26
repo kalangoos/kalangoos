@@ -546,7 +546,7 @@ pub fn ask_folder(st: &crate::server::State, peer: &Peer, caller: &str, tool: &s
                 st.folders.grant_task(peer, real.clone(), id);
             }
             // (a folder granted to a creative app that is now inside this one leaves its permissions: an agent could swap it)
-            crate::tools::craft::after_agents_gain_a_folder(&st.cfg, peer, crate::tools::craft::GrantContext::of(st));
+            crate::tools::craft::reapply_installed(&st.cfg, peer, crate::tools::craft::GrantContext::of(st), None);
             Ok((real, always || from_person))
         }
         (crate::approval::Outcome::Denied, _) => Err(trf("the person did not let commands write in {path}", &[("path", shown)])),

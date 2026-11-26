@@ -96,14 +96,14 @@ pub fn rpc_with(cfg: &crate::policy::Config, peer: &Peer, params: &Value, gc: Gr
                 if let Some(ps) = params["pastas"].as_array() {
                     let nomes: Vec<String> = ps.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
                     // (each folder checked now, and what kalangod saw of it kept: at every start it must still be that folder)
-                    let gravaveis = agent_writable(cfg, peer, gc);
-                    let mut vistas = serde_json::Map::new();
+                    let writers = others_write_in(cfg, peer, gc, app);
+                    let mut seen = serde_json::Map::new();
                     for n in &nomes {
-                        let (caminho, cadeia) = grantable_folder(cfg, peer, n, &gravaveis)?;
-                        vistas.insert(n.clone(), json!(GrantedFolder { caminho, cadeia }));
+                        let (path, chain) = grantable_folder(cfg, peer, n, &writers)?;
+                        seen.insert(n.clone(), json!(GrantedFolder { path, chain }));
                     }
                     v[&id]["pastas"] = json!(nomes);
-                    v[&id]["identidades"] = Value::Object(vistas);
+                    v[&id]["identidades"] = Value::Object(seen);
                     v[&id]["recusadas"] = json!([]);
                 }
                 gravar_atomico(&p, &v.to_string())?;
@@ -117,9 +117,13 @@ pub fn rpc_with(cfg: &crate::policy::Config, peer: &Peer, params: &Value, gc: Gr
             if (params.get("rede").is_some() || params.get("pastas").is_some()) && instalados(peer).contains(&id) {
                 aplicar_permissoes(cfg, peer, app, gc)?;
             }
+            // (this app now writes in these folders: a folder of another app inside one of them leaves that app's permissions)
+            if params["pastas"].is_array() {
+                reapply_installed(cfg, peer, gc, Some(&id));
+            }
             Ok(v)
         }
-        // as pastas conferidas de um app (o que a Central mostra: as que ele vê e as que ficaram de fora, com o porquê)
+        // as pastas conferidas de um app: as que ele vê e as que ficaram de fora, com o porquê
         "pastas" => {
             let app = catalogo().app(params["app"].as_str().ok_or("app?")?).ok_or_else(|| tr("not a creative app of the catalog").to_string())?;
             let c = check_folders(cfg, peer, gc, app, false);
@@ -209,7 +213,7 @@ pub fn rpc_with(cfg: &crate::policy::Config, peer: &Peer, params: &Value, gc: Gr
         "aplicar" => {
             let app = catalogo().app(params["app"].as_str().ok_or("app?")?).ok_or_else(|| tr("not a creative app of the catalog").to_string())?;
             let c = aplicar_permissoes(cfg, peer, app, gc)?;
-            Ok(json!({"aplicado": app.id, "recusadas": dropped_json(&c.dropped)}))
+            Ok(json!({"aplicado": app.id, "recusadas": dropped_json(&c.dropped), "novas_recusas": dropped_json(&c.newly_dropped)}))
         }
         _ => Err(tr("unknown action").into()),
     }
@@ -385,16 +389,17 @@ pub fn aplicar_permissoes(cfg: &crate::policy::Config, peer: &Peer, app: &App, g
     Ok(checked)
 }
 
-/// Agents' commands just got a folder to write in (a project folder, or one for a task): every installed creative app has
-/// its folders checked and its permissions made again now, so a folder granted to an app that is now inside a folder
-/// agents write in leaves the override before an agent could swap it (and the Timeline says so) — whatever opens the app
-/// next, through kalangod or not.
-pub fn after_agents_gain_a_folder(cfg: &crate::policy::Config, peer: &Peer, gc: GrantContext) {
+/// What someone other than the person can change around the folders granted to creative apps may have grown (agents'
+/// commands got a project folder or one for a task, or a creative app got other folders): every installed creative app
+/// (but `except`) has its folders checked and its permissions made again now, so a folder that is now inside a folder
+/// someone else writes in leaves the override before it could be swapped (and the Timeline says so) — whatever opens
+/// the app next, through kalangod or not.
+pub fn reapply_installed(cfg: &crate::policy::Config, peer: &Peer, gc: GrantContext, except: Option<&str>) {
     // (a test session without a test installation of Flatpak would make the overrides of the real one again)
     if peer.home != peer.passwd_home && std::env::var_os("KALANGO_CRAFT_FLATPAK_USER_DIR").is_none() {
         return;
     }
-    for id in instalados(peer) {
+    for id in instalados(peer).into_iter().filter(|id| Some(id.as_str()) != except) {
         if let Some(app) = catalogo().app(&id) {
             if let Err(e) = aplicar_permissoes(cfg, peer, app, gc) {
                 eprintln!("kalangod: {id}: {e}");
@@ -428,26 +433,28 @@ impl<'a> GrantContext<'a> {
 /// (device, inode).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct GrantedFolder {
-    caminho: PathBuf,
-    cadeia: Vec<(u64, u64)>,
+    path: PathBuf,
+    chain: Vec<(u64, u64)>,
 }
 
-/// The folders of an app checked now: those the app sees, and those left out, each with why (the folder's name as the
-/// person chose it, and the reason).
+/// The folders of an app checked now: those the app sees, those left out (the folder's name as the person chose it, and
+/// why), and, of those, the ones left out for the first time for that reason (what the person is told about).
 #[derive(Debug, Default)]
 pub struct Checked {
     pub ok: Vec<PathBuf>,
     pub dropped: Vec<(String, String)>,
+    pub newly_dropped: Vec<(String, String)>,
 }
 
 fn dropped_json(d: &[(String, String)]) -> Value {
     json!(d.iter().map(|(n, why)| json!({"pasta": n, "motivo": why})).collect::<Vec<_>>())
 }
 
-/// The folders agents' commands may write in for this person (`allowlist.rs`): the work folders, the project folders and
-/// the folders approved for one task, resolved. A folder inside one of them can be swapped by an agent (renamed away, and
-/// a link to anywhere put in its place), so it is never granted to a creative app.
-fn agent_writable(cfg: &crate::policy::Config, peer: &Peer, gc: GrantContext) -> Vec<PathBuf> {
+/// The folders someone other than the person may write in, for the folders of `app` (resolved): those agents' commands
+/// write in (`allowlist.rs`: the work folders, the project folders, the folders approved for one task) and those the
+/// person chose for the other creative apps (an app, or an agent driving it, writes there). A folder inside one of them
+/// can be swapped (renamed away, and a link to anywhere put in its place), so it is never granted.
+fn others_write_in(cfg: &crate::policy::Config, peer: &Peer, gc: GrantContext, app: &App) -> Vec<PathBuf> {
     let home = crate::allowlist::real_home(&peer.home);
     let mut v = crate::allowlist::work_folders(&home, &crate::allowlist::protected(cfg, &home));
     match gc.folders {
@@ -457,33 +464,40 @@ fn agent_writable(cfg: &crate::policy::Config, peer: &Peer, gc: GrantContext) ->
         }
         None => v.extend(crate::allowlist::Store::open(&cfg.state_dir).list(peer.uid).into_iter().map(|p| p.caminho)),
     }
+    // (the catalog's own folders are XDG media folders, which are work folders already)
+    if let Value::Object(apps) = ler_ajustes(&cfg.state_dir, peer.uid) {
+        for (_, settings) in apps.iter().filter(|(id, _)| **id != app.id) {
+            let names = settings["pastas"].as_array().into_iter().flatten().filter_map(Value::as_str);
+            v.extend(names.filter_map(|name| pasta_segura(cfg, peer, name).ok()));
+        }
+    }
     v.into_iter().map(|p| std::fs::canonicalize(&p).unwrap_or(p)).collect()
 }
 
 /// A folder that can be granted to a creative app, with what kalangod saw of it. `pasta_segura`, and also: the folder
-/// itself (no link on the way: the person gives the folder, never where a link leads); not inside a folder agents'
-/// commands write in (`agent_writable`: an agent there could rename it away and put a link to ~/.ssh in its place, and
-/// the app would see that on its next start); and the folder and every folder above it up to the home, each opened
-/// without following links (O_PATH, RESOLVE_NO_SYMLINKS), a real folder of the person's that no other user can change.
-/// The chain of (device, inode) is what is checked again at every start.
-fn grantable_folder(cfg: &crate::policy::Config, peer: &Peer, nome: &str, writable: &[PathBuf]) -> Result<(PathBuf, Vec<(u64, u64)>), String> {
-    let real = pasta_segura(cfg, peer, nome)?;
-    let casa = std::fs::canonicalize(&peer.home).map_err(|e| e.to_string())?;
+/// itself (no link on the way: the person gives the folder, never where a link leads); not inside a folder someone else
+/// writes in (`others_write_in`: an agent there could rename it away and put a link to ~/.ssh in its place, and the app
+/// would see that on its next start); and the folder and every folder above it up to the home, each opened without
+/// following links (O_PATH, RESOLVE_NO_SYMLINKS), a real folder of the person's that no other user can change (by its
+/// mode or by an ACL). The chain of (device, inode) is what is checked again at every start.
+fn grantable_folder(cfg: &crate::policy::Config, peer: &Peer, name: &str, writers: &[PathBuf]) -> Result<(PathBuf, Vec<(u64, u64)>), String> {
+    let real = pasta_segura(cfg, peer, name)?;
+    let home = std::fs::canonicalize(&peer.home).map_err(|e| e.to_string())?;
     let dirs = std::fs::read_to_string(peer.home.join(".config/user-dirs.dirs")).unwrap_or_default();
-    let escrito = caminho_da_pasta(&peer.home, &dirs, nome).unwrap_or_default();
+    let written = caminho_da_pasta(&peer.home, &dirs, name).unwrap_or_default();
     // (the written path and the resolved one are the same below the home)
-    let abaixo = escrito.strip_prefix(&peer.home).or_else(|_| escrito.strip_prefix(&casa)).ok().map(Path::to_path_buf);
-    if abaixo.as_deref() != real.strip_prefix(&casa).ok() {
+    let below = written.strip_prefix(&peer.home).or_else(|_| written.strip_prefix(&home)).ok().map(Path::to_path_buf);
+    if below.as_deref() != real.strip_prefix(&home).ok() {
         #[rustfmt::skip]
-        return Err(trf("refused: {f} goes through a link; choose the folder itself ({real})", &[("f", nome.to_string()), ("real", real.display().to_string())]));
+        return Err(trf("refused: {f} goes through a link; choose the folder itself ({real})", &[("f", name.to_string()), ("real", real.display().to_string())]));
     }
-    if let Some(w) = writable.iter().find(|w| real != **w && real.starts_with(w)) {
-        let w = crate::startup::tilde(w, &casa);
+    if let Some(w) = writers.iter().find(|w| real != **w && real.starts_with(w)) {
+        let w = crate::startup::tilde(w, &home);
         #[rustfmt::skip]
-        return Err(trf("refused: {f} is inside {w}, where agents can write: an agent could put another folder in its place. Choose {w} itself or a folder outside the agents' folders", &[("f", nome.to_string()), ("w", w)]));
+        return Err(trf("refused: {f} is inside {w}, where agents or another creative app can write: one of them could put another folder in its place. Choose {w} itself or a folder outside those", &[("f", name.to_string()), ("w", w)]));
     }
-    let cadeia = folder_chain(&real, &casa, peer, nome)?;
-    Ok((real, cadeia))
+    let chain = folder_chain(&real, &home, peer, name)?;
+    Ok((real, chain))
 }
 
 /// Who the app runs as (`flatpak_como`): the person when kalangod is root; kalangod's own user otherwise (a development
@@ -493,147 +507,194 @@ fn runs_as(peer: &Peer) -> (u32, u32, String) {
         return (peer.uid, peer.gid, peer.user.clone());
     }
     let uid = nix::unistd::geteuid();
-    let nome = nix::unistd::User::from_uid(uid).ok().flatten().map(|u| u.name).unwrap_or_default();
-    (uid.as_raw(), nix::unistd::getegid().as_raw(), nome)
+    let name = nix::unistd::User::from_uid(uid).ok().flatten().map(|u| u.name).unwrap_or_default();
+    (uid.as_raw(), nix::unistd::getegid().as_raw(), name)
 }
 
 /// (device, inode) of `real` and of each folder above it up to the home (the home included), each opened beneath the home
 /// without following any link: each must be a folder of the person's (`runs_as`) that only the person can change.
-fn folder_chain(real: &Path, casa: &Path, peer: &Peer, nome: &str) -> Result<Vec<(u64, u64)>, String> {
+fn folder_chain(real: &Path, home: &Path, peer: &Peer, name: &str) -> Result<Vec<(u64, u64)>, String> {
     use nix::sys::stat::{fstat, Mode, SFlag};
     use std::os::fd::AsRawFd;
-    let dono = runs_as(peer);
+    let owner = runs_as(peer);
     let mut out = Vec::new();
     let mut d = real.to_path_buf();
     loop {
-        let mostrar = || crate::startup::tilde(&d, casa);
-        let nao_e = || trf("refused: {d}, on the way to {f}, is not a folder of yours", &[("d", mostrar()), ("f", nome.to_string())]);
-        let fd = crate::allowlist::open_nofollow(casa, &d).ok_or_else(nao_e)?;
-        let st = fstat(fd.as_raw_fd()).map_err(|_| nao_e())?;
-        if SFlag::from_bits_truncate(st.st_mode) & SFlag::S_IFMT != SFlag::S_IFDIR || st.st_uid != dono.0 {
-            return Err(nao_e());
+        let shown = || crate::startup::tilde(&d, home);
+        let not_theirs = || trf("refused: {d}, on the way to {f}, is not a folder of yours", &[("d", shown()), ("f", name.to_string())]);
+        let fd = crate::allowlist::open_nofollow(home, &d).ok_or_else(not_theirs)?;
+        let st = fstat(fd.as_raw_fd()).map_err(|_| not_theirs())?;
+        if SFlag::from_bits_truncate(st.st_mode) & SFlag::S_IFMT != SFlag::S_IFDIR || st.st_uid != owner.0 {
+            return Err(not_theirs());
         }
-        let modo = Mode::from_bits_truncate(st.st_mode);
-        if modo.contains(Mode::S_IWOTH) || (modo.contains(Mode::S_IWGRP) && !group_is_only_theirs(st.st_gid, &dono)) {
-            return Err(trf("refused: other users can change {d}, on the way to {f}", &[("d", mostrar()), ("f", nome.to_string())]));
+        let mode = Mode::from_bits_truncate(st.st_mode);
+        if mode.contains(Mode::S_IWOTH) || (mode.contains(Mode::S_IWGRP) && !group_is_only_theirs(st.st_gid, &owner)) || acl_lets_others_write(&fd, st.st_gid, &owner) {
+            return Err(trf("refused: other users can change {d}, on the way to {f}", &[("d", shown()), ("f", name.to_string())]));
         }
         out.push((st.st_dev, st.st_ino));
-        if d == casa {
+        if d == home {
             return Ok(out);
         }
         match d.parent() {
-            Some(pai) if pai.starts_with(casa) => d = pai.to_path_buf(),
-            _ => return Err(nao_e()),
+            Some(parent) if parent.starts_with(home) => d = parent.to_path_buf(),
+            _ => return Err(not_theirs()),
         }
     }
+}
+
+/// Whether a POSIX ACL on a folder lets someone besides the person write in it: a named user, a named group or the
+/// folder's group that is not only theirs, with write both in its entry and in the mask (or any write for "others").
+/// Read through the O_PATH descriptor (its /proc/self/fd path); an ACL that cannot be read counts as one that lets them.
+fn acl_lets_others_write(fd: &std::os::fd::OwnedFd, gid: u32, owner: &(u32, u32, String)) -> bool {
+    use std::os::fd::AsRawFd;
+    let Ok(path) = std::ffi::CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())) else { return true };
+    let mut buf = vec![0u8; 8192];
+    // SAFETY: both names are NUL-terminated C strings and the buffer is as long as the length given.
+    let n = unsafe { libc::getxattr(path.as_ptr(), c"system.posix_acl_access".as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+    if n < 0 {
+        let e = std::io::Error::last_os_error().raw_os_error();
+        // (no ACL, or a file system without them: only the mode counts)
+        return !matches!(e, Some(libc::ENODATA) | Some(libc::EOPNOTSUPP));
+    }
+    let acl = &buf[..n as usize];
+    if acl.len() < 4 || u32::from_le_bytes([acl[0], acl[1], acl[2], acl[3]]) != 2 || !(acl.len() - 4).is_multiple_of(8) {
+        return true;
+    }
+    let entries: Vec<(u16, u16, u32)> = acl[4..]
+        .chunks(8)
+        .map(|e| (u16::from_le_bytes([e[0], e[1]]), u16::from_le_bytes([e[2], e[3]]), u32::from_le_bytes([e[4], e[5], e[6], e[7]])))
+        .collect();
+    const USER: u16 = 0x02;
+    const GROUP_OBJ: u16 = 0x04;
+    const GROUP: u16 = 0x08;
+    const MASK: u16 = 0x10;
+    const OTHER: u16 = 0x20;
+    const WRITE: u16 = 0x02;
+    let mask = entries.iter().find(|e| e.0 == MASK).map(|e| e.1).unwrap_or(0x07);
+    entries.iter().any(|&(tag, perm, id)| match tag {
+        USER => id != owner.0 && perm & mask & WRITE != 0,
+        GROUP => !group_is_only_theirs(id, owner) && perm & mask & WRITE != 0,
+        GROUP_OBJ => !group_is_only_theirs(gid, owner) && perm & mask & WRITE != 0,
+        OTHER => perm & WRITE != 0,
+        _ => false,
+    })
 }
 
 /// Whether a group is the person's own and nobody else's — the private group most distributions give each user, whose
 /// folders are then group-writable by default: its gid is the person's, it lists no other member, and no other account
 /// in /etc/passwd has it as its group.
-fn group_is_only_theirs(gid: u32, (uid, seu_gid, nome): &(u32, u32, String)) -> bool {
-    if gid != *seu_gid {
+fn group_is_only_theirs(gid: u32, (uid, their_gid, name): &(u32, u32, String)) -> bool {
+    if gid != *their_gid {
         return false;
     }
-    let so_ela = matches!(nix::unistd::Group::from_gid(nix::unistd::Gid::from_raw(gid)), Ok(Some(g)) if g.mem.iter().all(|m| m == nome));
-    let outras = std::fs::read_to_string("/etc/passwd").unwrap_or_default().lines().any(|l| {
+    let only_them = matches!(nix::unistd::Group::from_gid(nix::unistd::Gid::from_raw(gid)), Ok(Some(g)) if g.mem.iter().all(|m| m == name));
+    let others = std::fs::read_to_string("/etc/passwd").unwrap_or_default().lines().any(|l| {
         let f: Vec<&str> = l.split(':').collect();
         f.len() > 3 && f[3] == gid.to_string() && f[2] != uid.to_string()
     });
-    so_ela && !outras
+    only_them && !others
 }
 
 /// The folders of an app, checked now: the ones the person chose in the App Center (in kalangod's state), else the
 /// catalog's. Each must pass `grantable_folder` and still be the very folder kalangod saw when the person chose it (the
 /// same chain of identities); one that does not is dropped, with why. With `record` (a grant: the override is made from
 /// this), a folder with nothing recorded — chosen before kalangod kept identities, or one of the catalog's — is recorded
-/// now, the folders dropped are kept in the state (the App Center reads them) and each one newly dropped goes to the
-/// person's Timeline.
+/// now, the folders dropped are kept in the state (`recusadas`) and each one newly dropped goes to the person's Timeline
+/// and back to the caller (`newly_dropped`: the shell tells the person).
 fn check_folders(cfg: &crate::policy::Config, peer: &Peer, gc: GrantContext, app: &App, record: bool) -> Checked {
-    let estado = estado_do_app(cfg, peer.uid, &app.id);
-    let escolhidas = estado["pastas"].is_array();
-    let gravaveis = agent_writable(cfg, peer, gc);
+    let settings = estado_do_app(cfg, peer.uid, &app.id);
+    let chosen = settings["pastas"].is_array();
+    let writers = others_write_in(cfg, peer, gc, app);
     let mut c = Checked::default();
-    let mut novas = serde_json::Map::new();
+    let mut first_seen = serde_json::Map::new();
     for n in &nomes_das_pastas(cfg, peer.uid, app) {
-        match grantable_folder(cfg, peer, n, &gravaveis) {
-            Ok((caminho, cadeia)) => {
-                let agora = GrantedFolder { caminho: caminho.clone(), cadeia };
-                let visto = &estado["identidades"][n];
-                if visto.is_null() {
-                    novas.insert(n.clone(), json!(agora));
-                    c.ok.push(caminho);
-                } else if serde_json::from_value::<GrantedFolder>(visto.clone()).ok().as_ref() == Some(&agora) {
-                    c.ok.push(caminho);
+        match grantable_folder(cfg, peer, n, &writers) {
+            Ok((path, chain)) => {
+                let now = GrantedFolder { path: path.clone(), chain };
+                let recorded = &settings["identidades"][n];
+                if recorded.is_null() {
+                    first_seen.insert(n.clone(), json!(now));
+                    c.ok.push(path);
+                } else if serde_json::from_value::<GrantedFolder>(recorded.clone()).ok().as_ref() == Some(&now) {
+                    c.ok.push(path);
                 } else {
                     #[rustfmt::skip]
                     c.dropped.push((n.clone(), trf("{f} changed after you chose it: another folder or a link is in its place. Choose it again in the App Center if it is right", &[("f", n.clone())])));
                 }
             }
             // (a folder of the catalog that does not exist in this home is left out; the rest is dropped, with why)
-            Err(_) if !escolhidas && caminho_da_pasta(&peer.home, "", n).is_some_and(|p| !p.exists()) => {}
+            Err(_) if !chosen && caminho_da_pasta(&peer.home, "", n).is_some_and(|p| !p.exists()) => {}
             Err(e) => c.dropped.push((n.clone(), e)),
         }
     }
     if record {
-        record_check(cfg, peer, gc, app, &estado, novas, &c.dropped);
+        c.newly_dropped = record_check(cfg, peer, gc, app, &settings, first_seen, &c.dropped);
     }
     c
 }
 
-/// Keeps what `check_folders` found (under the lock, read again: a choice the person made meanwhile is not undone) and
-/// tells the person, in the Timeline, of each folder newly left out.
-fn record_check(cfg: &crate::policy::Config, peer: &Peer, gc: GrantContext, app: &App, antes: &Value, novas: serde_json::Map<String, Value>, dropped: &[(String, String)]) {
-    let recusadas = dropped_json(dropped);
-    let novas_recusas: Vec<&(String, String)> = {
+/// Keeps what `check_folders` found (under the lock, read again: a choice the person made meanwhile is not undone), tells
+/// the person in the Timeline of each folder newly left out, and returns those.
+fn record_check(
+    cfg: &crate::policy::Config,
+    peer: &Peer,
+    gc: GrantContext,
+    app: &App,
+    before: &Value,
+    first_seen: serde_json::Map<String, Value>,
+    dropped: &[(String, String)],
+) -> Vec<(String, String)> {
+    let dropped_now = dropped_json(dropped);
+    let newly: Vec<(String, String)> = {
         let _g = ESTADO.lock().unwrap_or_else(|e| e.into_inner());
         let mut v = ler_ajustes(&cfg.state_dir, peer.uid);
         let id = &app.id;
         // (the person chose other folders while these were checked: this check is not theirs any more)
-        if v[id]["pastas"] != antes["pastas"] {
-            return;
+        if v[id]["pastas"] != before["pastas"] {
+            return Vec::new();
         }
-        let ja: Vec<Value> = v[id]["recusadas"].as_array().cloned().unwrap_or_default();
-        let mudou = !novas.is_empty() || v[id]["recusadas"] != recusadas;
-        if mudou {
+        let told: Vec<Value> = v[id]["recusadas"].as_array().cloned().unwrap_or_default();
+        if !first_seen.is_empty() || v[id]["recusadas"] != dropped_now {
             if !v[id].is_object() {
                 v[id] = json!({});
             }
             if !v[id]["identidades"].is_object() {
                 v[id]["identidades"] = json!({});
             }
-            for (n, x) in novas {
+            for (n, x) in first_seen {
                 if v[id]["identidades"][&n].is_null() {
                     v[id]["identidades"][&n] = x;
                 }
             }
-            v[id]["recusadas"] = recusadas;
+            v[id]["recusadas"] = dropped_now;
             if let Err(e) = gravar_atomico(&ajustes_path(&cfg.state_dir, peer.uid), &v.to_string()) {
                 eprintln!("kalangod: {id}: {e}");
             }
         }
-        dropped.iter().filter(|(n, why)| !ja.iter().any(|x| x["pasta"] == n.as_str() && x["motivo"] == why.as_str())).collect()
+        dropped.iter().filter(|(n, why)| !told.iter().any(|x| x["pasta"] == n.as_str() && x["motivo"] == why.as_str())).cloned().collect()
     };
-    let Some(tl) = gc.timeline else { return };
-    for (n, why) in novas_recusas {
-        tl.append(crate::timeline::Entry {
-            id: 0,
-            time: 0,
-            caller: "kalangod".into(),
-            uid: peer.uid,
-            pid: peer.pid,
-            tool: "craft.pasta_recusada".into(),
-            level: "usuario".into(),
-            args: json!({"app": app.id, "pasta": n, "motivo": why}),
-            status: "negado".into(),
-            summary: trf("{app} no longer sees {f}: {why}", &[("app", app.nome.clone()), ("f", n.clone()), ("why", why.clone())]),
-            inverse: None,
-            restore_point: None,
-            miniatura: None,
-            startup: None,
-            d1: None,
-        });
+    if let Some(tl) = gc.timeline {
+        for (n, why) in &newly {
+            tl.append(crate::timeline::Entry {
+                id: 0,
+                time: 0,
+                caller: "kalangod".into(),
+                uid: peer.uid,
+                pid: peer.pid,
+                tool: "craft.pasta_recusada".into(),
+                level: "usuario".into(),
+                args: json!({"app": app.id, "pasta": n, "motivo": why}),
+                status: "negado".into(),
+                summary: trf("{app} no longer sees {f}: {why}", &[("app", app.nome.clone()), ("f", n.clone()), ("why", why.clone())]),
+                inverse: None,
+                restore_point: None,
+                miniatura: None,
+                startup: None,
+                d1: None,
+            });
+        }
     }
+    newly
 }
 
 /// O override global da pessoa não alarga o que o app vê (ver `override_global_alarga`): conferido logo depois de refazer
@@ -1852,37 +1913,37 @@ done
         let _g = AMBIENTE.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
         flatpak_que_aceita(d.path());
-        let casa = d.path().join("casa");
+        let home = d.path().join("casa");
         // a decoy of a sensitive folder that passes every name rule (no dot, inside the home)
         for x in ["Projetos/a", "Cofre"] {
-            std::fs::create_dir_all(casa.join(x)).unwrap();
+            std::fs::create_dir_all(home.join(x)).unwrap();
         }
-        std::fs::write(casa.join("Cofre/id_ed25519"), "decoy").unwrap();
-        let (cfg, p) = pessoa(&casa, &d.path().join("estado"));
+        std::fs::write(home.join("Cofre/id_ed25519"), "decoy").unwrap();
+        let (cfg, p) = pessoa(&home, &d.path().join("estado"));
         let app = catalogo().app("filmcraft").unwrap();
         rpc(&cfg, &p, &json!({"acao": "definir", "app": "filmcraft", "pastas": ["~/Projetos/a"]})).unwrap();
-        let a = std::fs::canonicalize(casa.join("Projetos/a")).unwrap();
+        let a = std::fs::canonicalize(home.join("Projetos/a")).unwrap();
         assert_eq!(pastas(&cfg, &p, app).unwrap(), vec![a.clone()]);
         // swapped for a link to the decoy (the folder renamed away): it resolves to a folder that passes, and is refused
-        std::fs::rename(casa.join("Projetos/a"), casa.join("Projetos/a-velha")).unwrap();
-        std::os::unix::fs::symlink(casa.join("Cofre"), casa.join("Projetos/a")).unwrap();
+        std::fs::rename(home.join("Projetos/a"), home.join("Projetos/a-velha")).unwrap();
+        std::os::unix::fs::symlink(home.join("Cofre"), home.join("Projetos/a")).unwrap();
         let e = pastas(&cfg, &p, app).unwrap_err();
-        assert!(e.contains("link") || e.contains("atalho") || e.contains("ligação"), "{e}");
+        assert!(e.contains("link"), "{e}");
         // swapped for the decoy itself (a real folder, renamed into its place): another folder, dropped
-        std::fs::remove_file(casa.join("Projetos/a")).unwrap();
-        std::fs::rename(casa.join("Cofre"), casa.join("Projetos/a")).unwrap();
+        std::fs::remove_file(home.join("Projetos/a")).unwrap();
+        std::fs::rename(home.join("Cofre"), home.join("Projetos/a")).unwrap();
         let e = pastas(&cfg, &p, app).unwrap_err();
         assert!(e.contains("changed after you chose it") || e.contains("mudou depois"), "{e}");
         // the card does not call it "already allowed" either
         let c = cartao(&cfg, &p, &json!({"app": "filmcraft", "ferramenta": "media_import", "argumentos": {"path": format!("{}/x.mp4", a.display())}}));
         assert!(!c["para_onde"].as_str().unwrap().contains("already allowed") && !c["para_onde"].as_str().unwrap().contains("já permitida"), "{c}");
         // the very folder back in its place: granted again
-        std::fs::rename(casa.join("Projetos/a"), casa.join("Cofre")).unwrap();
-        std::fs::rename(casa.join("Projetos/a-velha"), casa.join("Projetos/a")).unwrap();
+        std::fs::rename(home.join("Projetos/a"), home.join("Cofre")).unwrap();
+        std::fs::rename(home.join("Projetos/a-velha"), home.join("Projetos/a")).unwrap();
         assert_eq!(pastas(&cfg, &p, app).unwrap(), vec![a.clone()]);
         // another folder of that name (the old one kept aside) is the person's to choose again: until then it is left out
-        std::fs::rename(casa.join("Projetos/a"), casa.join("Projetos/a-velha")).unwrap();
-        std::fs::create_dir_all(casa.join("Projetos/a")).unwrap();
+        std::fs::rename(home.join("Projetos/a"), home.join("Projetos/a-velha")).unwrap();
+        std::fs::create_dir_all(home.join("Projetos/a")).unwrap();
         assert!(pastas(&cfg, &p, app).is_err());
         rpc(&cfg, &p, &json!({"acao": "definir", "app": "filmcraft", "pastas": ["~/Projetos/a"]})).unwrap();
         assert_eq!(pastas(&cfg, &p, app).unwrap(), vec![a]);
@@ -1890,87 +1951,139 @@ done
     }
 
     #[test]
-    fn a_folder_other_users_or_agents_could_swap_is_never_granted() {
+    fn a_folder_other_users_agents_or_other_apps_could_swap_is_never_granted() {
+        // (a stand-in flatpak with nothing installed: choosing folders never makes the overrides of a real installation)
+        let _g = AMBIENTE.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
-        let casa = d.path().join("casa");
-        for x in ["Compartilhada/x", "Aberta", "Documentos/Livro", "Projetos/a", "Proprio", "Grupo/x", ".config"] {
-            std::fs::create_dir_all(casa.join(x)).unwrap();
+        flatpak_que_aceita(d.path());
+        let home = d.path().join("casa");
+        for x in ["Compartilhada/x", "Aberta", "Documentos/Livro", "Projetos/a", "Proprio", "Grupo/x", "Acl/x", "Obras/clipes", ".config"] {
+            std::fs::create_dir_all(home.join(x)).unwrap();
         }
-        std::fs::write(casa.join(".config/user-dirs.dirs"), "XDG_DOCUMENTS_DIR=\"$HOME/Documentos\"\n").unwrap();
-        let (cfg, p) = pessoa(&casa, &d.path().join("estado"));
-        let modo = |x: &str, m: u32| std::fs::set_permissions(casa.join(x), std::os::unix::fs::PermissionsExt::from_mode(m)).unwrap();
-        let w = agent_writable(&cfg, &p, GrantContext::default());
-        let ok = |n: &str, w: &[PathBuf]| grantable_folder(&cfg, &p, n, w);
+        std::fs::write(home.join(".config/user-dirs.dirs"), "XDG_DOCUMENTS_DIR=\"$HOME/Documentos\"\n").unwrap();
+        let (cfg, p) = pessoa(&home, &d.path().join("estado"));
+        let film = catalogo().app("filmcraft").unwrap();
+        let chmod = |x: &str, m: u32| std::fs::set_permissions(home.join(x), std::os::unix::fs::PermissionsExt::from_mode(m)).unwrap();
+        let w = others_write_in(&cfg, &p, GrantContext::default(), film);
+        let check = |n: &str, w: &[PathBuf]| grantable_folder(&cfg, &p, n, w);
         // the person's own folders: granted, with a chain of identities up to the home
-        let (real, cadeia) = ok("~/Proprio", &w).unwrap();
-        assert_eq!(real, std::fs::canonicalize(casa.join("Proprio")).unwrap());
-        assert_eq!(cadeia.len(), 2, "the folder and the home");
+        let (real, chain) = check("~/Proprio", &w).unwrap();
+        assert_eq!(real, std::fs::canonicalize(home.join("Proprio")).unwrap());
+        assert_eq!(chain.len(), 2, "the folder and the home");
         // a folder above it that other users can write: refused (they could swap it); and the folder itself
-        modo("Compartilhada", 0o777);
-        let e = ok("~/Compartilhada/x", &w).unwrap_err();
-        assert!(e.contains("other users") || e.contains("outras pessoas") || e.contains("outros usuários"), "{e}");
-        modo("Aberta", 0o757);
-        assert!(ok("~/Aberta", &w).is_err());
+        chmod("Compartilhada", 0o777);
+        let e = check("~/Compartilhada/x", &w).unwrap_err();
+        assert!(e.contains("other users") || e.contains("outros usuários"), "{e}");
+        chmod("Aberta", 0o757);
+        assert!(check("~/Aberta", &w).is_err());
         // writable by a group that is not the person's own: refused (only when this user has another group to try)
         if let Some(g) = nix::unistd::getgroups().unwrap_or_default().into_iter().find(|g| g.as_raw() != p.gid) {
-            nix::unistd::chown(&casa.join("Grupo"), None, Some(g)).unwrap();
-            modo("Grupo", 0o770);
-            assert!(ok("~/Grupo/x", &w).is_err());
+            nix::unistd::chown(&home.join("Grupo"), None, Some(g)).unwrap();
+            chmod("Grupo", 0o770);
+            assert!(check("~/Grupo/x", &w).is_err());
         }
+        // an ACL that lets another user write, with the mode looking private: refused (where the file system keeps ACLs)
+        if set_acl_letting_another_user_write(&home.join("Acl")) {
+            assert!(check("~/Acl/x", &w).unwrap_err().contains("Acl"));
+        } else {
+            eprintln!("SKIPPED: this file system keeps no ACLs");
+        }
+        assert!(check("~/Proprio", &w).is_ok(), "no ACL: the mode decides");
         // inside a work folder, where agents' commands write: refused, naming it; the work folder itself is fine
-        let e = ok("~/Documentos/Livro", &w).unwrap_err();
+        let e = check("~/Documentos/Livro", &w).unwrap_err();
         assert!(e.contains("Documentos") && (e.contains("agents") || e.contains("agentes")), "{e}");
-        assert!(ok("xdg-documents", &w).is_ok());
+        assert!(check("xdg-documents", &w).is_ok());
         // inside a project folder the person gave agents (kept by kalangod, read from its state or the server's)
-        assert!(ok("~/Projetos/a", &w).is_ok());
+        assert!(check("~/Projetos/a", &w).is_ok());
         let store = crate::allowlist::Store::open(&cfg.state_dir);
         std::fs::create_dir_all(&cfg.state_dir).unwrap();
-        let projetos = std::fs::canonicalize(casa.join("Projetos")).unwrap();
-        store.add(p.uid, projetos.clone(), crate::allowlist::identity(&projetos, &std::fs::canonicalize(&casa).unwrap()).unwrap(), "adicionada");
+        let projects = std::fs::canonicalize(home.join("Projetos")).unwrap();
+        store.add(p.uid, projects.clone(), crate::allowlist::identity(&projects, &std::fs::canonicalize(&home).unwrap()).unwrap(), "adicionada");
         let gc = GrantContext { folders: Some(&store), timeline: None };
-        assert!(ok("~/Projetos/a", &agent_writable(&cfg, &p, gc)).is_err());
-        assert!(ok("~/Projetos/a", &agent_writable(&cfg, &p, GrantContext::default())).is_err(), "the project folders on disk count too");
-        assert!(ok("~/Projetos", &agent_writable(&cfg, &p, gc)).is_ok(), "the project folder itself: agents cannot rename it");
+        assert!(check("~/Projetos/a", &others_write_in(&cfg, &p, gc, film)).is_err());
+        assert!(check("~/Projetos/a", &others_write_in(&cfg, &p, GrantContext::default(), film)).is_err(), "the project folders on disk count too");
+        assert!(check("~/Projetos", &others_write_in(&cfg, &p, gc, film)).is_ok(), "the project folder itself: agents cannot rename it");
+        // inside a folder the person gave another creative app (it, or an agent driving it, writes there)
+        rpc(&cfg, &p, &json!({"acao": "definir", "app": "anicraft", "pastas": ["~/Obras"]})).unwrap();
+        assert!(check("~/Obras/clipes", &others_write_in(&cfg, &p, GrantContext::default(), film)).is_err());
+        let anicraft = catalogo().app("anicraft").unwrap();
+        assert!(check("~/Obras", &others_write_in(&cfg, &p, GrantContext::default(), anicraft)).is_ok(), "its own folders are not others'");
         // a link on the way (to a folder that would pass): the folder itself is asked for
-        std::os::unix::fs::symlink(casa.join("Proprio"), casa.join("atalho")).unwrap();
-        assert!(ok("~/atalho", &w).unwrap_err().contains("Proprio"));
+        std::os::unix::fs::symlink(home.join("Proprio"), home.join("atalho")).unwrap();
+        assert!(check("~/atalho", &w).unwrap_err().contains("Proprio"));
         // the person's choice is refused whole, and nothing is kept
         assert!(rpc(&cfg, &p, &json!({"acao": "definir", "app": "filmcraft", "pastas": ["~/Proprio", "~/Documentos/Livro"]})).is_err());
         assert!(estado_do_app(&cfg, p.uid, "ai.storyteller.filmcraft")["pastas"].is_null());
+        std::env::remove_var("KALANGO_FLATPAK");
+    }
+
+    /// Writes an access ACL that gives a user other than this one write on `dir` (the mode then shows only the mask, group
+    /// rwx); false when the file system keeps no ACLs.
+    fn set_acl_letting_another_user_write(dir: &Path) -> bool {
+        std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let other = nix::unistd::geteuid().as_raw() + 1;
+        let mut acl = 2u32.to_le_bytes().to_vec();
+        // (user::rwx, user:<another>:rwx, group::r-x, mask::rwx, other::r-x)
+        for (tag, perm, id) in [(0x01u16, 7u16, u32::MAX), (0x02, 7, other), (0x04, 5, u32::MAX), (0x10, 7, u32::MAX), (0x20, 5, u32::MAX)] {
+            acl.extend(tag.to_le_bytes());
+            acl.extend(perm.to_le_bytes());
+            acl.extend(id.to_le_bytes());
+        }
+        let path = std::ffi::CString::new(dir.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: NUL-terminated names and a buffer of the length given.
+        let r = unsafe { libc::setxattr(path.as_ptr(), c"system.posix_acl_access".as_ptr(), acl.as_ptr().cast(), acl.len(), 0) };
+        r == 0
     }
 
     #[test]
-    fn a_folder_agents_can_now_write_around_leaves_the_permissions_at_once() {
+    fn a_folder_others_can_now_write_around_leaves_the_permissions_at_once() {
         let _g = AMBIENTE.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
-        let casa = d.path().join("casa");
-        std::fs::create_dir_all(casa.join("Projetos/a")).unwrap();
-        // a stand-in flatpak where FilmCraft is installed, writing down every call
+        let home = d.path().join("casa");
+        for x in ["Projetos/a", "Estudio/b"] {
+            std::fs::create_dir_all(home.join(x)).unwrap();
+        }
+        // a stand-in flatpak where FilmCraft and AniCraft are installed, writing down every call
         let log = d.path().join("flatpak.log");
         let fake = d.path().join("flatpak");
-        std::fs::write(&fake, format!("#!/bin/sh\necho \"$*\" >> {}\ncase \"$*\" in *\"list --app\"*) echo ai.storyteller.filmcraft;; esac\nexit 0\n", log.display())).unwrap();
+        std::fs::write(
+            &fake,
+            format!("#!/bin/sh\necho \"$*\" >> {}\ncase \"$*\" in *\"list --app\"*) echo ai.storyteller.filmcraft; echo ai.storyteller.anicraft;; esac\nexit 0\n", log.display()),
+        )
+        .unwrap();
         std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         std::env::set_var("KALANGO_FLATPAK", &fake);
         std::env::set_var("KALANGO_CRAFT_FLATPAK_USER_DIR", d.path().join("instalacao"));
-        let (cfg, p) = pessoa(&casa, &d.path().join("estado"));
-        let a = std::fs::canonicalize(casa.join("Projetos/a")).unwrap();
-        let ultimo_override = || std::fs::read_to_string(&log).unwrap().lines().rfind(|l| l.contains("--unshare=network")).unwrap_or("").to_string();
+        let (cfg, p) = pessoa(&home, &d.path().join("estado"));
+        let a = std::fs::canonicalize(home.join("Projetos/a")).unwrap();
+        let last_override = |id: &str| std::fs::read_to_string(&log).unwrap().lines().rfind(|l| l.contains("--unshare=network") && l.ends_with(id)).unwrap_or("").to_string();
         rpc(&cfg, &p, &json!({"acao": "definir", "app": "filmcraft", "pastas": ["~/Projetos/a"]})).unwrap();
-        assert!(ultimo_override().contains(&format!("--filesystem={}", a.display())), "{}", ultimo_override());
+        assert!(last_override("ai.storyteller.filmcraft").contains(&format!("--filesystem={}", a.display())), "{}", last_override("ai.storyteller.filmcraft"));
         // the person lets agents' commands write in ~/Projetos: FilmCraft stops seeing ~/Projetos/a right then
         let store = crate::allowlist::Store::open(&d.path().join("servidor"));
-        let projetos = a.parent().unwrap().to_path_buf();
-        store.add(p.uid, projetos.clone(), crate::allowlist::identity(&projetos, &std::fs::canonicalize(&casa).unwrap()).unwrap(), "adicionada");
+        let projects = a.parent().unwrap().to_path_buf();
+        store.add(p.uid, projects.clone(), crate::allowlist::identity(&projects, &std::fs::canonicalize(&home).unwrap()).unwrap(), "adicionada");
         let tl = crate::timeline::Timeline::open(&d.path().join("linha")).unwrap();
-        after_agents_gain_a_folder(&cfg, &p, GrantContext { folders: Some(&store), timeline: Some(&tl) });
+        let gc = GrantContext { folders: Some(&store), timeline: Some(&tl) };
+        reapply_installed(&cfg, &p, gc, None);
+        assert!(!last_override("ai.storyteller.filmcraft").contains("Projetos/a"), "{}", last_override("ai.storyteller.filmcraft"));
+        // and the person is told why, once, in the Timeline and in the App Center's state
+        let told: Vec<_> = tl.all().into_iter().filter(|e| e.tool == "craft.pasta_recusada").collect();
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(told[0].summary.contains("~/Projetos/a") && told[0].status == "negado", "{}", told[0].summary);
+        assert_eq!(estado_do_app(&cfg, p.uid, "ai.storyteller.filmcraft")["recusadas"][0]["pasta"], "~/Projetos/a");
+        // the shell asks again before opening the app: still out, and the answer says it was already told
+        let r = rpc_with(&cfg, &p, &json!({"acao": "aplicar", "app": "filmcraft"}), gc).unwrap();
+        assert_eq!(r["recusadas"][0]["pasta"], "~/Projetos/a", "{r}");
+        assert_eq!(r["novas_recusas"], json!([]), "{r}");
+        // FilmCraft gets ~/Estudio: AniCraft's ~/Estudio/b, granted before, leaves AniCraft's permissions at once
+        rpc_with(&cfg, &p, &json!({"acao": "definir", "app": "anicraft", "pastas": ["~/Estudio/b"]}), gc).unwrap();
+        assert!(last_override("ai.storyteller.anicraft").contains("Estudio/b"), "{}", last_override("ai.storyteller.anicraft"));
+        rpc_with(&cfg, &p, &json!({"acao": "definir", "app": "filmcraft", "pastas": ["~/Estudio"]}), gc).unwrap();
+        assert!(!last_override("ai.storyteller.anicraft").contains("Estudio/b"), "{}", last_override("ai.storyteller.anicraft"));
+        assert_eq!(estado_do_app(&cfg, p.uid, "ai.storyteller.anicraft")["recusadas"][0]["pasta"], "~/Estudio/b");
         std::env::remove_var("KALANGO_FLATPAK");
         std::env::remove_var("KALANGO_CRAFT_FLATPAK_USER_DIR");
-        assert!(!ultimo_override().contains("Projetos/a"), "{}", ultimo_override());
-        // and the person is told why, once, in the Timeline and in the App Center's state
-        let ditas: Vec<_> = tl.all().into_iter().filter(|e| e.tool == "craft.pasta_recusada").collect();
-        assert_eq!(ditas.len(), 1, "{ditas:?}");
-        assert!(ditas[0].summary.contains("~/Projetos/a") && ditas[0].status == "negado", "{}", ditas[0].summary);
-        assert_eq!(estado_do_app(&cfg, p.uid, "ai.storyteller.filmcraft")["recusadas"][0]["pasta"], "~/Projetos/a");
     }
 
     #[test]
@@ -1980,50 +2093,50 @@ done
             return;
         }
         let d = tempfile::tempdir().unwrap();
-        let casa = d.path().join("casa");
+        let home = d.path().join("casa");
         for x in ["Projetos/a", "Cofre"] {
-            std::fs::create_dir_all(casa.join(x)).unwrap();
+            std::fs::create_dir_all(home.join(x)).unwrap();
         }
-        std::fs::write(casa.join("Cofre/id_ed25519"), "decoy").unwrap();
+        std::fs::write(home.join("Cofre/id_ed25519"), "decoy").unwrap();
         let scratch = d.path().join("flatpak");
         std::env::remove_var("KALANGO_FLATPAK");
         std::env::set_var("KALANGO_CRAFT_FLATPAK_USER_DIR", &scratch);
-        let mostrar = || {
+        let show = || {
             let o = Command::new("flatpak").args(["override", "--user", "--show", "ai.storyteller.filmcraft"]).env("FLATPAK_USER_DIR", &scratch).env("LC_ALL", "C").output().unwrap();
             assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
             String::from_utf8_lossy(&o.stdout).into_owned()
         };
-        let (cfg, p) = pessoa(&casa, &d.path().join("estado"));
+        let (cfg, p) = pessoa(&home, &d.path().join("estado"));
         let app = catalogo().app("filmcraft").unwrap();
         let tl = crate::timeline::Timeline::open(&d.path().join("linha")).unwrap();
         let gc = GrantContext { folders: None, timeline: Some(&tl) };
-        let a = std::fs::canonicalize(casa.join("Projetos/a")).unwrap();
+        let a = std::fs::canonicalize(home.join("Projetos/a")).unwrap();
         // the normal case: chosen, granted, in the real override
         rpc_with(&cfg, &p, &json!({"acao": "definir", "app": "filmcraft", "pastas": ["~/Projetos/a"]}), gc).unwrap();
         assert_eq!(aplicar_permissoes(&cfg, &p, app, gc).unwrap().ok, vec![a.clone()]);
-        assert!(mostrar().contains(&a.display().to_string()), "{}", mostrar());
+        assert!(show().contains(&a.display().to_string()), "{}", show());
         // swapped for a link to the decoy after it was granted
-        std::fs::rename(casa.join("Projetos/a"), casa.join("Projetos/a-velha")).unwrap();
-        std::os::unix::fs::symlink(casa.join("Cofre"), casa.join("Projetos/a")).unwrap();
+        std::fs::rename(home.join("Projetos/a"), home.join("Projetos/a-velha")).unwrap();
+        std::os::unix::fs::symlink(home.join("Cofre"), home.join("Projetos/a")).unwrap();
         // the next start kalangod mediates: the folder leaves the override (the app would follow the link) and the server
         // does not start without a folder; the person is told why
         assert!(iniciar_sessao(&cfg, &p, gc, app, false).is_err());
-        let o = mostrar();
+        let o = show();
         assert!(!o.contains("Projetos/a") && !o.contains("Cofre"), "{o}");
         assert!(o.contains("!~/.ssh"), "the sensitive folders stay denied: {o}");
-        let ditas: Vec<_> = tl.all().into_iter().filter(|e| e.tool == "craft.pasta_recusada").collect();
-        assert_eq!(ditas.len(), 1);
-        assert!(ditas[0].summary.contains("FilmCraft") && ditas[0].summary.contains("~/Projetos/a"), "{}", ditas[0].summary);
+        let told: Vec<_> = tl.all().into_iter().filter(|e| e.tool == "craft.pasta_recusada").collect();
+        assert_eq!(told.len(), 1);
+        assert!(told[0].summary.contains("FilmCraft") && told[0].summary.contains("~/Projetos/a"), "{}", told[0].summary);
         // the App Center asks for the permissions again (as before the shell opens the app): still out, told once
         let r = rpc_with(&cfg, &p, &json!({"acao": "aplicar", "app": "filmcraft"}), gc).unwrap();
         assert_eq!(r["recusadas"][0]["pasta"], "~/Projetos/a", "{r}");
-        assert!(!mostrar().contains("Cofre"));
+        assert!(!show().contains("Cofre"));
         assert_eq!(tl.all().iter().filter(|e| e.tool == "craft.pasta_recusada").count(), 1, "not told again for the same reason");
         // the very folder back: granted again
-        std::fs::remove_file(casa.join("Projetos/a")).unwrap();
-        std::fs::rename(casa.join("Projetos/a-velha"), casa.join("Projetos/a")).unwrap();
+        std::fs::remove_file(home.join("Projetos/a")).unwrap();
+        std::fs::rename(home.join("Projetos/a-velha"), home.join("Projetos/a")).unwrap();
         assert_eq!(aplicar_permissoes(&cfg, &p, app, gc).unwrap().ok, vec![a.clone()]);
-        assert!(mostrar().contains(&a.display().to_string()));
+        assert!(show().contains(&a.display().to_string()));
         std::env::remove_var("KALANGO_CRAFT_FLATPAK_USER_DIR");
     }
 

@@ -769,7 +769,7 @@ fn show_dock_menu(shell: &Rc<Shell>, app: &App, anchor: &gtk::Button) {
         let nome = f.basename().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let info = app.info.clone();
         m.item(&c, "doc", &nome, "", "", move || {
-            let _ = info.launch(&[f.clone()], gio::AppLaunchContext::NONE);
+            let _ = crate::apps::launch_with(info.upcast_ref(), std::slice::from_ref(&f), None);
         });
     }
     Menu::divider(&c);

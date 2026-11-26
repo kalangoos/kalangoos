@@ -589,7 +589,7 @@ fn notify_file(title: &str, path: &std::path::Path, body: &str) {
     s.notificacoes().notify_local_acoes(tr("Screenshot"), title, &format!("{} · {body}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
         &[("abrir", tr("Open")), ("pasta", tr("Show in folder"))], move |k| {
             let alvo = if k == "abrir" { &p1 } else { &p2 };
-            let _ = gio::AppInfo::launch_default_for_uri(&gio::File::for_path(alvo).uri(), gio::AppLaunchContext::NONE);
+            let _ = crate::apps::open_default(&gio::File::for_path(alvo), None);
         });
 }
 

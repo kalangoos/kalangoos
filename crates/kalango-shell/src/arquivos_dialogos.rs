@@ -601,7 +601,7 @@ impl Arquivos {
                 let _ = app.set_as_default_for_type(&ct);
             }
             let ctx = WidgetExt::display(&a.janela).app_launch_context();
-            if let Err(e) = app.launch(&[gio::File::for_path(&pp)], Some(&ctx)) {
+            if let Err(e) = crate::apps::launch_with(&app, &[gio::File::for_path(&pp)], Some(ctx.upcast_ref())) {
                 eprintln!("kalango-shell: abrir com {}: {e}", app.display_name());
             } else {
                 gtk::RecentManager::default().add_item(&gio::File::for_path(&pp).uri());
@@ -1066,7 +1066,7 @@ impl Arquivos {
                     fc();
                     let Some(a) = wk.upgrade() else { return };
                     let ctx = WidgetExt::display(&a.janela).app_launch_context();
-                    if let Err(e) = a2.launch(&[gio::File::for_path(&pp)], Some(&ctx)) {
+                    if let Err(e) = crate::apps::launch_with(&a2, &[gio::File::for_path(&pp)], Some(ctx.upcast_ref())) {
                         eprintln!("kalango-shell: abrir com: {e}");
                     }
                 });

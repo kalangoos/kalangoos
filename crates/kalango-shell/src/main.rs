@@ -941,6 +941,8 @@ fn iniciar(app: &gtk::Application) -> Rc<Shell> {
     portal::start();
     // the creative apps' automatic updates (Central de Apps; background, applied when the app is closed)
     criativos::agendar();
+    // the creative apps' Flatpak permissions made again by kalangod, from its checks: an override from before never outlives the rules
+    criativos::refresh_permissions_at_start();
     // polkit asks the shell for the admin password (its authentication agent; not in the development session)
     polkit_agent::start();
     privacy_now::start();

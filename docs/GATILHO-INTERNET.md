@@ -164,9 +164,11 @@ O estado que a barra pode ler está em `$XDG_RUNTIME_DIR/kalango/tunel.json` (`o
   `gatilho_internet.ativar`, montado pela mesma função a partir do que o serviço diz do gatilho naquele momento: assinatura
   (NENHUMA = público, aviso coral), nível e endereço. Antes, esse caminho mostrava um cartão genérico que falava sempre de
   chave, mesmo de um gatilho público.
-- **Os fatos do cartão como pré-condição.** Depois do "sim", o kalangod lê o gatilho de novo e só responde que sim se ele
-  ainda é o que o cartão mostrou (nível, assinatura, fluxo, lista de endereços, endereço); se mudou, nada é ligado. Os fatos
-  voltam na resposta (`esperado`).
+- **Os fatos do cartão conferidos depois do "sim".** O kalangod lê o gatilho de novo e só responde que sim se ele ainda é o
+  que o cartão mostrou (nível, assinatura, fluxo, lista de endereços, endereço); se mudou, nada é ligado. Os fatos voltam na
+  resposta (`esperado`). **Limite:** o serviço ainda não usa esse `esperado`; entre a resposta do kalangod e a gravação, ele
+  confere o gatilho contra o que ele mesmo leu antes de perguntar (assinatura, nível, lista de endereços), não contra o
+  cartão. Comparar com o `esperado` é uma mudança do `kalango-fluxosd` (outro repositório).
 
 ## Revisão de segurança, rodada 6: o que mudou
 

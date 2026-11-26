@@ -310,7 +310,7 @@ impl Menu {
             let ago = if min < 60 { trf("{n} min ago", &[("n", min.to_string())]) } else if min < 1440 { trf("{n} h ago", &[("n", (min / 60).to_string())]) } else { trf("{n} days ago", &[("n", (min / 1440).to_string())]) };
             let name = p.file_name().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
             tiles.push((icon, tone, name, ago, Box::new(move || {
-                let _ = gio::AppInfo::launch_default_for_uri(&gio::File::for_path(&p).uri(), gdk::Display::default().map(|x| x.app_launch_context()).as_ref());
+                let _ = crate::apps::open_default(&gio::File::for_path(&p), gdk::Display::default().map(|x| x.app_launch_context()).as_ref().map(|c| c.upcast_ref()));
             })));
         }
         self.recommended.set_visible(!tiles.is_empty());
