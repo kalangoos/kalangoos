@@ -1279,11 +1279,9 @@ impl Agent {
                 // "Aprovar sozinho" (Permissions › Approval by the d1): when the person turned it on, a reversible move
                 // of their own files that the d1 calls safe, with enough confidence and within 1.5 s, goes ahead and
                 // is marked in the timeline; anything else asks as always
-                if asks && !self.simular {
-                    if self.d1_decides(tool, &name, &call.arguments).is_some() {
-                        asks = false;
-                        self.trace.approval_auto();
-                    }
+                if asks && !self.simular && self.d1_decides(tool, &name, &call.arguments).is_some() {
+                    asks = false;
+                    self.trace.approval_auto();
                 }
                 if asks {
                     self.next_ask += 1;

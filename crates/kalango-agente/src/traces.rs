@@ -1415,6 +1415,11 @@ fn content_events(i: &Inner, input: &[Value], t: u64, secret_before: bool) -> Ve
     // from the first secret result on, what the assistant said may repeat it
     // (when a secret was already in the conversation before this call, everything the assistant said is after it)
     let first_secret = if secret_before { Some(0) } else { input.iter().position(|m| tool_message_is_secret(m, &by_call)) };
+    // the request of this turn, when part of it was pasted: the latest person's message that starts with it (the
+    // context window adds its notes, the clock, to the end of the request; an older turn may have said the same words)
+    let pasted_request = (!i.pasted.is_empty() && !i.request.is_empty())
+        .then(|| input.iter().rposition(|m| m["role"] == "user" && m["content"].as_str().is_some_and(|c| c.starts_with(i.request.as_str()))))
+        .flatten();
     let as_event = |idx: usize, m: &Value| -> EventData {
         let role = m["role"].as_str().unwrap_or("user");
         let name = match role {
@@ -1430,7 +1435,10 @@ fn content_events(i: &Inner, input: &[Value], t: u64, secret_before: bool) -> Ve
                 .and_then(|id| by_call.get(id))
                 .map(|n| external_kind(n, &i.connectors).unwrap_or("tool_local").to_string())
                 .unwrap_or_else(|| "unknown".into()),
-            _ => if m.get("nota_do_motor").is_some() { "agent" } else { "user" }.to_string(),
+            _ if m.get("nota_do_motor").is_some() => "agent".to_string(),
+            // (the same kind as on the root)
+            _ if pasted_request == Some(idx) => PASTE.to_string(),
+            _ => "user".to_string(),
         };
         let text = m["content"].as_str().map(str::to_string).unwrap_or_else(|| m["content"].to_string());
         // a secret tool's result: its name, size and hash say what happened; the text does not go

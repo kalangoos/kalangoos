@@ -1351,6 +1351,46 @@ fn what_the_person_pasted_is_external_paste_on_the_root_and_the_message_and_tain
 }
 
 #[test]
+fn the_pasted_message_is_external_paste_inside_the_model_inputs_too() {
+    let s = setup();
+    let request = "resuma: texto colado de fora";
+    let t = begin_pasted(&s, Config::default(), request, vec![(8, 28)]);
+    let input = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "uma pergunta antiga digitada"}),
+        // (an older turn that typed the same words: it stays the person's)
+        json!({"role": "user", "content": request}),
+        json!({"role": "assistant", "content": "feito"}),
+        // (a content that is not a string)
+        json!({"role": "user", "content": [{"type": "text", "text": request}]}),
+        // (the context window adds its notes, the clock, to the end of the current request)
+        json!({"role": "user", "content": format!("{request}\n\nAgora: 10:00")}),
+    ];
+    let c = t.clock();
+    t.chat("m", &input, c, &reply("ok", &[]));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(2);
+    let users = event_named(by_name(&spans, "chat")[0], "gen_ai.user.message");
+    let prov = |e: &Value| ev_attr(e, "kalango.provenance").unwrap()["stringValue"].as_str().unwrap().to_string();
+    assert_eq!(users.iter().map(|e| prov(e)).collect::<Vec<_>>(), ["user", "user", "user", "external:paste"], "only this turn's request");
+}
+
+#[test]
+fn a_typed_request_is_user_inside_the_model_inputs() {
+    let s = setup();
+    let request = "resuma: texto digitado";
+    let t = begin_pasted(&s, Config::default(), request, vec![]);
+    let input = vec![json!({"role": "system", "content": "sys"}), json!({"role": "user", "content": request})];
+    let c = t.clock();
+    t.chat("m", &input, c, &reply("ok", &[]));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(2);
+    let users = event_named(by_name(&spans, "chat")[0], "gen_ai.user.message");
+    let prov = |e: &Value| ev_attr(e, "kalango.provenance").unwrap()["stringValue"].as_str().unwrap().to_string();
+    assert_eq!(users.iter().map(|e| prov(e)).collect::<Vec<_>>(), ["user"]);
+}
+
+#[test]
 fn what_the_person_typed_is_user_and_not_tainted() {
     let s = setup();
     let t = begin_pasted(&s, Config::default(), "oi, tudo bem?", vec![]);
