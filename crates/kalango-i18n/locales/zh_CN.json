@@ -6328,5 +6328,14 @@
  "{app}: the session was closed": "{app}：会话已关闭",
  "{app} changed while the call was being prepared: ask again": "{app}在准备调用期间发生了变化：请重新询问",
  "(+{n} more)": "（另有{n}项）",
- "refused: a global Flatpak override of yours would widen what {app} sees ({item}); remove it with `flatpak override --user --reset`": "拒绝：你的全局Flatpak覆盖会扩大{app}可以看到的范围（{item}）；请用`flatpak override --user --reset`移除它"
+ "refused: a global Flatpak override of yours would widen what {app} sees ({item}); remove it with `flatpak override --user --reset`": "拒绝：你的全局Flatpak覆盖会扩大{app}可以看到的范围（{item}）；请用`flatpak override --user --reset`移除它",
+ "PRIVACY AND TRACES": "隐私与追踪记录",
+ "Record what the agents do": "记录智能体的操作",
+ "Stays only on this computer": "仅保存在这台电脑上",
+ "What is recorded": "记录的内容",
+ "Everything": "全部",
+ "Only metadata": "仅元数据",
+ "Prompts, answers and actions are recorded": "记录请求、回答和操作",
+ "Only names, times and counts are recorded": "仅记录名称、时间和计数",
+ "Nothing is recorded": "不记录任何内容"
 }

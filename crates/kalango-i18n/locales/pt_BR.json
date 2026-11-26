@@ -6328,5 +6328,14 @@
  "{app}: the session was closed": "{app}: a sessão foi encerrada",
  "{app} changed while the call was being prepared: ask again": "{app} mudou enquanto a chamada era preparada: peça de novo",
  "(+{n} more)": "(+{n} a mais)",
- "refused: a global Flatpak override of yours would widen what {app} sees ({item}); remove it with `flatpak override --user --reset`": "recusado: um override global do Flatpak seu alargaria o que o {app} vê ({item}); tire-o com `flatpak override --user --reset`"
+ "refused: a global Flatpak override of yours would widen what {app} sees ({item}); remove it with `flatpak override --user --reset`": "recusado: um override global do Flatpak seu alargaria o que o {app} vê ({item}); tire-o com `flatpak override --user --reset`",
+ "PRIVACY AND TRACES": "PRIVACIDADE E RASTROS",
+ "Record what the agents do": "Gravar o que os agentes fazem",
+ "Stays only on this computer": "Fica só neste computador",
+ "What is recorded": "O que é gravado",
+ "Everything": "Tudo",
+ "Only metadata": "Só metadados",
+ "Prompts, answers and actions are recorded": "Pedidos, respostas e ações são gravados",
+ "Only names, times and counts are recorded": "Só nomes, horários e contagens são gravados",
+ "Nothing is recorded": "Nada é gravado"
 }

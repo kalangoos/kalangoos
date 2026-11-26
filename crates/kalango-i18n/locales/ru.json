@@ -6328,5 +6328,14 @@
  "{app}: the session was closed": "{app}: сеанс закрыт",
  "{app} changed while the call was being prepared: ask again": "{app} изменилось, пока готовился вызов: спросите снова",
  "(+{n} more)": "(ещё {n})",
- "refused: a global Flatpak override of yours would widen what {app} sees ({item}); remove it with `flatpak override --user --reset`": "отказано: ваше глобальное переопределение Flatpak расширило бы то, что видит {app} ({item}); уберите его командой `flatpak override --user --reset`"
+ "refused: a global Flatpak override of yours would widen what {app} sees ({item}); remove it with `flatpak override --user --reset`": "отказано: ваше глобальное переопределение Flatpak расширило бы то, что видит {app} ({item}); уберите его командой `flatpak override --user --reset`",
+ "PRIVACY AND TRACES": "КОНФИДЕНЦИАЛЬНОСТЬ И ТРАССЫ",
+ "Record what the agents do": "Записывать действия агентов",
+ "Stays only on this computer": "Остаётся только на этом компьютере",
+ "What is recorded": "Что записывается",
+ "Everything": "Всё",
+ "Only metadata": "Только метаданные",
+ "Prompts, answers and actions are recorded": "Записываются запросы, ответы и действия",
+ "Only names, times and counts are recorded": "Записываются только имена, время и счётчики",
+ "Nothing is recorded": "Ничего не записывается"
 }

@@ -6328,5 +6328,14 @@
  "{app}: the session was closed": "{app}：セッションが閉じられました",
  "{app} changed while the call was being prepared: ask again": "呼び出しの準備中に {app} が変更されました。もう一度お試しください",
  "(+{n} more)": "（ほか {n} 件）",
- "refused: a global Flatpak override of yours would widen what {app} sees ({item}); remove it with `flatpak override --user --reset`": "拒否しました：あなたのグローバルな Flatpak オーバーライドにより、{app} が見られる範囲（{item}）が広がってしまいます。`flatpak override --user --reset` で削除してください"
+ "refused: a global Flatpak override of yours would widen what {app} sees ({item}); remove it with `flatpak override --user --reset`": "拒否しました：あなたのグローバルな Flatpak オーバーライドにより、{app} が見られる範囲（{item}）が広がってしまいます。`flatpak override --user --reset` で削除してください",
+ "PRIVACY AND TRACES": "プライバシーとトレース",
+ "Record what the agents do": "エージェントの動作を記録する",
+ "Stays only on this computer": "このコンピューターの中だけに保存されます",
+ "What is recorded": "記録する内容",
+ "Everything": "すべて",
+ "Only metadata": "メタデータのみ",
+ "Prompts, answers and actions are recorded": "依頼、回答、操作を記録します",
+ "Only names, times and counts are recorded": "名前、時刻、回数だけを記録します",
+ "Nothing is recorded": "何も記録しません"
 }

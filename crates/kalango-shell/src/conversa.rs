@@ -504,6 +504,60 @@ pub(crate) fn guess_model() -> String {
         .unwrap_or_else(|| "LFM3".into())
 }
 
+/// The tag the composer puts on what was pasted into it.
+const PASTED_TAG: &str = "colado";
+
+/// The pieces of the composer's text that were pasted (the runs with the tag), in order.
+fn pasted_fragments(b: &gtk::TextBuffer) -> Vec<String> {
+    let Some(tag) = b.tag_table().lookup(PASTED_TAG) else { return Vec::new() };
+    let (mut out, mut it) = (Vec::new(), b.start_iter());
+    loop {
+        if it.has_tag(&tag) {
+            let from = it;
+            let mut to = it;
+            to.forward_to_tag_toggle(Some(&tag));
+            out.push(b.text(&from, &to, false).to_string());
+            it = to;
+            if it.is_end() {
+                break;
+            }
+        } else if !it.forward_to_tag_toggle(Some(&tag)) {
+            break;
+        }
+    }
+    out
+}
+
+/// The parts of a request, with where each came from: what the person pasted (`pasted`, found in the text in order) and
+/// the rest, typed. A fragment that cannot be found (the text was changed after the paste) makes the whole request
+/// pasted: when in doubt it is not the person's own words.
+fn request_parts(text: &str, pasted: &[String]) -> Vec<Value> {
+    let (mut parts, mut at) = (Vec::new(), 0usize);
+    let part = |t: &str, origin: &str| json!({"text": t, "origin": origin});
+    for f in pasted.iter().map(|f| f.as_str()).filter(|f| !f.trim().is_empty()) {
+        // (the composer's text is trimmed before it is sent, so a paste at its edges may have lost its blanks)
+        let found = text[at..].find(f).map(|p| (p, f)).or_else(|| text[at..].find(f.trim()).map(|p| (p, f.trim())));
+        let Some((p, f)) = found else { return vec![part(text, "pasted")] };
+        if p > 0 {
+            parts.push(part(&text[at..at + p], "typed"));
+        }
+        parts.push(part(f, "pasted"));
+        at += p + f.len();
+    }
+    if at < text.len() {
+        parts.push(part(&text[at..], "typed"));
+    }
+    parts
+}
+
+/// The line the engine reads: the request as a JSON string, or with its parts when some of it was pasted.
+fn request_line(text: &str, pasted: &[String]) -> String {
+    if pasted.iter().all(|f| f.trim().is_empty()) {
+        return serde_json::to_string(text).unwrap_or_default();
+    }
+    json!({"parts": request_parts(text, pasted)}).to_string()
+}
+
 fn agent_binary() -> PathBuf {
     if let Some(p) = std::env::var_os("KALANGO_AGENTE") {
         return p.into();
@@ -588,6 +642,9 @@ pub struct Conversa {
     anexos: RefCell<Vec<PathBuf>>,
     /// the attached recordings that are voice messages: the agent gets their words (the transcript), not the file
     voz_anexos: RefCell<Vec<PathBuf>>,
+    /// what the person pasted into the message being sent (taken from the composer's tagged text at submit): the engine
+    /// is told which parts of the request did not come from their hands (`kalango-agente` request.rs)
+    pegados: RefCell<Vec<String>>,
     anexos_box: gtk::Box,
     /// what the bar shows before the first message (pending requests, timeline): filled by the side bar
     pub vazio: gtk::Box,
@@ -924,7 +981,7 @@ impl Conversa {
         raiz.append(&caixa_c);
 
         let c = Rc::new(Conversa {
-            anexos: RefCell::default(), voz_anexos: RefCell::default(), anexos_box,
+            anexos: RefCell::default(), voz_anexos: RefCell::default(), pegados: RefCell::default(), anexos_box,
             raiz, vazio, intro, lista, rolagem, texto, placeholder, enviar, enviar_icone, microfone, voz_estado,
             recording: RefCell::default(), modelo, hora,
             engine: RefCell::default(), turn: RefCell::default(), busy: Cell::new(false), web: Cell::new(true), turns: Cell::new(0),
@@ -986,6 +1043,26 @@ impl Conversa {
         unsafe {
             c.raiz.set_data("conversa_pasta", pasta);
         }
+
+        // what is pasted into the composer is tagged ("colado", no look of its own), so the request can say which parts
+        // came from a clipboard and not from the person's hands. A paste is one user action whose first insertion is
+        // where it begins; `paste-done` comes after it, with the cursor at its end.
+        let buffer = c.texto.buffer();
+        buffer.create_tag(Some(PASTED_TAG), &[]);
+        let paste_from: Rc<Cell<Option<i32>>> = Rc::default();
+        let f = paste_from.clone();
+        buffer.connect_begin_user_action(move |_| f.set(None));
+        let f = paste_from.clone();
+        buffer.connect_insert_text(move |_, at, _| {
+            if f.get().is_none() {
+                f.set(Some(at.offset()));
+            }
+        });
+        buffer.connect_paste_done(move |b, _| {
+            if let Some(from) = paste_from.take() {
+                b.apply_tag_by_name(PASTED_TAG, &b.iter_at_offset(from), &b.iter_at_mark(&b.get_insert()));
+            }
+        });
 
         let w = Rc::downgrade(&c);
         c.texto.buffer().connect_changed(move |b| {
@@ -1219,6 +1296,7 @@ impl Conversa {
         if text.is_empty() || self.busy.get() {
             return;
         }
+        *self.pegados.borrow_mut() = pasted_fragments(&b);
         b.set_text("");
         self.send(&text);
     }
@@ -1237,6 +1315,8 @@ impl Conversa {
     }
 
     fn send(self: &Rc<Self>, text: &str) {
+        // (what was pasted belongs to this send, whether it goes on or not: never to the next one)
+        let pasted = std::mem::take(&mut *self.pegados.borrow_mut());
         if self.busy.get() {
             return;
         }
@@ -1338,7 +1418,7 @@ impl Conversa {
         crate::system_sounds::play_agent("kalango-agent-start");
         self.scroll_to_end();
 
-        if let Err(e) = self.write_line(text) {
+        if let Err(e) = self.write_line(text, &pasted) {
             self.cartao_erro(None, &trf("Could not start the agent: {error}", &[("error", e)]));
             self.finish_turn();
         }
@@ -1395,8 +1475,8 @@ impl Conversa {
     }
 
     /// Sends a line to the engine, starting it first if needed (one process per conversation).
-    fn write_line(self: &Rc<Self>, text: &str) -> Result<(), String> {
-        let line = format!("{}\n", serde_json::to_string(text).unwrap_or_default());
+    fn write_line(self: &Rc<Self>, text: &str, pasted: &[String]) -> Result<(), String> {
+        let line = format!("{}\n", request_line(text, pasted));
         if let Some(e) = self.engine.borrow_mut().as_mut() {
             if e.stdin.write_all(line.as_bytes()).and_then(|_| e.stdin.flush()).is_ok() {
                 return Ok(());
@@ -3425,6 +3505,30 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_request_with_a_paste_goes_as_parts_and_one_without_as_a_string() {
+        assert_eq!(request_line("oi, tudo bem?", &[]), "\"oi, tudo bem?\"");
+        assert_eq!(request_line("oi", &["  ".to_string()]), "\"oi\"", "a paste of blanks is nothing");
+        let l: Value = serde_json::from_str(&request_line("resuma: texto colado e mais", &["texto colado".to_string()])).unwrap();
+        assert_eq!(l["parts"], json!([{"text": "resuma: ", "origin": "typed"}, {"text": "texto colado", "origin": "pasted"}, {"text": " e mais", "origin": "typed"}]));
+    }
+
+    #[test]
+    fn pastes_are_found_in_order_and_the_trimmed_edges_are_forgiven() {
+        let parts = request_parts("a B c B d", &["B".to_string(), "B".to_string()]);
+        let origins: Vec<(&str, &str)> = parts.iter().map(|p| (p["text"].as_str().unwrap(), p["origin"].as_str().unwrap())).collect();
+        assert_eq!(origins, [("a ", "typed"), ("B", "pasted"), (" c ", "typed"), ("B", "pasted"), (" d", "typed")]);
+        // the composer trimmed the end of the message: the paste's trailing newline is gone from the text
+        let parts = request_parts("leia isto\nabc", &["abc\n".to_string()]);
+        assert_eq!(parts.last().unwrap(), &json!({"text": "abc", "origin": "pasted"}));
+    }
+
+    #[test]
+    fn a_paste_that_cannot_be_found_makes_the_whole_request_pasted() {
+        let parts = request_parts("o texto foi editado depois", &["texto original".to_string()]);
+        assert_eq!(parts, [json!({"text": "o texto foi editado depois", "origin": "pasted"})]);
+    }
 
     #[test]
     fn a_request_s_end_sounds_as_it_ended() {

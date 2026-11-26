@@ -153,6 +153,14 @@ const MEMORY_WORDS: &[&str] = &["lembr", "esquec", "esqueç", "memória", "memor
 /// Words of a request that deletes or removes something (the agent may ask which one before).
 const DESTRUCTIVE_WORDS: &[&str] = &["apag", "exclu", "remov", "limp", "jogue fora", "delete", "remove", "clean"];
 
+/// The tools the engine answers inside itself (never sent to kalangod), with their contract: the trace says their level
+/// and whether they only read.
+pub(crate) fn local_tools() -> Vec<Tool> {
+    let mut v = vec![question_tool(), calc_tool(), plan_tool(), screen_tool(), context::search_tool(), context::reopen_tool(), crate::remote::tool()];
+    v.extend(memory_tools());
+    v
+}
+
 fn question_tool() -> Tool {
     Tool { name: "pessoa.perguntar".into(),
         description: tr("Asks the person to choose, when the request can mean very different things and doing the wrong one would cost them (for example, which files to delete). Give 2 to 4 short options. Do not use it otherwise.").into(),
@@ -663,6 +671,13 @@ pub struct Agent {
     largest_prompt: usize,
     /// the engine's note for the end of the prompt (the clock)
     tail_note: String,
+    /// the trace of the turn being run (Kalango Train; disabled when the person turned it off or there is no daemon)
+    trace: crate::traces::Turn,
+    /// what the traces keep of this conversation between turns: its id, what it holds from outside (`external:web`…,
+    /// `kalango.taint`) and whether a secret came into it (`kalango.secret_in_context`)
+    trace_conv: crate::traces::Conversation,
+    /// the character ranges of the next request that the person pasted (the shell says so, see request.rs): taken by `ask`
+    pub pasted: Vec<(usize, usize)>,
 }
 
 impl Agent {
@@ -694,7 +709,8 @@ impl Agent {
         let messages = vec![json!({"role": "system", "content": base_prompt})];
         Ok(Agent { kalangod, model, tools, messages, person_text: String::new(), last_request: String::new(), draft_open: false, draft_nudges: 0, force_plan: false, force_conclude: false, no_block: false, unsupported_named: false, flow_created: false, external: Vec::new(), external_web: Vec::new(), allow_web: true, next_ask: 0, d1_auto_in_request: 0, d1_conversation_tainted: false, d1_read_in_request: false, base_prompt, moves: Default::default(), external_at_request: 0,
             conectores: crate::conectores::abrir_todos(), conectores_assinatura: crate::conectores::assinatura(), desligadas: Vec::new(), conversa: None, autonomia: None, escopo: Escopo::default(), simular: false, buscas_seguidas: 0, resultados_busca: Vec::new(), fontes: String::new(), conferida: false, buscas: 0, consultas: Vec::new(), lidas: 0, plan: Vec::new(), plan_done: 0, nome: None,
-            context: context::State::default(), n_ctx, search: false, largest_prompt: 0, tail_note: String::new() })
+            context: context::State::default(), n_ctx, search: false, largest_prompt: 0, tail_note: String::new(),
+            trace: crate::traces::Turn::disabled(), trace_conv: crate::traces::Conversation::new(), pasted: Vec::new() })
     }
 
     /// The agent's name as the person sees it (the screen indicator and the approval card say it).
@@ -768,9 +784,41 @@ impl Agent {
 
     /// `confirm` gets the person's answer when a tool is set to "ask".
     pub fn ask(&mut self, request: &str, on_event: &dyn Fn(Event), confirm: &mut dyn FnMut(u64) -> Answer) -> Result<(), String> {
-        let r = self.ask_inner(request, on_event, confirm);
+        // the turn is recorded for Kalango Train when the person allows it and its daemon is there (traces.rs); else this
+        // is the plain call
+        self.trace = crate::traces::Turn::begin_default(crate::traces::Begin {
+            session: &self.trace_conv.session, agent: &self.agent_name_id(), index: self.trace_conv.turns, request, tools: &self.tools, local_tools,
+            connectors: self.conectores.iter().map(|c| c.nome.clone()).collect(), taint: self.trace_conv.taint.clone(), secret: self.trace_conv.secret, pasted: std::mem::take(&mut self.pasted),
+        });
+        // (a secret tool's result already in the kept history marks the turn, whatever the earlier turns recorded: they may
+        // have been paused)
+        if self.trace.is_on() && !self.trace_conv.secret && crate::traces::context_has_secret(&self.messages) {
+            self.trace_conv.secret = true;
+            self.trace.mark_secret();
+        }
+        let r = if self.trace.is_on() {
+            let turn = self.trace.clone();
+            let observed = |e: Event| {
+                turn.observe(&e);
+                on_event(e)
+            };
+            self.ask_inner(request, &observed, confirm)
+        } else {
+            self.ask_inner(request, on_event, confirm)
+        };
+        if self.trace.is_on() {
+            self.trace.end(&r);
+        }
+        // (every turn, recorded or not: a secret read while recording was off still marks the turns after it)
+        self.trace_conv.finish_turn(&self.trace, &self.messages);
+        self.trace = crate::traces::Turn::disabled();
         self.guardar();
         r
+    }
+
+    /// The agent as the trace names it: the installed agent's name, else "agente".
+    fn agent_name_id(&self) -> String {
+        self.nome.clone().unwrap_or_else(|| "agente".to_string())
     }
 
     fn ask_inner(&mut self, request: &str, on_event: &dyn Fn(Event), confirm: &mut dyn FnMut(u64) -> Answer) -> Result<(), String> {
@@ -923,9 +971,20 @@ impl Agent {
             } else {
                 (api_tools.clone(), false)
             };
+            // (the trace says which calls the engine forced)
+            if self.force_plan {
+                self.trace.gate("forced_planejar");
+            } else if self.force_conclude {
+                self.trace.gate("forced_concluir");
+            } else if self.no_block {
+                self.trace.gate("no_tools");
+            }
             self.force_plan = false;
             self.force_conclude = false;
-            let Reply { content, tool_calls, cut, tokens, prompt_tokens, evaluated } = self.model.chat(&window.messages, &turn_tools, required)?;
+            let chat_clock = self.trace.clock();
+            let chat_result = self.model.chat(&window.messages, &turn_tools, required);
+            self.trace.chat(&self.model.name, &window.messages, chat_clock, &chat_result);
+            let Reply { content, tool_calls, cut, tokens, prompt_tokens, evaluated } = chat_result?;
             self.largest_prompt = self.largest_prompt.max(prompt_tokens as usize);
             if tokens > 0 {
                 on_event(Event::Usage { tokens });
@@ -1223,6 +1282,7 @@ impl Agent {
                 if asks && !self.simular {
                     if self.d1_decides(tool, &name, &call.arguments).is_some() {
                         asks = false;
+                        self.trace.approval_auto();
                     }
                 }
                 if asks {
@@ -1232,6 +1292,7 @@ impl Agent {
                     match confirm(id) {
                         Answer::Deny => {
                             d1_person_answered(false);
+                            self.trace.approval_answer(false);
                             on_event(Event::ToolStart { tool: name.clone(), args: call.arguments.clone(), level: tool.level.clone(), description });
                             on_event(Event::ToolDone { tool: name.clone(), ok: false, text: tr("you did not allow it").to_string(), summary: String::new() });
                             self.messages.push(json!({"role": "tool", "tool_call_id": call.id, "content": tr_model("the person did not allow this action; do not try it another way")}));
@@ -1239,9 +1300,13 @@ impl Agent {
                         }
                         Answer::Always => {
                             d1_person_answered(true);
+                            self.trace.approval_answer(true);
                             let _ = permissoes::set(&name, Perm::Free);
                         }
-                        Answer::Once => d1_person_answered(true),
+                        Answer::Once => {
+                            d1_person_answered(true);
+                            self.trace.approval_answer(true);
+                        }
                     }
                 }
                 on_event(Event::ToolStart { tool: name.clone(), args: call.arguments.clone(), level: tool.level.clone(), description });
@@ -1371,6 +1436,7 @@ impl Agent {
             let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
             for m in v.into_iter().filter(|m| m["role"] != "system") {
                 if m["role"] == "user" && m.get(context::NOTE_KEY).is_none() {
+                    self.trace_conv.turns += 1;
                     self.person_text.push('\n');
                     self.person_text.push_str(m["content"].as_str().unwrap_or(""));
                 }
@@ -1381,6 +1447,9 @@ impl Agent {
                 if m["role"] == "tool" && m["content"].as_str().is_some_and(|c| c.contains("<<<DADOS EXTERNOS")) {
                     let tool = names.get(m["tool_call_id"].as_str().unwrap_or("")).cloned().unwrap_or_default();
                     self.remember_external(&tool, m["content"].as_str().unwrap_or(""));
+                    // (and for the traces: when in doubt it is marked)
+                    let kind = crate::traces::external_kind(&tool, &[]).unwrap_or("external:tool").to_string();
+                    self.trace_conv.add_taint(&kind);
                 }
                 self.messages.push(m);
             }
@@ -1390,6 +1459,10 @@ impl Agent {
             let summary = self.context.summary.clone();
             self.remember_summary(&summary);
         }
+        // (the conversation's turns share its id in the traces)
+        self.trace_conv.session = id.to_string();
+        // (a secret tool's result in the kept history marks every later turn)
+        self.trace_conv.restore_secret(&self.messages);
         self.conversa = Some(dir);
     }
 
