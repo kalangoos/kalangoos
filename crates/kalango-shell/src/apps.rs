@@ -532,12 +532,18 @@ mod icon_tests {
     #[test]
     fn what_the_shell_preloaded_does_not_pass_to_the_apps_it_opens() {
         let src = include_str!("apps.rs");
-        let from = src.find("pub fn abrir").expect("abrir");
-        let body = &src[from..from + src[from..].find("\n}\n").expect("end of abrir")];
-        let launch = body.find("app.info.launch").expect("the launch");
+        let body = |name: &str| {
+            let from = src.find(name).unwrap_or_else(|| panic!("{name}"));
+            &src[from..from + src[from..].find("\n}\n").expect("end of the function")]
+        };
+        let start = body("pub fn launch_info");
+        let launch = start.find("info.launch(").expect("the launch");
         for var in ["LD_PRELOAD", "LD_AUDIT"] {
-            let call = body.find(&format!("unsetenv(\"{var}\")")).unwrap_or_else(|| panic!("abrir must unset {var}"));
+            let call = start.find(&format!("unsetenv(\"{var}\")")).unwrap_or_else(|| panic!("launch_info must unset {var}"));
             assert!(call < launch, "{var} is unset before the app is launched");
         }
+        // every app the shell opens starts there: the creative apps too, once kalangod made their permissions again
+        assert!(body("pub fn abrir").contains("launch_info(&app.info)"));
+        assert!(include_str!("criativos.rs").contains("crate::apps::launch_info(&d)"));
     }
 }
