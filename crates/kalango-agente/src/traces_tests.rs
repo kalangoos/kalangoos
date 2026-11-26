@@ -1924,6 +1924,24 @@ fn a_megabyte_body_is_cleaned_in_linear_time() {
     assert!(full.as_secs_f64() < 3.0 * half.as_secs_f64().max(0.05), "not linear: {half:?} then {full:?}");
 }
 
+/// The final pass also reads a span's content as one text: a secret whose name is in one message and whose value is in
+/// the next (each looks harmless alone, and a weak first pass lets both through) is still stopped.
+#[test]
+fn the_final_pass_sees_a_secret_split_across_two_messages() {
+    let (weak, guard) = (Redactor::new(&[]), Redactor::default());
+    let mut sp = span_with(Attr::Str("a senha do servidor é a de sempre, na linha de baixo:".into()));
+    sp.events[0].attrs[1] = ("content".into(), Attr::Str("password".into()));
+    let mut second = sp.events[0].clone();
+    second.attrs = vec![("role".into(), Attr::Str("user".into())), ("content".into(), Attr::Str("banana2024".into()))];
+    sp.events.push(second);
+    // each value alone is harmless to the final pass's value look
+    assert_eq!(guard.scan_value(&json!("password")) + guard.scan_value(&json!("banana2024")), 0);
+    let mut tally = Tally::default();
+    let v = guarded_otlp(&sp, &weak, &guard, &mut tally);
+    assert_eq!(tally.hits, 1, "the joined content shows the secret");
+    assert!(v.is_none_or(|v| !v.to_string().contains("banana2024")));
+}
+
 /// How often the final pass takes out content the first pass left whole, over the critic's corpora (run by hand:
 /// `cargo test … -- --ignored final_pass_rate --nocapture`).
 #[test]

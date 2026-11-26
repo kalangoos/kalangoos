@@ -358,9 +358,7 @@ impl Redactor {
     }
 
     /// How many secrets the detectors find in a text, with its backslash escapes read as separators (so a secret
-    /// after `\n`, or a key written as `\"password\"`, is seen at any depth of escaping). (The tests' view of the final
-    /// pass over one text; the sender scans the values of a span with `scan_value`.)
-    #[cfg(test)]
+    /// after `\n`, or a key written as `\"password\"`, is seen at any depth of escaping).
     pub fn scan_text(&self, text: &str) -> usize {
         // (JSON written as text is redacted by key: its keys are read here too)
         let t = text.trim();

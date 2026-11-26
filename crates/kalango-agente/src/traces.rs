@@ -223,9 +223,12 @@ struct Tally {
 /// `kalango.redactions.final` saying how many it found; if it is still not clean the span is left out.
 fn guarded_otlp(sp: &SpanData, first: &Redactor, guard: &Redactor, tally: &mut Tally) -> Option<Value> {
     let mut v = sp.to_otlp(first);
-    // (the values, each with the same rules as the first pass: the serialized JSON around a value, `"}}],"name":`,
-    // must not make a kept `${{ … }}` or "Password:" look like a secret; strings in strings are decoded by scan_value)
-    let hits = guard.scan_value(&v);
+    // two looks: the values, each with the same rules as the first pass (the serialized JSON around a value,
+    // `"}}],"name":`, must not make a kept `${{ … }}` or "Password:" look like a secret; strings in strings are decoded
+    // by scan_value); and the span's content as one text, its values joined by line breaks, so a secret whose name is
+    // in one value and whose value is in the next (two events, two messages) is still seen
+    let look = |v: &Value| guard.scan_value(v) + guard.scan_text(&joined_content(v));
+    let hits = look(&v);
     if hits == 0 {
         return Some(v);
     }
@@ -239,11 +242,32 @@ fn guarded_otlp(sp: &SpanData, first: &Redactor, guard: &Redactor, tally: &mut T
             }
         }
     }
-    if guard.scan_value(&v) > 0 {
+    if look(&v) > 0 {
         tally.dropped += 1;
         return None;
     }
     Some(v)
+}
+
+/// The content of a span as one text: the text of its content attributes and of its events' (`content`, `body`, and
+/// the `….content` / `….result` / `….arguments` ones; not the roles, names, ids and other structure of OTLP), in order,
+/// one per line.
+fn joined_content(v: &Value) -> String {
+    let is_content = |k: &str| matches!(k, "content" | "body") || [".content", ".result", ".arguments"].iter().any(|x| k.ends_with(x));
+    let mut out = String::new();
+    let mut push = |attrs: &Value| {
+        for a in attrs.as_array().into_iter().flatten() {
+            if let (true, Some(t)) = (a["key"].as_str().is_some_and(is_content), a["value"]["stringValue"].as_str()) {
+                out.push_str(t);
+                out.push('\n');
+            }
+        }
+    };
+    push(&v["attributes"]);
+    for e in v["events"].as_array().into_iter().flatten() {
+        push(&e["attributes"]);
+    }
+    out
 }
 
 /// The request body for spans: one `resourceSpans` per privacy mode (the mode is a resource attribute).
