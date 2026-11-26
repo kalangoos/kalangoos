@@ -229,8 +229,10 @@ jobs:
           # (the niri was linked against the Ubuntu 24.04 libdisplay-info.so.1: the image build copies it along)
           mkdir -p poc/.deps/root/usr/lib/x86_64-linux-gnu
           cp -L /usr/lib/x86_64-linux-gnu/libdisplay-info.so.1 poc/.deps/root/usr/lib/x86_64-linux-gnu/
-          imagem/manifesto-pecas.sh gravar niri poc/.deps/src/niri/target/release/niri poc/.deps/src/niri/resources \
-            poc/.deps/root/usr/lib/x86_64-linux-gnu/libdisplay-info.so.1
+          # (only the files the cache keeps: the rest of the resources folder is not restored)
+          r=poc/.deps/src/niri/resources
+          imagem/manifesto-pecas.sh gravar niri poc/.deps/src/niri/target/release/niri "$r/niri-session" "$r/niri.service" \
+            "$r/niri-shutdown.target" poc/.deps/root/usr/lib/x86_64-linux-gnu/libdisplay-info.so.1
       - name: Conferir o manifesto
         run: imagem/manifesto-pecas.sh conferir niri
 
