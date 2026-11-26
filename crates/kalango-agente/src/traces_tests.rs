@@ -906,6 +906,44 @@ fn a_restored_conversation_keeps_the_paste_and_the_outside_results_as_taint() {
     assert!(conv.taint.is_empty() && !conv.secret);
 }
 
+/// What a recorded turn brought in from outside goes to the conversation, and the next turn starts with it (taint is
+/// carried between turns without the model: before, only the `#[ignore]`d real-model test covered it).
+#[test]
+fn the_taint_of_a_turn_carries_to_the_next_one() {
+    let s = setup();
+    let mut conv = Conversation::new();
+    let t1 = begin(&s, Config::default(), "o que diz o site?");
+    call_tool(&t1, "web.ler", json!({"url": "https://example.org"}), true, "texto do site");
+    t1.end(&Ok(()));
+    conv.finish_turn(&t1, &[]);
+    assert_eq!(conv.taint, ["external:web"], "the page read in turn 1 stays with the conversation");
+    // turn 2 begins with it: its root introduces it, so its first call is marked before anything is read
+    let t2 = Turn::begin(
+        &s.sink,
+        &Config::default(),
+        Begin {
+            session: &conv.session,
+            agent: "a",
+            index: conv.turns,
+            request: "e agora?",
+            tools: &tools(),
+            local_tools: Vec::new,
+            connectors: vec![],
+            taint: conv.taint.clone(),
+            secret: conv.secret,
+            pasted: vec![],
+        },
+    );
+    let c = t2.clock();
+    t2.chat("m", &msgs("e agora?"), c, &reply("ok", &[]));
+    t2.end(&Ok(()));
+    let spans = s.rx.wait_for(4);
+    let chats = by_name(&spans, "chat");
+    assert_eq!(list_attr(chats.last().unwrap(), "kalango.taint"), Some(vec!["external:web".to_string()]));
+    conv.finish_turn(&t2, &[]);
+    assert_eq!((conv.taint.clone(), conv.turns), (vec!["external:web".to_string()], 2));
+}
+
 #[test]
 fn a_new_conversation_starts_clean() {
     let a = Conversation::new();
