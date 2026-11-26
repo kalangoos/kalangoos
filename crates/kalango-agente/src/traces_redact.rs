@@ -35,11 +35,28 @@ pub const DENY_KEYS: &[&str] = &[
     "密码",
     "密碼",
     "口令",
+    // other spellings and other secrets
+    "psswd",
+    "pswd",
+    "pword",
+    "passcode",
+    "passkey",
+    "creds",
+    "signing_key",
+    "encryption_key",
+    "master_key",
+    "auth_header",
+    "mnemonic",
+    "seed_phrase",
 ];
+
+/// Keys that hold a secret only when their value is text (`{"session": "…"}`; `{"session": {"id": 7}}` is an object
+/// about it, `{"seed": 42}` a number), compared as the whole key or its last word.
+const TEXT_SECRET_KEYS: &[&str] = &["session", "sessionid", "otp", "seed", "dsn", "bearer"];
 
 /// Short key names that are secrets only as a whole word at the end of the key (`pwd`, `db_pass`, `X-Auth`, `userPin`),
 /// never as a piece of another word (`author`, `passageiro`, `mapping`, `spin`).
-pub const SUFFIX_KEYS: &[&str] = &["pwd", "pass", "auth", "pin", "pw"];
+pub const SUFFIX_KEYS: &[&str] = &["pwd", "pass", "auth", "pin", "pw", "cred", "mdp", "psk"];
 
 /// Keys whose value is a secret even when it is a number (a PIN, a numeric password); under the other denied keys a
 /// number is a count (`max_tokens`) and stays.
@@ -164,7 +181,17 @@ const ABOUT_A_SECRET: &[&str] = &[
     "version",
     "regex",
     "pattern",
+    "backend",
+    "ref",
+    "store",
+    "attempts",
+    "retries",
+    "tries",
+    "failures",
 ];
+
+/// Keys about tokens of text, not credentials (`"tokenizer": "lfm3"`).
+const NOT_SECRET_KEYS: &[&str] = &["tokenizer", "tokenizers", "tokenization", "tokenize", "detokenize"];
 
 /// A key of two or more words whose last word only describes the secret (see [`ABOUT_A_SECRET`]).
 fn describes_a_secret(key: &str) -> bool {
@@ -181,7 +208,21 @@ impl Redactor {
     /// A key named after a secret, as a JSON key is read: fail closed, whatever its last word says.
     fn denied_key(&self, key: &str) -> bool {
         let k = normalize(key);
-        !k.is_empty() && (self.deny.iter().any(|d| k.contains(d.as_str())) || suffix_key(key).is_some())
+        !k.is_empty()
+            && !NOT_SECRET_KEYS.contains(&k.as_str())
+            && (self.deny.iter().any(|d| k.contains(d.as_str())) || suffix_key(key).is_some() || leet_password(&k))
+    }
+
+    /// Whether a JSON key loses this value: a denied key (or one of [`TEXT_SECRET_KEYS`] with text), unless the value is
+    /// a count, a boolean, null, a mask (`"***"`, `"..."`), or text that only describes the secret under a key that
+    /// describes it (`"token_type": "bearer"`; `"password_policy": "banana2024"` still goes).
+    fn json_secret(&self, key: &str, v: &Value) -> bool {
+        let text = v.as_str();
+        let named = self.denied_key(key) || (text.is_some() && text_secret_key(key));
+        named
+            && !self.keeps_number(key, v)
+            && !matches!(v, Value::Bool(_) | Value::Null)
+            && !text.is_some_and(|t| mask(t) || (describes_a_secret(key) && !credential_shaped(t)))
     }
 
     /// A name in text that points at a secret: a denied key that does not only describe the secret (`password_policy:
@@ -215,8 +256,7 @@ impl Redactor {
                             stats.redacted += 1;
                             return (k.clone(), Value::String("[REDACTED:env]".into()));
                         }
-                        let kept_number = self.keeps_number(k, x);
-                        if self.denied_key(k) && !kept_number && !matches!(x, Value::Bool(_) | Value::Null) {
+                        if self.json_secret(k, x) {
                             stats.redacted += 1;
                             return (k.clone(), Value::String(REDACTED.into()));
                         }
@@ -277,8 +317,7 @@ impl Redactor {
                     // (an environment key with anything but its marker, or a denied key whose value is not a number, a boolean,
                     // empty or a marker: the first pass missed it)
                     let leaked_env = ENV_KEYS.contains(&kn.as_str()) && !x.is_null();
-                    let kept_number = self.keeps_number(k, x);
-                    let leaked_secret = self.denied_key(k) && !kept_number && !matches!(x, Value::Bool(_) | Value::Null);
+                    let leaked_secret = self.json_secret(k, x);
                     if (leaked_env || leaked_secret) && !marker(x) {
                         n += 1;
                     }
@@ -341,6 +380,9 @@ impl Redactor {
         ranges.extend(self.markup_ranges(t));
         ranges.extend(self.command_ranges(t));
         ranges.extend(cjk_ranges(t));
+        ranges.extend(scheme_ranges(t));
+        ranges.extend(self.name_value_ranges(t));
+        ranges.extend(self.code_literal_ranges(t));
         let ranges: Vec<(usize, usize)> = ranges.into_iter().map(|(a, b)| (view.origin_of(a), view.origin_of(b))).filter(|(a, b)| a < b).collect();
         replace_ranges(s, &merge_ranges(ranges), REDACTED, stats)
     }
@@ -360,7 +402,12 @@ impl Redactor {
         }
         stats.redacted += inner.redacted;
         stats.omitted_large += inner.omitted_large;
-        Some(out.to_string())
+        // (only the values that changed are written again, where they were: the layout and the order of the keys stay)
+        let lead = s.len() - s.trim_start().len();
+        Some(match patch_json(t, &out) {
+            Some(p) => format!("{}{p}{}", &s[..lead], &s[lead + t.len()..]),
+            None => out.to_string(),
+        })
     }
 
     /// The arguments of a tool call. Parsed (the usual case), they go through the key rules; when they do not parse
@@ -405,18 +452,36 @@ impl Redactor {
             while e > 0 && matches!(b[e - 1], b'"' | b'\'' | b'`' | b' ' | b'\t' | b'\\' | b'*') {
                 e -= 1;
             }
-            let st =
-                s[..e].char_indices().rev().take_while(|(_, c)| c.is_alphanumeric() || matches!(c, '_' | '-' | '.')).last().map_or(e, |(k, _)| k);
+            let st = s[..e]
+                .char_indices()
+                .rev()
+                .take_while(|(_, c)| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '@'))
+                .last()
+                .map_or(e, |(k, _)| k);
             // (a label of several words names a code or a password: its value goes even when it is a number)
-            let (strong, by_label) = if st < e && self.denied(&s[st..e]) {
-                (password_label(&s[st..e]), false)
+            // (a name that only describes a secret, `password_policy`, a generic one, `key`, `chave`, or a parameter
+            // of a URL, `?sig=`, holds a secret only when its value looks like one: `shaped_only`)
+            let word = &s[st..e];
+            let query = st > 0 && matches!(b[st - 1], b'?' | b'&') && QUERY_SECRET_NAMES.contains(&word.to_ascii_lowercase().as_str());
+            let generic = GENERIC_SECRET_NAMES.contains(&fold_accents(word).as_str());
+            let (strong, by_label, shaped_only) = if st < e && self.denied(word) {
+                (password_label(word), false, false)
+            } else if st < e && (query || generic || (self.denied_key(word) && describes_a_secret(word))) {
+                (false, false, true)
             } else if let Some(strong) = label_before(s, e) {
-                (strong, true)
+                (strong, true, false)
             } else {
                 i += 1;
                 continue;
             };
             let name = &s[st..e];
+            // a cookie header: every pair loses its value (the attributes of `Set-Cookie` stay)
+            if matches!(normalize(name).as_str(), "cookie" | "setcookie") {
+                let end = s[i..].find('\n').map_or(s.len(), |n| i + n);
+                ranges.extend(cookie_values(s, i + sep_len, end));
+                i = end.max(i + 1);
+                continue;
+            }
             // the value after it (markdown emphasis closing the label, `**Password:** X`, is not the value)
             let mut vs = i + sep_len;
             while vs < b.len() && matches!(b[vs], b' ' | b'\t' | b'*') {
@@ -458,12 +523,26 @@ impl Redactor {
                         i = vs.max(i + 1);
                         continue;
                     }
-                    if interpolation_only(&s[vs..ve]) {
+                    // (an interpolation, a mask or a placeholder; under a name that is not a password's, text that only
+                    // names the secret: `"jwt-secret-name"`, `"X-API-Key"`)
+                    let quoted = &s[vs..ve];
+                    if interpolation_only(quoted) || mask(quoted) || placeholder(quoted) || (!strong && names_a_secret(quoted)) {
                         i = ve.max(i + 1);
                         continue;
                     }
                 }
                 None => {
+                    // (a YAML tag before the value, `!!str X`, `!vault X`: the value is the word after it)
+                    if b.get(vs) == Some(&b'!') {
+                        let te = value_end(b, vs);
+                        let mut w = te;
+                        while w < b.len() && matches!(b[w], b' ' | b'\t') {
+                            w += 1;
+                        }
+                        if w > te && w < b.len() && !matches!(b[w], b'\n' | b'\r' | b'|' | b'>') {
+                            vs = w;
+                        }
+                    }
                     ve = value_end(b, vs);
                     // (a `$(…)`, `${…}` or `{{…}}` is judged, and cut, whole: `$(echo X)`)
                     for (open, close) in [("$(", ")"), ("${", "}"), ("{{", "}}")] {
@@ -481,14 +560,17 @@ impl Redactor {
                         continue;
                     }
                     // "Authorization: Bearer abc": the scheme is not the secret
-                    let word = s[vs..ve].to_ascii_lowercase();
-                    if matches!(word.as_str(), "bearer" | "basic" | "token" | "digest") {
+                    let word = s[vs..ve].trim_end_matches(':').to_ascii_lowercase();
+                    if word == "digest" {
+                        // (the parameters of a digest go to the end of the line: `response="…"` is the secret)
+                        ve = s[ve..].find('\n').map_or(s.len(), |n| ve + n);
+                    } else if AUTH_SCHEMES.contains(&word.as_str()) {
                         let mut w = ve;
                         while w < b.len() && matches!(b[w], b' ' | b'\t') {
                             w += 1;
                         }
                         let mut we = w;
-                        while we < b.len() && !b[we].is_ascii_whitespace() && !matches!(b[we], b'"' | b'\'' | b',' | b';') {
+                        while we < b.len() && !b[we].is_ascii_whitespace() && !matches!(b[we], b'"' | b'\'' | b'`' | b',' | b';') {
                             we += 1;
                         }
                         // (after a scheme the next word goes whatever its shape; "auth: token refreshed" is a log line,
@@ -496,7 +578,7 @@ impl Redactor {
                         let next = &s[w..we.max(w)];
                         let common = COMMON_AFTER_SCHEME.contains(&fold_accents(next.trim_end_matches(['.', ',', ';', ':', '!', '?'])).as_str());
                         let variable = interpolation_at(next).is_some_and(|n| n == next.len());
-                        if we > w && !common && !variable {
+                        if we > w && !common && !variable && !placeholder(next) {
                             ve = we;
                         } else {
                             i = ve.max(i + 1);
@@ -516,6 +598,12 @@ impl Redactor {
                 }
             }
             let value = &s[vs..ve];
+            // (a label of several words with a preposition, "senha do usuário:", is a sentence as often as a label: its
+            // value goes when it looks like a credential)
+            if (by_label && !strong && !credential_shaped(value)) || (shaped_only && !literal_secret(value)) {
+                i = ve.max(i + 1);
+                continue;
+            }
             // (a number is a count, `tokens: 120`, except under a password or PIN key)
             let numeric =
                 !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit() || c == b'.') && !self.numbers_are_secret(name) && !strong && !by_label;
@@ -585,9 +673,39 @@ impl Redactor {
         true
     }
 
-    /// `<password>X</password>`, `<senha>X</senha>`: the text of an element named after a secret.
+    /// `<password>X</password>`, `<senha>X</senha>`: the text of an element named after a secret; `<add key="password"
+    /// value="X"/>`, `<input type="password" value="X">`, `<entry key="token">X</entry>`: the value of an element whose
+    /// key, name, type or id names a secret.
     fn markup_ranges(&self, s: &str) -> Vec<(usize, usize)> {
         let mut ranges = Vec::new();
+        if !s.contains('<') {
+            return ranges;
+        }
+        let mut from = 0;
+        while let Some(p) = s[from..].find('<').map(|p| p + from) {
+            from = p + 1;
+            let Some(close) = s[p..].find('>').map(|e| p + e) else { break };
+            let tag = &s[p..close];
+            if !["key", "name", "type", "id"].iter().any(|a| attr(tag, a).is_some_and(|(x, y)| self.denied(&tag[x..y]))) {
+                continue;
+            }
+            if let Some((x, y)) = attr(tag, "value") {
+                let v = &tag[x..y];
+                if !v.is_empty() && !v.starts_with("[REDACTED") && !mask(v) && !placeholder(v) {
+                    ranges.push((p + x, p + y));
+                }
+            } else if !tag.ends_with('/') {
+                // (the text of the element, up to its closing tag)
+                if let Some(end) = s[close + 1..].find("</").map(|e| close + 1 + e) {
+                    let content = &s[close + 1..end];
+                    let t = content.trim();
+                    if !t.is_empty() && !t.contains('<') && !t.starts_with("[REDACTED") {
+                        let at = close + 1 + (content.len() - content.trim_start().len());
+                        ranges.push((at, at + t.len()));
+                    }
+                }
+            }
+        }
         if !s.contains("</") {
             return ranges;
         }
@@ -622,9 +740,6 @@ impl Redactor {
     fn command_ranges(&self, s: &str) -> Vec<(usize, usize)> {
         const GLUED: &[&str] = &["mysql", "mysqldump", "mysqladmin", "mysqlimport", "mysqlcheck", "mysqlshow", "mariadb", "mariadb-dump"];
         let mut ranges = Vec::new();
-        if !s.contains('-') {
-            return ranges;
-        }
         let mut line_start = 0;
         for line in s.split_inclusive('\n') {
             // (each word's offset from where it is in the line: separators may be several, and several bytes each)
@@ -647,7 +762,7 @@ impl Redactor {
                     // it looks like one)
                     if let Some((vat, v)) = value_at(n + 1) {
                         let more = words.get(n + 2).is_some_and(|(_, x)| !x.starts_with(['<', '>', '|', '&', ';']));
-                        if sshpass || more || credential_shaped(v) {
+                        if sshpass || more || literal_secret(v) {
                             push(vat, v.len());
                         }
                     }
@@ -685,7 +800,42 @@ impl Redactor {
                     }
                 }
             }
-            // sudo reading its password from standard input
+            // other tools that take a password after a flag (glued to it for 7z and unrar)
+            for &(tool, flag, glued_flag) in TOOL_PASSWORD_FLAGS {
+                let Some(c) = position(tool) else { continue };
+                // (`docker -p` is a port, except in `docker login`)
+                if matches!(tool, "docker" | "podman" | "nerdctl") && !words[c + 1..].iter().any(|(_, w)| *w == "login") {
+                    continue;
+                }
+                for (n, &(at, w)) in words.iter().enumerate().skip(c + 1) {
+                    if glued_flag && w.len() > flag.len() && w.starts_with(flag) {
+                        push(at + flag.len(), w.len() - flag.len());
+                    } else if !glued_flag && w == flag {
+                        if let Some((vat, v)) = value_at(n + 1) {
+                            // (`-pass pass:X`; `env:VAR` and `file:path` say where it is)
+                            if let Some(x) = v.strip_prefix("pass:") {
+                                push(vat + 5, x.len());
+                            } else if !["env:", "file:", "fd:", "stdin"].iter().any(|p| v.starts_with(p)) {
+                                push(vat, v.len());
+                            }
+                        }
+                    }
+                }
+            }
+            // `wpa_passphrase SSID X`; `vault login X`
+            if let Some(c) = position("wpa_passphrase") {
+                if let Some(&(vat, v)) = words[c + 1..].iter().filter(|(_, w)| !w.starts_with('-')).nth(1) {
+                    push(vat, v.len());
+                }
+            }
+            if let Some(c) = position("vault") {
+                if words.get(c + 1).is_some_and(|(_, w)| *w == "login") {
+                    if let Some((vat, v)) = value_at(c + 2).filter(|(_, v)| !v.contains('=') && credential_shaped(v)) {
+                        push(vat, v.len());
+                    }
+                }
+            }
+            // `sudo -S <<< X`
             if let Some(su) = position("sudo") {
                 let stdin = words[su + 1..].iter().any(|(_, w)| *w == "--stdin" || (w.starts_with('-') && !w.starts_with("--") && w.contains('S')));
                 if stdin {
@@ -694,13 +844,26 @@ impl Redactor {
                             push(vat, v.len());
                         }
                     }
-                    // `echo X | sudo -S …`, `printf '%s\n' X | sudo -S …`
-                    if let Some(pipe) = words[..su].iter().rposition(|(_, w)| *w == "|") {
-                        if let Some(e) = words[..pipe].iter().rposition(|(_, w)| matches!(command(w).as_str(), "echo" | "printf")) {
-                            for &(vat, v) in &words[e + 1..pipe] {
-                                if !(v.starts_with('-') && v.len() <= 3) && !v.contains('%') {
-                                    push(vat, v.len());
-                                }
+                }
+            }
+            // a password piped into what reads it: `echo X | sudo -S …`, `| passwd --stdin`, `| chpasswd` (`user:X`),
+            // `| docker login --password-stdin`
+            if let Some(pipe) = words.iter().position(|(_, w)| *w == "|") {
+                let right = &words[pipe + 1..];
+                let reader = right.first().map(|(_, w)| command(w)).unwrap_or_default();
+                let has = |x: &str| right.iter().any(|(_, w)| *w == x);
+                let sudo_stdin = reader == "sudo"
+                    && right[1..].iter().any(|(_, w)| *w == "--stdin" || (w.starts_with('-') && !w.starts_with("--") && w.contains('S')));
+                let chpasswd = reader == "chpasswd";
+                if sudo_stdin || chpasswd || (reader == "passwd" && has("--stdin")) || has("--password-stdin") {
+                    if let Some(e) = words[..pipe].iter().rposition(|(_, w)| matches!(command(w).as_str(), "echo" | "printf")) {
+                        for &(vat, v) in &words[e + 1..pipe] {
+                            if (v.starts_with('-') && v.len() <= 3) || v.contains('%') {
+                                continue;
+                            }
+                            match v.find(':').filter(|_| chpasswd) {
+                                Some(c) => push(vat + c + 1, v.len() - c - 1),
+                                None => push(vat, v.len()),
                             }
                         }
                     }
@@ -709,6 +872,500 @@ impl Redactor {
             line_start += line.len();
         }
         ranges
+    }
+
+    /// `- name: DB_PASSWORD` with `value: X` on the next line (Kubernetes, compose), `ENV PASSWORD X` (a Dockerfile),
+    /// `set aws_secret_access_key X` (a key named after a secret as a word of a command): the name on one side, the
+    /// value on the other.
+    fn name_value_ranges(&self, s: &str) -> Vec<(usize, usize)> {
+        let mut ranges = Vec::new();
+        let mut lines: Vec<(usize, &str)> = Vec::new();
+        let mut at = 0;
+        for l in s.split_inclusive('\n') {
+            lines.push((at, l));
+            at += l.len();
+        }
+        for (n, &(at, line)) in lines.iter().enumerate() {
+            let body = line.trim_end_matches(['\n', '\r']);
+            let t = body.trim_start();
+            let t = t.strip_prefix("- ").unwrap_or(t).trim_start();
+            if let Some(name) = t.strip_prefix("name:") {
+                if self.denied(name.trim().trim_matches(['"', '\''])) {
+                    if let Some(&(nat, next)) = lines.get(n + 1) {
+                        let nb = next.trim_end_matches(['\n', '\r']);
+                        let nt = nb.trim_start();
+                        if let Some(v) = nt.strip_prefix("value:") {
+                            let raw = v.trim();
+                            let inner = raw.trim_matches(['"', '\'']);
+                            let quoted = raw.len() > inner.len();
+                            if !inner.is_empty()
+                                && !inner.starts_with("[REDACTED")
+                                && (quoted || value_is_literal(inner, ""))
+                                && !interpolation_only(inner)
+                            {
+                                let vat = nat
+                                    + (nb.len() - nt.len())
+                                    + "value:".len()
+                                    + (v.len() - v.trim_start().len())
+                                    + (raw.len() - raw.trim_start_matches(['"', '\'']).len());
+                                ranges.push((vat, vat + inner.len()));
+                            }
+                        }
+                    }
+                }
+            }
+            let words: Vec<(usize, &str)> =
+                body.split(char::is_whitespace).filter(|w| !w.is_empty()).map(|w| (w.as_ptr() as usize - line.as_ptr() as usize, w)).collect();
+            // `ENV NAME value` (with `=` it is a pair, read as one)
+            if words.len() >= 3 && matches!(words[0].1, "ENV" | "ARG") && !words[1].1.contains('=') && self.denied(words[1].1) {
+                let vat = words[2].0;
+                let v = body[vat..].trim_end();
+                if value_is_literal(v, "") && !interpolation_only(v) {
+                    ranges.push((at + vat, at + vat + v.len()));
+                }
+            }
+            for pair in words.windows(2) {
+                let (w, (vat, v)) = (pair[0].1, pair[1]);
+                if w.contains('_')
+                    && !w.contains(['=', ':', '(', '"', '\'', ',', ';'])
+                    && self.denied(w)
+                    && literal_secret(v)
+                    && value_is_literal(v, "")
+                    && !v.contains(['=', '('])
+                {
+                    ranges.push((at + vat, at + vat + v.len()));
+                }
+            }
+        }
+        ranges
+    }
+
+    /// A literal inside code that holds a secret (`password = get_secret("X")`, `os.environ.get("X") or "X"`, `password ==
+    /// "X"`, `setPassword("X")`, `login(user, "X")`, `key = [X]`): on a line of code that names a secret or calls a
+    /// login, a quoted literal or a bare word in brackets that looks like a credential goes; names (`"SECRET_KEY"`,
+    /// `"accessToken"`), messages, paths and numbers stay.
+    fn code_literal_ranges(&self, s: &str) -> Vec<(usize, usize)> {
+        const LOGIN_CALLS: &[&str] = &["login", "connect", "authenticate", "auth", "signin", "sign_in", "logon"];
+        let mut ranges = Vec::new();
+        let mut base = 0;
+        for line in s.split_inclusive('\n') {
+            let at = base;
+            base += line.len();
+            // (JSON is read by its keys, not as code: a line that starts like it is left to that)
+            let lead = line.trim_start();
+            if !line.contains(['(', '=', '[']) || lead.starts_with(['{', '[', '"']) {
+                continue;
+            }
+            let b = line.as_bytes();
+            // an identifier named after a secret (inside quotes too: `config['password']`), or a login call
+            let mut names_secret = false;
+            let mut quoted = None;
+            let mut i = 0;
+            while i < b.len() && !names_secret {
+                if !(b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    match quoted {
+                        None if matches!(b[i], b'"' | b'\'' | b'`') => quoted = Some(b[i]),
+                        Some(q) if b[i] == q => quoted = None,
+                        _ => {}
+                    }
+                    i += 1;
+                    continue;
+                }
+                let st = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                let id = &line[st..i];
+                let call = b.get(i) == Some(&b'(');
+                // (a bare `key` only as code, not inside a literal: `"key-2024-11"`)
+                // (a count of tokens of text, `max_tokens`, is not a secret's name)
+                names_secret = (id.eq_ignore_ascii_case("key") && quoted.is_none())
+                    || (self.denied(id) && !id.to_ascii_lowercase().ends_with("tokens"))
+                    || (call && LOGIN_CALLS.contains(&id.to_ascii_lowercase().as_str()));
+            }
+            if !names_secret {
+                continue;
+            }
+            let mut i = 0;
+            while i < b.len() {
+                match b[i] {
+                    q @ (b'"' | b'\'' | b'`') => {
+                        let st = i + 1;
+                        let Some(e) = line[st..].find(q as char).map(|e| st + e) else { break };
+                        if literal_secret(&line[st..e]) {
+                            ranges.push((at + st, at + e));
+                        }
+                        i = e + 1;
+                    }
+                    b'(' | b'[' | b',' | b'=' => {
+                        // a bare word as an argument, an element or the other side of a comparison: `get_secret(X)`,
+                        // `[X]`, `password == X`
+                        if b[i] == b'=' && !(i > 0 && b[i - 1] == b'=') {
+                            i += 1;
+                            continue;
+                        }
+                        let mut st = i + 1;
+                        while st < b.len() && b[st] == b' ' {
+                            st += 1;
+                        }
+                        let mut e = st;
+                        while e < b.len() && (b[e].is_ascii_alphanumeric() || matches!(b[e], b'_' | b'-')) {
+                            e += 1;
+                        }
+                        let closes_there = if b[i] == b'=' {
+                            b.get(e).is_none_or(|c| matches!(c, b')' | b':' | b' ' | b'\n' | b'\r' | b';'))
+                        } else {
+                            matches!(b.get(e), Some(b')' | b']' | b','))
+                        };
+                        if e > st && closes_there && literal_secret(&line[st..e]) {
+                            ranges.push((at + st, at + e));
+                        }
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+            }
+        }
+        ranges
+    }
+}
+
+/// Tools that take a password after a flag: (command, flag, whether the password is glued to the flag).
+const TOOL_PASSWORD_FLAGS: &[(&str, &str, bool)] = &[
+    ("redis-cli", "-a", false),
+    ("zip", "-P", false),
+    ("unzip", "-P", false),
+    ("7z", "-p", true),
+    ("7za", "-p", true),
+    ("7zz", "-p", true),
+    ("unrar", "-p", true),
+    ("rar", "-p", true),
+    ("mongo", "-p", false),
+    ("mongosh", "-p", false),
+    ("ssh-keygen", "-N", false),
+    ("ssh-keygen", "-P", false),
+    ("openssl", "-k", false),
+    ("openssl", "-pass", false),
+    ("openssl", "-passin", false),
+    ("openssl", "-passout", false),
+    ("az", "-p", false),
+    ("docker", "-p", false),
+    ("podman", "-p", false),
+    ("nerdctl", "-p", false),
+];
+
+/// The span of a quoted attribute's value inside a tag (`name="…"`), relative to the tag.
+fn attr(tag: &str, name: &str) -> Option<(usize, usize)> {
+    let b = tag.as_bytes();
+    let mut from = 0;
+    while let Some(p) = tag[from..].find(name).map(|p| p + from) {
+        from = p + name.len();
+        let mut j = p + name.len();
+        while j < b.len() && b[j] == b' ' {
+            j += 1;
+        }
+        if p == 0 || !b[p - 1].is_ascii_whitespace() || b.get(j) != Some(&b'=') {
+            continue;
+        }
+        j += 1;
+        while j < b.len() && b[j] == b' ' {
+            j += 1;
+        }
+        let q = *b.get(j)?;
+        if !matches!(q, b'"' | b'\'') {
+            continue;
+        }
+        let e = tag[j + 1..].find(q as char)? + j + 1;
+        return Some((j + 1, e));
+    }
+    None
+}
+
+/// The values of the pairs of a cookie header between `from` and `end` (`theme=dark; session=X`), not the attributes of
+/// `Set-Cookie` (`Path`, `Domain`, `Expires`…).
+fn cookie_values(s: &str, from: usize, end: usize) -> Vec<(usize, usize)> {
+    const ATTRIBUTES: &[&str] =
+        &["path", "domain", "expires", "max-age", "samesite", "secure", "httponly", "priority", "partitioned", "version", "comment"];
+    let mut out = Vec::new();
+    let mut at = from;
+    for part in s[from..end].split(';') {
+        if let Some((name, value)) = part.split_once('=') {
+            let n = name.trim().to_ascii_lowercase();
+            let v = value.trim();
+            if !ATTRIBUTES.contains(&n.as_str()) && !v.is_empty() && !v.starts_with("[REDACTED") {
+                let vs = at + name.len() + 1 + (value.len() - value.trim_start().len());
+                out.push((vs, vs + v.len()));
+            }
+        }
+        at += part.len() + 1;
+    }
+    out
+}
+
+/// A mask in place of a value (`***`, `...`, `xxxx`, `••••`): not a secret.
+fn mask(t: &str) -> bool {
+    t.chars().count() >= 3 && t.chars().all(|c| matches!(c, '*' | 'x' | 'X' | '•' | '.' | '…'))
+}
+
+/// A placeholder in angle brackets, words without digits (`<token>`, `<seu token aqui>`, `<your-api-key>`).
+fn placeholder(t: &str) -> bool {
+    let t = t.trim_end_matches(['.', ',', ';', '`', '\'', '"', ')']);
+    t.len() > 2 && t.starts_with('<') && t.ends_with('>') && t[1..t.len() - 1].chars().all(|c| c.is_alphabetic() || matches!(c, ' ' | '-' | '_'))
+}
+
+/// Text that names a secret instead of holding one (`"jwt-secret-name"`, `"X-API-Key"`, `"db-credentials"`): one word,
+/// not credential-shaped, with a part that is a secret's name.
+fn names_a_secret(t: &str) -> bool {
+    !t.is_empty()
+        && !t.contains(char::is_whitespace)
+        && !credential_shaped(t)
+        && t.split(['-', '_', '.']).any(|p| {
+            let p = p.to_ascii_lowercase();
+            matches!(p.as_str(), "key" | "token" | "secret" | "password" | "credentials" | "auth" | "api")
+        })
+}
+
+/// Whether a key is one of [`TEXT_SECRET_KEYS`], whole or as its last word.
+fn text_secret_key(key: &str) -> bool {
+    let n = normalize(key);
+    TEXT_SECRET_KEYS.contains(&n.as_str()) || key_words(key).last().is_some_and(|w| TEXT_SECRET_KEYS.contains(&w.as_str()))
+}
+
+/// A key that spells a password's name with digits or symbols for letters (`passw0rd`, `p@ssword`, `p4ssword`, `s3cret`).
+fn leet_password(k: &str) -> bool {
+    if !k.bytes().any(|c| matches!(c, b'0' | b'1' | b'3' | b'4' | b'5' | b'@' | b'$')) {
+        return false;
+    }
+    let plain: String = k
+        .chars()
+        .map(|c| match c {
+            '0' => 'o',
+            '1' => 'i',
+            '3' => 'e',
+            '4' | '@' => 'a',
+            '5' | '$' => 's',
+            c => c,
+        })
+        .collect();
+    ["password", "passwd", "passphrase", "senha", "secret", "token"].iter().any(|w| plain.contains(w))
+}
+
+/// A literal in code that looks like a credential: one word of four or more characters with letters and a digit, a
+/// symbol or a case change inside, and not a name (an identifier without digits, an environment variable's name), a
+/// path, a URL, a format or a template.
+fn literal_secret(lit: &str) -> bool {
+    let b = lit.as_bytes();
+    let has = |f: fn(&u8) -> bool| b.iter().any(f);
+    let identifier = lit.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_');
+    lit.len() >= 4
+        && !lit.contains(char::is_whitespace)
+        && !lit.contains("://")
+        && !lit.starts_with(['/', '.', '-', '$', '~'])
+        && !lit.contains(['{', '%', '\\'])
+        && !b.iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == b'_')
+        && has(u8::is_ascii_alphabetic)
+        && !(identifier && !has(u8::is_ascii_digit))
+        // (an id or a hash in hex, a UUID: `"traceId": "0af7…"`; the token detector says the same)
+        && !b.iter().all(|c| c.is_ascii_hexdigit() || *c == b'-')
+        // (a selector or a name with a secret's name in it and no digit: `#password`, `.api-key`)
+        && !(!has(u8::is_ascii_digit) && ["password", "token", "secret", "key", "senha"].iter().any(|w| lit.to_ascii_lowercase().contains(w)))
+        && (has(u8::is_ascii_digit) || has(|c| matches!(c, b'!' | b'@' | b'#' | b'$' | b'^' | b'&' | b'*' | b'+' | b'=' | b'~')))
+}
+
+/// `Bearer X`, `Basic X`, `Token X`, `ApiKey X` outside a label: the word after the scheme goes when it looks like a
+/// credential; a placeholder (`<token>`), a variable, a parameter (`realm="api"`) or a common word stays.
+fn scheme_ranges(s: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let lower = s.to_ascii_lowercase();
+    if !AUTH_SCHEMES.iter().any(|w| lower.contains(w)) {
+        return ranges;
+    }
+    let words: Vec<(usize, &str)> =
+        s.split(char::is_whitespace).filter(|w| !w.is_empty()).map(|w| (w.as_ptr() as usize - s.as_ptr() as usize, w)).collect();
+    for pair in words.windows(2) {
+        let scheme = pair[0].1.trim_start_matches(['"', '\'', '`', '(']).trim_end_matches(':').to_ascii_lowercase();
+        if !AUTH_SCHEMES.contains(&scheme.as_str()) {
+            continue;
+        }
+        let (at, next) = pair[1];
+        let lead = next.len() - next.trim_start_matches(['"', '\'', '`']).len();
+        // (the credential's own characters: a quote, a bracket or punctuation after it is not part of it)
+        let run = next[lead..]
+            .bytes()
+            .take_while(|c| {
+                c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'=' | b'-' | b'_' | b'.' | b'~' | b'$' | b'{' | b'}' | b'<' | b'>')
+            })
+            .count();
+        let v = next[lead..lead + run].trim_end_matches(['.', ',']);
+        let body = v.trim_end_matches('=');
+        // (a parameter, `realm="api"`: something follows its `=`; base64 padding ends the word)
+        let parameter = next[lead..].find('=').is_some_and(|p| !next[lead + p..].trim_start_matches('=').is_empty());
+        if v.is_empty()
+            || v.starts_with("[REDACTED")
+            || placeholder(v)
+            || interpolation_at(v).is_some()
+            || !value_is_literal(v, "")
+            || body.contains('=')
+            || parameter
+            || COMMON_AFTER_SCHEME.contains(&v.to_ascii_lowercase().as_str())
+        {
+            continue;
+        }
+        let letters_and_digits = v.bytes().any(|c| c.is_ascii_alphabetic()) && v.bytes().any(|c| c.is_ascii_digit());
+        let opaque = body.len() >= 16 && body.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'-' | b'_' | b'.'));
+        let looks = if scheme == "token" { letters_and_digits || opaque } else { credential_shaped(v) || opaque };
+        if looks {
+            ranges.push((at + lead, at + lead + v.len()));
+        }
+    }
+    ranges
+}
+
+/// The text of a JSON document with only the values that its redacted copy changed written again, where they were: the
+/// layout and the order of the keys stay. `None` when the two do not line up (the caller writes the copy).
+fn patch_json(text: &str, after: &Value) -> Option<String> {
+    let b = text.as_bytes();
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    let end = json_walk(text, 0, Some(after), &mut edits)?;
+    if json_ws(b, end) != b.len() {
+        return None;
+    }
+    edits.sort_by_key(|e| e.0);
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for (a, e, with) in edits {
+        if a < at {
+            return None;
+        }
+        out.push_str(&text[at..a]);
+        out.push_str(&with);
+        at = e;
+    }
+    out.push_str(&text[at..]);
+    Some(out)
+}
+
+fn json_ws(b: &[u8], mut i: usize) -> usize {
+    while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\n' | b'\r') {
+        i += 1;
+    }
+    i
+}
+
+/// Where the JSON string that starts at `i` (its quote) ends, past its closing quote.
+fn json_string_end(b: &[u8], i: usize) -> Option<usize> {
+    let mut j = i + 1;
+    while j < b.len() {
+        match b[j] {
+            b'\\' => j += 2,
+            b'"' => return Some(j + 1),
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// Walks the JSON value at `i` next to its redacted copy (`None`: only skips it), noting each value of the text that
+/// the copy changed; returns where the value ends.
+fn json_walk(t: &str, i: usize, after: Option<&Value>, edits: &mut Vec<(usize, usize, String)>) -> Option<usize> {
+    let b = t.as_bytes();
+    let i = json_ws(b, i);
+    let replaced_whole = |edits: &mut Vec<(usize, usize, String)>, a: &Value| -> Option<usize> {
+        let end = json_walk(t, i, None, edits)?;
+        edits.push((i, end, a.to_string()));
+        Some(end)
+    };
+    match *b.get(i)? {
+        b'{' => {
+            if let Some(a) = after.filter(|a| !a.is_object()) {
+                return replaced_whole(edits, a);
+            }
+            let obj = after.and_then(Value::as_object);
+            let mut j = json_ws(b, i + 1);
+            if b.get(j) == Some(&b'}') {
+                return Some(j + 1);
+            }
+            loop {
+                if b.get(j) != Some(&b'"') {
+                    return None;
+                }
+                let ke = json_string_end(b, j)?;
+                let key: String = serde_json::from_str(&t[j..ke]).ok()?;
+                // (a key that is a token is redacted too, as `redact_value` does)
+                let new_key = tokens(&key, &mut Stats::default());
+                let child = match obj {
+                    Some(o) => {
+                        let (k, v) = match o.get(&new_key) {
+                            Some(v) => (new_key.clone(), v),
+                            None => (key.clone(), o.get(&key)?),
+                        };
+                        if k != key {
+                            edits.push((j, ke, Value::String(k).to_string()));
+                        }
+                        Some(v)
+                    }
+                    None => None,
+                };
+                j = json_ws(b, ke);
+                if b.get(j) != Some(&b':') {
+                    return None;
+                }
+                j = json_ws(b, json_walk(t, j + 1, child, edits)?);
+                match *b.get(j)? {
+                    b',' => j = json_ws(b, j + 1),
+                    b'}' => return Some(j + 1),
+                    _ => return None,
+                }
+            }
+        }
+        b'[' => {
+            if let Some(a) = after.filter(|a| !a.is_array()) {
+                return replaced_whole(edits, a);
+            }
+            let arr = after.and_then(Value::as_array);
+            let mut j = json_ws(b, i + 1);
+            if b.get(j) == Some(&b']') {
+                return Some(j + 1);
+            }
+            let mut n = 0;
+            loop {
+                let child = match arr {
+                    Some(a) => Some(a.get(n)?),
+                    None => None,
+                };
+                j = json_ws(b, json_walk(t, j, child, edits)?);
+                n += 1;
+                match *b.get(j)? {
+                    b',' => j += 1,
+                    b']' => return Some(j + 1),
+                    _ => return None,
+                }
+            }
+        }
+        b'"' => {
+            let e = json_string_end(b, i)?;
+            if let Some(a) = after {
+                let old: String = serde_json::from_str(&t[i..e]).ok()?;
+                if a.as_str() != Some(old.as_str()) {
+                    edits.push((i, e, a.to_string()));
+                }
+            }
+            Some(e)
+        }
+        _ => {
+            // a number, `true`, `false` or `null`
+            let mut e = i;
+            while e < b.len() && !matches!(b[e], b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r') {
+                e += 1;
+            }
+            if let Some(a) = after {
+                let old: Value = serde_json::from_str(&t[i..e]).ok()?;
+                if &old != a {
+                    edits.push((i, e, a.to_string()));
+                }
+            }
+            Some(e)
+        }
     }
 }
 
@@ -815,10 +1472,11 @@ fn url_credentials(s: &str, stats: &mut Stats) -> String {
         let end = s[start..].find(|c: char| c == '/' || c.is_whitespace() || c == '"' || c == '\'').map(|e| start + e).unwrap_or(s.len());
         let auth = &s[start..end];
         if let Some(at) = auth.rfind('@') {
-            if let Some(colon) = auth[..at].find(':') {
-                if colon + 1 < at {
-                    ranges.push((start + colon + 1, start + at));
-                }
+            match auth[..at].find(':') {
+                Some(colon) if colon + 1 < at => ranges.push((start + colon + 1, start + at)),
+                // (a token as the whole user info: `https://X@host`; `git@`, `ana@` are users)
+                None if literal_secret(&auth[..at]) => ranges.push((start, start + at)),
+                _ => {}
             }
         }
         from = end.max(start);
@@ -837,7 +1495,9 @@ fn env_dump(s: &str, stats: &mut Stats) -> String {
             && !value.is_empty()
             && !value.starts_with("[REDACTED")
     };
-    if s.lines().filter(|l| is_env(l)).count() < 3 {
+    // (`export` lines are a script's configuration, not a dump of the environment: they do not count, and the names of
+    // secrets among them are read as pairs)
+    if s.lines().filter(|l| !l.starts_with("export ") && is_env(l)).count() < 3 {
         return s.to_string();
     }
     let mut out = String::with_capacity(s.len());
@@ -881,7 +1541,7 @@ fn separator_at(b: &[u8], i: usize) -> Option<(usize, bool)> {
     let prev = if i > 0 { b[i - 1] } else { 0 };
     match b[i] {
         b'=' if !matches!(b.get(i + 1), Some(b'=' | b'>' | b'~')) && !matches!(prev, b'=' | b'!' | b'<' | b'>') => Some((1, false)),
-        b':' if b.get(i + 1) == Some(&b'=') => Some((2, false)),
+        b':' | b'?' if b.get(i + 1) == Some(&b'=') => Some((2, false)),
         b':' if b.get(i + 1) != Some(&b':') && prev != b':' => Some((1, true)),
         b'%' => ["3d", "3a", "253d", "253a"]
             .iter()
@@ -953,6 +1613,15 @@ const KNOWN_TYPES: &[&str] = &[
     "Buffer",
     "Uint8Array",
 ];
+
+/// Authorization schemes: the word after them is the credential.
+const AUTH_SCHEMES: &[&str] = &["bearer", "basic", "token", "apikey", "negotiate", "ntlm"];
+
+/// Parameters of a URL that carry a signature or a key (`?sig=`, `&key=`), when their value looks like a credential.
+const QUERY_SECRET_NAMES: &[&str] = &["sig", "signature", "key", "code", "auth", "access_token", "id_token", "apikey"];
+
+/// Names too common to be a secret by themselves (`key: value`): a secret only before a credential-shaped value.
+const GENERIC_SECRET_NAMES: &[&str] = &["key", "chave", "clave", "cle", "schlussel", "chiave"];
 
 /// Common words that follow `token` in a log line ("auth: token refreshed"): not a credential after a scheme.
 const COMMON_AFTER_SCHEME: &[&str] = &[
@@ -1082,6 +1751,10 @@ fn value_is_literal(value: &str, rest: &str) -> bool {
             return false;
         }
     }
+    // a positional placeholder of SQL (`$1`, `$2`)
+    if value.len() > 1 && value.starts_with('$') && value[1..].bytes().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
     // `%VAR%`, and a format placeholder: `%s`, `%(name)s`
     if (value.len() > 2 && value.starts_with('%') && value.ends_with('%') && variable_name(&value[1..value.len() - 1]))
         || (value.starts_with('%') && value[1..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '('))
@@ -1101,7 +1774,8 @@ fn value_is_literal(value: &str, rest: &str) -> bool {
             && p.split("::").all(|seg| !seg.is_empty() && seg.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'$' | b'?')))
     };
     if let Some(at) = line.find(['(', '[']) {
-        if at <= value.len() && ident_path(&line[..at]) && closes(&line[at..]) {
+        // (a macro is called with `!`: `format!(…)`)
+        if at <= value.len() && ident_path(line[..at].strip_suffix('!').unwrap_or(&line[..at])) && closes(&line[at..]) {
             return false;
         }
     }
@@ -1255,11 +1929,63 @@ const MULTI_WORD_LABELS: &[&str] = &[
     "onetimecode",
     "2facode",
     "otpcode",
+    "tokendeacesso",
+    "chavedeapi",
+    "chavedeacesso",
+    "chaveprivada",
+    "chavesecreta",
+    "codigodeacesso",
+    "clavedeacceso",
+    "codicediaccesso",
+    "passphrase",
+    "password",
+    "seedphrase",
+    "recoverycode",
+    "backupcodes",
+    "accesscode",
+    "wifikey",
+    "apppassword",
+    "bearertoken",
+    "sharedsecret",
+];
+
+/// Words after a password's name that say which one it is ("senha nova:", "senha atual X", "root password X").
+const LABEL_MODIFIERS: &[&str] = &[
+    "nova",
+    "novo",
+    "atual",
+    "antiga",
+    "antigo",
+    "temporaria",
+    "temporario",
+    "provisoria",
+    "padrao",
+    "mestra",
+    "new",
+    "old",
+    "current",
+    "temporary",
+    "default",
+    "master",
+    "root",
+    "admin",
+    "app",
+    "wifi",
+    "wi-fi",
+    "nueva",
+    "actual",
+    "nouveau",
+    "nouvelle",
+    "neues",
+    "aktuelles",
+    "nuova",
+    "attuale",
 ];
 
 /// Prepositions between a label and what it is for ("senha de acesso", "password for the server").
-const LABEL_PREPOSITIONS: &[&str] =
-    &["de", "do", "da", "dos", "das", "of", "for", "para", "del", "du", "des", "für", "fur", "di", "della", "dello", "pour", "zum", "zur"];
+const LABEL_PREPOSITIONS: &[&str] = &[
+    "de", "do", "da", "dos", "das", "of", "for", "para", "del", "du", "des", "für", "fur", "di", "della", "dello", "pour", "zum", "zur", "для", "от",
+];
 
 /// A label of several words that ends where a `:` or `=` follows (`mot de passe:`, `api key:`, `minha senha de acesso:`,
 /// `password for the server:`): whether there is one, and whether it names a password.
@@ -1290,10 +2016,16 @@ fn label_before(s: &str, end: usize) -> Option<bool> {
             return Some(password_label(&joined));
         }
     }
+    // "senha nova:", "root password:" (a password's name and the word that says which one)
+    let (last, before) = (fold_accents(words[n - 1]), words[n - 2]);
+    if password_label(before) && normalize(before).len() > 3 && LABEL_MODIFIERS.contains(&last.as_str()) {
+        return Some(true);
+    }
+    // "senha de acesso:", "password for the server:", "пароль для входа:" (as often a sentence: see the caller)
     for k in 3..=n {
         let (label, prep) = (words[n - k], fold_accents(words[n - k + 1]));
         if password_label(label) && normalize(label).len() > 3 && LABEL_PREPOSITIONS.contains(&prep.as_str()) {
-            return Some(true);
+            return Some(false);
         }
     }
     None
@@ -1410,6 +2142,11 @@ const PROSE_WORDS: &[&str] = &[
     "e",
     "ou",
     "mas",
+    "y",
+    "et",
+    "und",
+    "ed",
+    "debe",
     "que",
     "if",
     "se",
@@ -1437,6 +2174,17 @@ const PROSE_WORDS: &[&str] = &[
 ];
 
 const PROSE_ADJECTIVES: &[&str] = &[
+    "aceita",
+    "aceito",
+    "obligatorio",
+    "requerido",
+    "necesario",
+    "incorrecto",
+    "valido",
+    "invalido",
+    "corto",
+    "largo",
+    "opcional",
     "obrigatoria",
     "obrigatorio",
     "forte",
@@ -1628,6 +2376,7 @@ const PHRASE_KEYS: &[&str] = &[
     "пароль",
     "mot de passe",
     "parola d'ordine",
+    "mdp",
 ];
 /// Words that name a secret that is a credential only when the value looks like one ("o token é Hunt3r", "my OTP is
 /// 482913"; "the token is rotated daily" is prose).
@@ -1651,7 +2400,46 @@ const PHRASE_WEAK_KEYS: &[&str] = &[
     "codigo de seguranca",
     "one-time code",
     "auth code",
+    "codice di accesso",
+    "codigo de acesso",
+    "access code",
+    "wifi key",
+    "wi-fi key",
+    "pass",
+    "psk",
 ];
+
+/// Verbs that are also ordinary words ("e" is "and", "to", "para"): the value after them goes only when it looks like a
+/// credential ("minha senha e banana2024", "set the password to banana2024").
+const PHRASE_WEAK_VERBS: &[&str] = &["e", "to", "para", "ficou", "becomes", "agora", "|", "-", "→", "->", ">", "=>"];
+
+/// Words after a password's name that make a compound about it ("password manager is Bitwarden").
+const PASSWORD_COMPOUNDS: &[&str] = &[
+    "manager",
+    "managers",
+    "reset",
+    "policy",
+    "hash",
+    "hashing",
+    "field",
+    "prompt",
+    "strength",
+    "generator",
+    "vault",
+    "store",
+    "rules",
+    "length",
+    "expiry",
+    "change",
+    "recovery",
+    "hint",
+    "input",
+    "box",
+    "dialog",
+];
+
+/// Names that take a credential-shaped word right after them with no verb ("root password X", "pass X" in a netrc).
+const VERBLESS_EXTRA: &[&str] = &["pass", "psk"];
 /// The verb between the name and the value.
 const PHRASE_VERBS: &[&str] =
     &["é", "eh", "era", "será", "sera", "fica", "is", "was", "=", ":", "es", "est", "ist", "lautet", "war", "è", "—", "это"];
@@ -1686,6 +2474,8 @@ fn phrase_ranges(s: &str) -> Vec<(usize, usize)> {
             keys.iter().map(move |key| (key.split(' ').map(fold_accents).collect(), *strong, key.starts_with(|c: char| !c.is_ascii())))
         })
         .collect();
+    // (the names of secrets, normalized once: a value that is one is the variable)
+    let known: Vec<String> = DENY_KEYS.iter().chain(PHRASE_KEYS).map(|d| normalize(d)).collect();
     let mut k = 0;
     while k < words.len() {
         // the first name that starts here
@@ -1698,24 +2488,81 @@ fn phrase_ranges(s: &str) -> Vec<(usize, usize)> {
             continue;
         };
         let after_name = k + n;
+        // (a compound about the password, "password manager", "password reset", is not the password)
+        if cleaned.get(after_name).is_some_and(|w| PASSWORD_COMPOUNDS.contains(&w.as_str())) {
+            k = after_name;
+            continue;
+        }
         // (a name that ends its clause, `{ password, …rest }`, is not followed by its value)
         if words[after_name - 1].0.ends_with([',', ';', ')']) {
             k += 1;
             continue;
         }
-        // a verb within four words; a name in Cyrillic needs none ("мой пароль qwerty1")
-        let verb = (after_name..(after_name + 4).min(words.len())).find(|&j| {
-            let w = words[j].0.trim_end_matches([':', ',']).to_lowercase();
-            PHRASE_VERBS.contains(&w.as_str()) || PHRASE_VERBS.contains(&words[j].0)
-        });
-        let mut j = match verb {
-            Some(v) => v + 1,
-            None if non_latin && words.get(after_name).is_some_and(|w| credential_shaped(w.0)) => after_name,
-            None => {
-                k += 1;
+        // a verb within four words (not past code, not after a negation); a weak verb only before a credential
+        // (a credential on the same line as the name: letters with a digit or a symbol, not a name or a number)
+        let label_end = words[after_name - 1].2;
+        let shaped_at = |j: usize| {
+            words.get(j).is_some_and(|w| {
+                let t = w.0.trim_end_matches(['.', ',', ';', '!', '?']);
+                !s[label_end..w.1].contains('\n') && literal_secret(t) && value_is_literal(t, "")
+            })
+        };
+        let mut verb = None;
+        let mut weak_verb = false;
+        for (j, &(w, _, _)) in words.iter().enumerate().take(after_name + 4).skip(after_name) {
+            if w.contains(['{', '}', '(', ')', ';']) {
+                break;
+            }
+            let lw = w.trim_end_matches([':', ',']).to_lowercase();
+            let strong_verb = PHRASE_VERBS.contains(&lw.as_str()) || PHRASE_VERBS.contains(&w);
+            let weak = PHRASE_WEAK_VERBS.contains(&lw.as_str());
+            if !strong_verb && !weak {
                 continue;
             }
+            if strong_verb || shaped_at(j + 1) {
+                verb = Some(j);
+                weak_verb = !strong_verb;
+                break;
+            }
+        }
+        // no verb: a credential-shaped word right after a password's name, or after the words that say which one
+        // ("root password X", "senha atual X", "пароль от почты X")
+        let verbless = || {
+            if !(strong || VERBLESS_EXTRA.contains(&cleaned[k].as_str()) || non_latin) || words[after_name - 1].0.ends_with([':', '.']) {
+                return None;
+            }
+            let mut j = after_name;
+            let mut skipped = 0;
+            while j < words.len() && skipped <= 2 {
+                if shaped_at(j) && !cleaned[j].is_empty() {
+                    return Some(j);
+                }
+                let w = cleaned[j].as_str();
+                let after_preposition = skipped > 0 && LABEL_PREPOSITIONS.contains(&cleaned[j - 1].as_str());
+                if !(LABEL_MODIFIERS.contains(&w) || LABEL_PREPOSITIONS.contains(&w) || after_preposition)
+                    || words[j].0.ends_with([',', ';', ':', '.'])
+                {
+                    return None;
+                }
+                j += 1;
+                skipped += 1;
+            }
+            None
         };
+        let mut j = match verb {
+            Some(v) => v + 1,
+            None => match verbless() {
+                Some(j) => {
+                    weak_verb = true;
+                    j
+                }
+                None => {
+                    k += 1;
+                    continue;
+                }
+            },
+        };
+        let strong = strong && !weak_verb;
         if j < words.len() && matches!(words[j].0, ":" | "—" | "-") {
             j += 1;
         }
@@ -1737,6 +2584,8 @@ fn phrase_ranges(s: &str) -> Vec<(usize, usize)> {
                     && !quoted.contains('\n')
                     && !quoted.starts_with("[REDACTED")
                     && !interpolation_only(quoted)
+                    && !placeholder(quoted)
+                    && !mask(quoted)
                     && (strong || credential_shaped(quoted))
                 {
                     ranges.push((inner, c));
@@ -1749,7 +2598,13 @@ fn phrase_ranges(s: &str) -> Vec<(usize, usize)> {
         let value = value.trim_end_matches([',', ';', '.', ')', '!', '?']);
         let offset = raw.find(value).unwrap_or(0);
         let (vs, ve) = (ws + offset, ws + offset + value.len());
-        if value.is_empty() || value.starts_with("[REDACTED") || !value_is_literal(value, &s[ve.min(we)..]) || (!strong && !credential_shaped(value))
+        // (a value that is the name of a secret, `self.password = password`, is the variable)
+        let named = !value.is_empty() && known.contains(&normalize(value));
+        if value.is_empty()
+            || value.starts_with("[REDACTED")
+            || named
+            || !value_is_literal(value, &s[ve.min(we)..])
+            || (!strong && !credential_shaped(value))
         {
             k = j;
             continue;
@@ -1778,7 +2633,13 @@ fn next_line_ranges(s: &str) -> Vec<(usize, usize)> {
         lines.push((at, l));
         at += l.len();
     }
-    for pair in lines.windows(2) {
+    for (n, line) in lines.iter().enumerate() {
+        // (the value on the next line, or after blank lines and a heading's underline: `# Senha\n\nX`, `Senha\n-----\nX`)
+        let Some(next) = lines[n + 1..].iter().take(3).find(|(_, l)| !l.trim().is_empty() && !l.trim().chars().all(|c| matches!(c, '-' | '=')))
+        else {
+            continue;
+        };
+        let pair = [*line, *next];
         let label = pair[0].1.trim().trim_matches(|c: char| matches!(c, '*' | '#' | '-' | '>' | '_' | ':' | ' ' | '\t')).trim();
         let said = fold_accents(label);
         let is_label = PHRASE_KEYS.iter().any(|k| fold_accents(k) == said)
@@ -1814,7 +2675,7 @@ fn cjk_ranges(s: &str) -> Vec<(usize, usize)> {
             let rest = &s[from..];
             let skip: usize = rest
                 .chars()
-                .take_while(|c| matches!(c, ' ' | '\t' | ':' | '=' | '是' | '为' | '為' | 'は' | 'が' | '：' | '는' | '은'))
+                .take_while(|c| matches!(c, ' ' | '\t' | ':' | '=' | '是' | '为' | '為' | 'は' | 'が' | '：' | '는' | '은' | '「' | '『' | '“'))
                 .map(char::len_utf8)
                 .sum();
             let vs = from + skip;
@@ -1824,7 +2685,8 @@ fn cjk_ranges(s: &str) -> Vec<(usize, usize)> {
                 .map(char::len_utf8)
                 .sum();
             let value = s[vs..vs + len].trim_end_matches(['.', ',', ';', '!', '?', ')']);
-            if !value.is_empty() && !value.starts_with("[REDACTED") {
+            // ("パスワードは8文字以上": a number of characters, not a password)
+            if value.chars().count() >= 4 && !value.starts_with("[REDACTED") {
                 ranges.push((vs, vs + value.len()));
             }
         }
@@ -2837,6 +3699,344 @@ mod tests {
         }
         for ok in ["2026-11-26T10:12:03Z INFO auth: token refreshed for user=ana", "auth: token expired", "WARN auth: token missing", "token: Bearer"]
         {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// The word after `Bearer`, `Basic`, `Token`, `ApiKey` or `Negotiate` goes outside a label too, when it looks like a
+    /// credential; a placeholder, a variable, a parameter or a common word after the scheme stays.
+    #[test]
+    fn scheme_words_outside_a_label_go() {
+        let pw = weak_pw();
+        for t in [
+            format!("Bearer {pw}"),
+            format!("send Bearer {pw} now"),
+            format!("Basic {pw}"),
+            format!("Token {pw}"),
+            format!("header is Bearer {pw}"),
+            format!("Bearer: {pw}"),
+            format!("Authorization: Bearer: {pw}"),
+            format!("Authorization: ApiKey {pw}"),
+            format!("Authorization: Negotiate {pw}"),
+            format!("Authorization: Digest username=\"a\", response=\"{pw}\""),
+        ] {
+            assert_gone(&t, &pw);
+        }
+        assert_eq!(red(&format!("headers = {{'Authorization': 'Bearer {pw}'}}")), format!("headers = {{'Authorization': '{REDACTED}'}}"));
+        assert_eq!(red(&format!("Authorization: Basic {pw}=")), format!("Authorization: {REDACTED}"));
+        let doc = "The `Authorization` header must carry a bearer token. Example: `Authorization: Bearer <token>`.\nNever log the token.";
+        for ok in [
+            doc,
+            "WWW-Authenticate: Bearer realm=\"api\"",
+            "a bearer token is required",
+            "O token do modelo tem 4096 posições.",
+            "Bearer ${token}",
+            "the token 4096",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// Every pair of a `Cookie` or `Set-Cookie` header loses its value; the attributes of `Set-Cookie` stay.
+    #[test]
+    fn every_cookie_pair_goes() {
+        let pw = weak_pw();
+        for t in [
+            format!("Cookie: theme=dark; session={pw}"),
+            format!("Cookie: a=1; b=2; sid={pw}"),
+            format!("cookie: _ga=GA1.2.123; sessionid={pw}"),
+            format!("Set-Cookie: theme=dark; sessionid={pw}; Path=/"),
+        ] {
+            assert_gone(&t, &pw);
+        }
+        assert_eq!(red(&format!("Set-Cookie: sessionid={pw}; Path=/; HttpOnly")), format!("Set-Cookie: sessionid={REDACTED}; Path=/; HttpOnly"));
+    }
+
+    /// More ways to say what the password is: without accents (`senha e X`), with `to`/`para`/`ficou`, with no verb
+    /// before a credential-shaped word (`root password X`, netrc, ssh config), and more names (`mdp`, `codice di accesso`).
+    #[test]
+    fn more_ways_to_say_the_password_go() {
+        let pw = weak_pw();
+        for t in [
+            format!("minha senha e {pw}"),
+            format!("la password e {pw}"),
+            format!("set the password to {pw}"),
+            format!("changed the password to {pw}"),
+            format!("mudei a senha para {pw}"),
+            format!("use password {pw} to log in"),
+            format!("use a senha {pw} para entrar"),
+            format!("root password {pw}"),
+            format!("a senha ficou {pw}"),
+            format!("senha atual {pw}"),
+            format!("пароль от почты {pw}"),
+            format!("il codice di accesso è {pw}"),
+            format!("mon mdp est {pw}"),
+            format!("The wifi key is {pw}"),
+            format!("Wi-Fi: casa, senha {pw}"),
+            format!("machine x login ana password {pw}"),
+            format!("Host x\n  User a\n  Password {pw}\n"),
+            format!("user ana pass {pw}"),
+        ] {
+            assert_gone(&t, &pw);
+        }
+        for ok in [
+            "a senha e o usuário são obrigatórios",
+            "My password manager flagged my old password as weak, so I changed the password to something longer.",
+            "Decidimos trocar a senha do servidor de homologação até sexta.",
+            "Hello, can you explain how password hashing with argon2 works?",
+            "a senha para entrar é obrigatória",
+            "A senha deve ter ao menos 8 caracteres.",
+            "pass show email/work",
+            "my password manager is Bitwarden",
+            "password = password",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// Labels of several words in Portuguese and Russian, other spellings of the names, and `=>`.
+    #[test]
+    fn compound_labels_and_spellings_go() {
+        let pw = weak_pw();
+        for t in [
+            format!("senha nova: {pw}"),
+            format!("token de acesso: {pw}"),
+            format!("chave de API: {pw}"),
+            format!("chave privada: {pw}"),
+            format!("пароль для входа: {pw}"),
+            format!("pass phrase: {pw}"),
+            format!("pass word: {pw}"),
+            format!("seed phrase: {pw}"),
+            format!("recovery code: {pw}"),
+            format!("passw0rd: {pw}"),
+            format!("p@ssword: {pw}"),
+            format!("p4ssword: {pw}"),
+            format!("creds: {pw}"),
+            format!("passcode: {pw}"),
+            format!("pswd: {pw}"),
+            format!("psk={pw}"),
+            format!("'password' => '{pw}'"),
+            format!("\"password\" => \"{pw}\""),
+            format!("password => {pw}"),
+        ] {
+            assert_gone(&t, &pw);
+        }
+        for ok in [
+            "Veja a seção de segurança para saber como guardamos a senha do usuário: usamos Argon2id com salt de 16 bytes.",
+            "match x { Some(token) => token, None => return }",
+            "items.map(token => token.trim())",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// Configuration that names the secret in one place and gives it in another: Kubernetes `name`/`value`, XML
+    /// `key`/`value` attributes, `ENV NAME value`, `set NAME value`, a `PSK:` line.
+    #[test]
+    fn configuration_blocks_go() {
+        let pw = weak_pw();
+        for t in [
+            format!("- name: DB_PASSWORD\n  value: {pw}"),
+            format!("- name: PASSWORD\n  value: \"{pw}\""),
+            format!("name: DB_PASSWORD\nvalue: {pw}"),
+            format!("ENV PASSWORD {pw}"),
+            format!("<add key=\"password\" value=\"{pw}\"/>"),
+            format!("<input type=\"password\" value=\"{pw}\">"),
+            format!("<entry key=\"token\">{pw}</entry>"),
+            format!("SSID: casa\nPSK: {pw}"),
+            format!("aws configure set aws_secret_access_key {pw}"),
+        ] {
+            assert_gone(&t, &pw);
+        }
+        for ok in [
+            "<input type=\"password\" name=\"password\" placeholder=\"Senha\">",
+            "- name: DB_HOST\n  value: localhost",
+            "ENV PATH /usr/bin",
+            "SELECT id, password_hash FROM users",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// Passwords given to more commands: `docker login -p`, `redis-cli -a`, `zip -P`, `7z -p`, `unrar -p`, `mongo -p`,
+    /// `ssh-keygen -N`, `openssl -k` and `-pass pass:`, `az login -p`, `wpa_passphrase`, `vault login`, and piped into
+    /// `passwd --stdin`, `chpasswd` or `--password-stdin`.
+    #[test]
+    fn more_commands_go() {
+        let pw = weak_pw();
+        for t in [
+            format!("docker login -u ana -p {pw}"),
+            format!("redis-cli -a {pw}"),
+            format!("zip -P {pw} x.zip"),
+            format!("7z a -p{pw} x.7z"),
+            format!("unrar x -p{pw} a.rar"),
+            format!("mongo -p {pw}"),
+            format!("ssh-keygen -N {pw}"),
+            format!("openssl enc -k {pw}"),
+            format!("openssl enc -pass pass:{pw}"),
+            format!("az login -p {pw}"),
+            format!("wpa_passphrase casa {pw}"),
+            format!("nmcli dev wifi connect casa password {pw}"),
+            format!("vault login {pw}"),
+            format!("echo {pw} | passwd --stdin ana"),
+            format!("echo ana:{pw} | chpasswd"),
+            format!("echo {pw} | docker login --password-stdin"),
+        ] {
+            assert_gone(&t, &pw);
+        }
+        assert_eq!(red(&format!("echo ana:{pw} | chpasswd")), format!("echo ana:{REDACTED} | chpasswd"));
+        for ok in
+            ["docker run -p 8080:80 nginx", "zip -r x.zip dir", "7z a x.7z dir", "ssh -p 2222 user@host", "openssl enc -pass env:PASS -in a -out b"]
+        {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// More JSON keys that hold a secret; `session`, `otp`, `seed`, `dsn` and `bearer` only when their value is text.
+    #[test]
+    fn more_json_keys_go() {
+        let pw = weak_pw();
+        let r = Redactor::default();
+        for key in ["signing_key", "encryption_key", "master_key", "auth_header", "mnemonic", "session", "sessionid", "otp", "seed", "dsn", "bearer"]
+        {
+            let v = json!({ key: pw });
+            assert_eq!(r.redact_value(&v, &mut Stats::default())[key], REDACTED, "{key}");
+            assert_eq!(r.scan_value(&v), 1, "{key}");
+        }
+        let kept = json!({ "session": { "id": 7 }, "session_count": 3, "seed": 42 });
+        assert_eq!(r.redact_value(&kept, &mut Stats::default()), kept);
+        assert_eq!(r.scan_value(&kept), 0);
+    }
+
+    /// A literal inside code under a secret's name goes (`get_secret("X")`, `or "X"`, `Some("X")`, `== "X"`,
+    /// `login(user, "X")`); the names and messages around it stay.
+    #[test]
+    fn literals_inside_code_go() {
+        let pw = weak_pw();
+        for t in [
+            format!("password = get_secret({pw})"),
+            format!("password = get_secret(\"{pw}\")"),
+            format!("secret = os.environ.get(\"X\") or \"{pw}\""),
+            format!("password = os.getenv('X', '{pw}')"),
+            format!("const password = process.env.X || '{pw}';"),
+            format!("key = [{pw}]"),
+            format!("password = Some(\"{pw}\")"),
+            format!("let password = String::from(\"{pw}\");"),
+            format!("password == \"{pw}\""),
+            format!("if (password === \"{pw}\") {{"),
+            format!("assert_eq!(password, \"{pw}\");"),
+            format!("password.equals(\"{pw}\")"),
+            format!("setPassword(\"{pw}\")"),
+            format!("set_password('{pw}')"),
+            format!("login(user, \"{pw}\")"),
+            format!("$config['password'] = '{pw}';"),
+            format!("config[\"password\"] = \"{pw}\""),
+            format!("password = await fetch({pw})"),
+        ] {
+            assert_gone(&t, &pw);
+        }
+        assert_eq!(red(&format!("secret = os.environ.get(\"X\") or \"{pw}\"")), format!("secret = os.environ.get(\"X\") or \"{REDACTED}\""));
+        for ok in [
+            "let secret = env::var(\"SECRET_KEY\").expect(\"SECRET_KEY must be set\");",
+            "expect(validatePassword(\"correct-horse-battery\")).toBe(true);",
+            "const keyId = \"key-2024-11\";",
+            "token = create_token_v2(user.id)",
+            "password = getpass.getpass(\"Password: \")",
+            "secret = config.get(\"secret\")",
+            "resp = client.post(\"/token/refresh\", json={\"refresh\": \"stub\"})",
+            // (what a trace's own body holds: model names next to token counts, ids in hex)
+            "generate(prompt, max_tokens=512, model=\"lfm3-1.7b\")",
+            "{\"attributes\": [{\"key\": \"gen_ai.usage.input_tokens\"}, {\"key\": \"gen_ai.request.model\", \"value\": \"lfm3-1.7b\"}]}",
+            "let token = Token::new(span, \"0af7651916cd43dd8448eb211c80319c\");",
+            "{\"password_hint_shown\": true, \"model\": \"lfm3-1.7b\", \"x\": [1]}",
+            "const password = document.querySelector('#password').value;",
+            "password = \"<your password>\"",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// The critic's ordinary texts that were cut (round 3): prose about a password, a placeholder, a header example,
+    /// code that copies a variable, SQL placeholders, names that only name a secret, JSON about a token's type.
+    #[test]
+    fn the_critics_ordinary_texts_stay() {
+        for ok in [
+            "Veja a seção de segurança para saber como guardamos a senha do usuário: usamos Argon2id com salt de 16 bytes.",
+            "`POST /login` recebe `{\"username\": \"...\", \"password\": \"...\"}` e devolve `{\"token\": \"...\"}`.",
+            "The `Authorization` header must carry a bearer token. Example: `Authorization: Bearer <token>`.\nNever log the token or the password.",
+            "pub fn set_password(&mut self, password: String) {\n    self.password = password;\n}",
+            "En el formulario, el campo contraseña es obligatorio y debe tener al menos ocho caracteres.",
+            "パスワードは8文字以上で入力してください。",
+            "const secret = \"jwt-secret-name\";\nconst keyId = \"key-2024-11\";",
+            "- Corrigir bug no login: a senha com acento não era aceita",
+            "export PASSWORD_MIN_LENGTH=12\nexport TOKEN_TTL=3600\nexport SECRET_BACKEND=vault",
+            "auth:\n  method: password\n  token_ttl: 3600\n  secret_ref: vault://kalango/db",
+            "const API_KEY_HEADER = \"X-API-Key\";\nconst TOKEN_ENDPOINT = \"https://auth.example.com/oauth/token\";",
+            "UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1;",
+            "{\n  \"status\": \"ok\",\n  \"token_type\": \"bearer\",\n  \"expires_in\": 3600\n}",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// JSON written as text keeps its layout when something in it is redacted: only the value changes.
+    #[test]
+    fn redacted_json_text_keeps_its_layout() {
+        let pw = weak_pw();
+        let text = format!("{{\n  \"user\": \"ana\",\n  \"password\": \"{pw}\",\n  \"n\": [1, 2]\n}}");
+        assert_eq!(red(&text), format!("{{\n  \"user\": \"ana\",\n  \"password\": \"{REDACTED}\",\n  \"n\": [1, 2]\n}}"));
+        let env = "{\n \"z\": 1,\n \"env\": {\"A\": \"1\"},\n \"a\": true\n}";
+        assert_eq!(red(env), "{\n \"z\": 1,\n \"env\": \"[REDACTED:env]\",\n \"a\": true\n}");
+    }
+
+    /// The final scan descends into the values of objects and arrays by itself (not only through the text of the body).
+    #[test]
+    fn scan_value_at_descends_into_values() {
+        let r = Redactor::default();
+        assert_eq!(r.scan_value_at(&json!({ "outer": { "password": "v" } }), 0), 1);
+        assert_eq!(r.scan_value_at(&json!([{ "token": "v" }, { "ok": 1 }]), 0), 1);
+        assert_eq!(r.scan_value_at(&json!({ "a": [{ "b": { "secret": "v" } }] }), 0), 1);
+        assert_eq!(r.scan_value_at(&json!({ "outer": { "password": REDACTED } }), 0), 0);
+    }
+
+    /// Less common shapes of the same secrets: a name that describes a secret before a credential, `?=`, a bare
+    /// comparison, a YAML tag, a heading or a table cell, `senha - X`, URL parameters, generic names (`key`, `chave`)
+    /// before a credential, a token as a URL's user, Japanese quotes.
+    #[test]
+    fn less_common_shapes_go() {
+        let pw = weak_pw();
+        for t in [
+            format!("password_policy: {pw}"),
+            format!("token_ttl = {pw}"),
+            format!("password ?= {pw}"),
+            format!("password == {pw}"),
+            format!("password: !!str {pw}"),
+            format!("password: !vault {pw}"),
+            format!("# Senha\n\n{pw}"),
+            format!("Senha\n-----\n{pw}"),
+            format!("Senha:\n\n    {pw}"),
+            format!("| senha | {pw} |"),
+            format!("senha - {pw}"),
+            format!("senha → {pw}"),
+            format!("https://x/y?sig={pw}&a=1"),
+            format!("https://x/y?key={pw}"),
+            format!("chave: {pw}"),
+            format!("use this key: {pw}"),
+            format!("https://{pw}@x/"),
+            format!("私のパスワードは「{pw}」です"),
+        ] {
+            assert_gone(&t, &pw);
+        }
+        for ok in [
+            "key: value",
+            "password_policy: strict",
+            "token_ttl = 3600",
+            "secret: !vault |",
+            "| password | string | senha do usuário |",
+            "git clone https://git@github.com/x/y",
+            "https://x/y?key=abc&code=xyz",
+            "a chave do carro ficou na mesa",
+        ] {
             assert_eq!(red(ok), ok, "{ok}");
         }
     }
