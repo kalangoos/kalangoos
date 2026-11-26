@@ -65,7 +65,13 @@ fn ler_ajustes(state_dir: &Path, uid: u32) -> Value {
 /// O que o shell pede (`kalango/craft`, só da interface da pessoa): ler, ou mudar se os agentes podem usar um app e as
 /// pastas que o servidor dele vê. As pastas ficam aqui, no estado do kalangod (nunca num arquivo da casa da pessoa, que
 /// os programas dela, os agentes inclusive, podem escrever); cada uma é conferida ao entrar e de novo ao usar.
+#[cfg(test)]
 pub fn rpc(cfg: &crate::policy::Config, peer: &Peer, params: &Value) -> Result<Value, String> {
+    rpc_with(cfg, peer, params, GrantContext::default())
+}
+
+/// `rpc`, with what the server knows besides the settings (`GrantContext`): where agents write, and the Timeline.
+pub fn rpc_with(cfg: &crate::policy::Config, peer: &Peer, params: &Value, gc: GrantContext) -> Result<Value, String> {
     let p = ajustes_path(&cfg.state_dir, peer.uid);
     let ler_ajustes = || ler_ajustes(&cfg.state_dir, peer.uid);
     match params["acao"].as_str().unwrap_or("") {
@@ -89,10 +95,16 @@ pub fn rpc(cfg: &crate::policy::Config, peer: &Peer, params: &Value) -> Result<V
                 }
                 if let Some(ps) = params["pastas"].as_array() {
                     let nomes: Vec<String> = ps.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
+                    // (each folder checked now, and what kalangod saw of it kept: at every start it must still be that folder)
+                    let gravaveis = agent_writable(cfg, peer, gc);
+                    let mut vistas = serde_json::Map::new();
                     for n in &nomes {
-                        pasta_segura(cfg, peer, n)?;
+                        let (caminho, cadeia) = grantable_folder(cfg, peer, n, &gravaveis)?;
+                        vistas.insert(n.clone(), json!(GrantedFolder { caminho, cadeia }));
                     }
                     v[&id]["pastas"] = json!(nomes);
+                    v[&id]["identidades"] = Value::Object(vistas);
+                    v[&id]["recusadas"] = json!([]);
                 }
                 gravar_atomico(&p, &v.to_string())?;
                 v
@@ -103,15 +115,15 @@ pub fn rpc(cfg: &crate::policy::Config, peer: &Peer, params: &Value) -> Result<V
             }
             // (a escolha vale já para o app instalado: as permissões do Flatpak são refeitas daqui)
             if (params.get("rede").is_some() || params.get("pastas").is_some()) && instalados(peer).contains(&id) {
-                aplicar_permissoes(cfg, peer, app)?;
+                aplicar_permissoes(cfg, peer, app, gc)?;
             }
             Ok(v)
         }
-        // as pastas conferidas de um app (o que a Central mostra), e refazer as permissões dele (depois de instalar)
+        // as pastas conferidas de um app (o que a Central mostra: as que ele vê e as que ficaram de fora, com o porquê)
         "pastas" => {
             let app = catalogo().app(params["app"].as_str().ok_or("app?")?).ok_or_else(|| tr("not a creative app of the catalog").to_string())?;
-            let caminhos = pastas(cfg, peer, app)?;
-            Ok(json!({"nomes": nomes_das_pastas(cfg, peer.uid, app), "caminhos": caminhos, "rede": rede(cfg, peer.uid, &app.id)}))
+            let c = check_folders(cfg, peer, gc, app, false);
+            Ok(json!({"nomes": nomes_das_pastas(cfg, peer.uid, app), "caminhos": c.ok, "recusadas": dropped_json(&c.dropped), "rede": rede(cfg, peer.uid, &app.id)}))
         }
         // verificar, baixar e importar a versão atual no repositório protegido (demora: o shell espera)
         "preparar" => {
@@ -193,10 +205,11 @@ pub fn rpc(cfg: &crate::policy::Config, peer: &Peer, params: &Value) -> Result<V
             kalango_craft::instalar::guardar_pontos(&repositorio(cfg), peer.uid, &app.id, &pontos)?;
             Ok(json!({"pontos": pontos}))
         }
+        // (also right before the shell opens the app: the folders are checked again and the override made again from here)
         "aplicar" => {
             let app = catalogo().app(params["app"].as_str().ok_or("app?")?).ok_or_else(|| tr("not a creative app of the catalog").to_string())?;
-            aplicar_permissoes(cfg, peer, app)?;
-            Ok(json!({"aplicado": app.id}))
+            let c = aplicar_permissoes(cfg, peer, app, gc)?;
+            Ok(json!({"aplicado": app.id, "recusadas": dropped_json(&c.dropped)}))
         }
         _ => Err(tr("unknown action").into()),
     }
@@ -344,9 +357,13 @@ fn nomes_das_pastas(cfg: &crate::policy::Config, uid: u32, app: &App) -> Vec<Str
 }
 
 /// Refaz as permissões do app no Flatpak da pessoa a partir do estado do kalangod: apaga o que houver (um override
-/// mexido por outro programa não alarga nada) e põe rede, serviço do Flatpak e só as pastas conferidas.
-pub fn aplicar_permissoes(cfg: &crate::policy::Config, peer: &Peer, app: &App) -> Result<(), String> {
-    let ps = pastas(cfg, peer, app)?;
+/// mexido por outro programa não alarga nada) e põe rede, serviço do Flatpak e só as pastas conferidas agora
+/// (`check_folders`). Uma pasta que não passa — trocada desde que a pessoa a escolheu, ou que outros podem trocar — sai
+/// do override (o override de antes, com ela, é apagado mesmo assim) e a pessoa fica sabendo por quê; nunca fica
+/// concedida em silêncio.
+pub fn aplicar_permissoes(cfg: &crate::policy::Config, peer: &Peer, app: &App, gc: GrantContext) -> Result<Checked, String> {
+    let checked = check_folders(cfg, peer, gc, app, true);
+    let ps = &checked.ok;
     let rodar = |args: &[String]| -> Result<String, String> {
         let o = flatpak_como(peer).args(args).env("LC_ALL", "C").stdin(std::process::Stdio::null()).output().map_err(|e| e.to_string())?;
         if o.status.success() {
@@ -364,7 +381,259 @@ pub fn aplicar_permissoes(cfg: &crate::policy::Config, peer: &Peer, app: &App) -
         &caminhos,
         &kalango_craft::instalar::Pedidos::de(&meta),
     ))?;
-    verificar_override_global(peer, app)
+    verificar_override_global(peer, app)?;
+    Ok(checked)
+}
+
+/// Agents' commands just got a folder to write in (a project folder, or one for a task): every installed creative app has
+/// its folders checked and its permissions made again now, so a folder granted to an app that is now inside a folder
+/// agents write in leaves the override before an agent could swap it (and the Timeline says so) — whatever opens the app
+/// next, through kalangod or not.
+pub fn after_agents_gain_a_folder(cfg: &crate::policy::Config, peer: &Peer, gc: GrantContext) {
+    // (a test session without a test installation of Flatpak would make the overrides of the real one again)
+    if peer.home != peer.passwd_home && std::env::var_os("KALANGO_CRAFT_FLATPAK_USER_DIR").is_none() {
+        return;
+    }
+    for id in instalados(peer) {
+        if let Some(app) = catalogo().app(&id) {
+            if let Err(e) = aplicar_permissoes(cfg, peer, app, gc) {
+                eprintln!("kalangod: {id}: {e}");
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ what was granted
+
+/// What kalangod needs, besides the settings, to grant folders: where agents' commands write (the project folders and the
+/// folders approved for one task, in the server's state) and the person's Timeline (where a folder that leaves an app's
+/// permissions is told). `default()` (the tests): the project folders kept on disk, and no Timeline.
+#[derive(Clone, Copy, Default)]
+pub struct GrantContext<'a> {
+    pub folders: Option<&'a crate::allowlist::Store>,
+    pub timeline: Option<&'a crate::timeline::Timeline>,
+}
+
+impl<'a> GrantContext<'a> {
+    pub fn of(st: &'a crate::server::State) -> GrantContext<'a> {
+        GrantContext { folders: Some(&st.folders), timeline: Some(&st.timeline) }
+    }
+
+    fn of_call(c: &Ctx<'a>) -> GrantContext<'a> {
+        GrantContext { folders: c.state.map(|s| &s.folders), timeline: Some(c.timeline) }
+    }
+}
+
+/// What kalangod saw of a folder when it was granted: the folder (resolved) and, from it up to the home, each folder by
+/// (device, inode).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct GrantedFolder {
+    caminho: PathBuf,
+    cadeia: Vec<(u64, u64)>,
+}
+
+/// The folders of an app checked now: those the app sees, and those left out, each with why (the folder's name as the
+/// person chose it, and the reason).
+#[derive(Debug, Default)]
+pub struct Checked {
+    pub ok: Vec<PathBuf>,
+    pub dropped: Vec<(String, String)>,
+}
+
+fn dropped_json(d: &[(String, String)]) -> Value {
+    json!(d.iter().map(|(n, why)| json!({"pasta": n, "motivo": why})).collect::<Vec<_>>())
+}
+
+/// The folders agents' commands may write in for this person (`allowlist.rs`): the work folders, the project folders and
+/// the folders approved for one task, resolved. A folder inside one of them can be swapped by an agent (renamed away, and
+/// a link to anywhere put in its place), so it is never granted to a creative app.
+fn agent_writable(cfg: &crate::policy::Config, peer: &Peer, gc: GrantContext) -> Vec<PathBuf> {
+    let home = crate::allowlist::real_home(&peer.home);
+    let mut v = crate::allowlist::work_folders(&home, &crate::allowlist::protected(cfg, &home));
+    match gc.folders {
+        Some(s) => {
+            v.extend(s.list(peer.uid).into_iter().map(|p| p.caminho));
+            v.extend(s.task_grants(peer.uid).into_iter().map(|t| t.caminho));
+        }
+        None => v.extend(crate::allowlist::Store::open(&cfg.state_dir).list(peer.uid).into_iter().map(|p| p.caminho)),
+    }
+    v.into_iter().map(|p| std::fs::canonicalize(&p).unwrap_or(p)).collect()
+}
+
+/// A folder that can be granted to a creative app, with what kalangod saw of it. `pasta_segura`, and also: the folder
+/// itself (no link on the way: the person gives the folder, never where a link leads); not inside a folder agents'
+/// commands write in (`agent_writable`: an agent there could rename it away and put a link to ~/.ssh in its place, and
+/// the app would see that on its next start); and the folder and every folder above it up to the home, each opened
+/// without following links (O_PATH, RESOLVE_NO_SYMLINKS), a real folder of the person's that no other user can change.
+/// The chain of (device, inode) is what is checked again at every start.
+fn grantable_folder(cfg: &crate::policy::Config, peer: &Peer, nome: &str, writable: &[PathBuf]) -> Result<(PathBuf, Vec<(u64, u64)>), String> {
+    let real = pasta_segura(cfg, peer, nome)?;
+    let casa = std::fs::canonicalize(&peer.home).map_err(|e| e.to_string())?;
+    let dirs = std::fs::read_to_string(peer.home.join(".config/user-dirs.dirs")).unwrap_or_default();
+    let escrito = caminho_da_pasta(&peer.home, &dirs, nome).unwrap_or_default();
+    // (the written path and the resolved one are the same below the home)
+    let abaixo = escrito.strip_prefix(&peer.home).or_else(|_| escrito.strip_prefix(&casa)).ok().map(Path::to_path_buf);
+    if abaixo.as_deref() != real.strip_prefix(&casa).ok() {
+        #[rustfmt::skip]
+        return Err(trf("refused: {f} goes through a link; choose the folder itself ({real})", &[("f", nome.to_string()), ("real", real.display().to_string())]));
+    }
+    if let Some(w) = writable.iter().find(|w| real != **w && real.starts_with(w)) {
+        let w = crate::startup::tilde(w, &casa);
+        #[rustfmt::skip]
+        return Err(trf("refused: {f} is inside {w}, where agents can write: an agent could put another folder in its place. Choose {w} itself or a folder outside the agents' folders", &[("f", nome.to_string()), ("w", w)]));
+    }
+    let cadeia = folder_chain(&real, &casa, peer, nome)?;
+    Ok((real, cadeia))
+}
+
+/// Who the app runs as (`flatpak_como`): the person when kalangod is root; kalangod's own user otherwise (a development
+/// session, where that is the person too). The folders it is given must be that user's.
+fn runs_as(peer: &Peer) -> (u32, u32, String) {
+    if nix::unistd::geteuid().is_root() && peer.uid != 0 {
+        return (peer.uid, peer.gid, peer.user.clone());
+    }
+    let uid = nix::unistd::geteuid();
+    let nome = nix::unistd::User::from_uid(uid).ok().flatten().map(|u| u.name).unwrap_or_default();
+    (uid.as_raw(), nix::unistd::getegid().as_raw(), nome)
+}
+
+/// (device, inode) of `real` and of each folder above it up to the home (the home included), each opened beneath the home
+/// without following any link: each must be a folder of the person's (`runs_as`) that only the person can change.
+fn folder_chain(real: &Path, casa: &Path, peer: &Peer, nome: &str) -> Result<Vec<(u64, u64)>, String> {
+    use nix::sys::stat::{fstat, Mode, SFlag};
+    use std::os::fd::AsRawFd;
+    let dono = runs_as(peer);
+    let mut out = Vec::new();
+    let mut d = real.to_path_buf();
+    loop {
+        let mostrar = || crate::startup::tilde(&d, casa);
+        let nao_e = || trf("refused: {d}, on the way to {f}, is not a folder of yours", &[("d", mostrar()), ("f", nome.to_string())]);
+        let fd = crate::allowlist::open_nofollow(casa, &d).ok_or_else(nao_e)?;
+        let st = fstat(fd.as_raw_fd()).map_err(|_| nao_e())?;
+        if SFlag::from_bits_truncate(st.st_mode) & SFlag::S_IFMT != SFlag::S_IFDIR || st.st_uid != dono.0 {
+            return Err(nao_e());
+        }
+        let modo = Mode::from_bits_truncate(st.st_mode);
+        if modo.contains(Mode::S_IWOTH) || (modo.contains(Mode::S_IWGRP) && !group_is_only_theirs(st.st_gid, &dono)) {
+            return Err(trf("refused: other users can change {d}, on the way to {f}", &[("d", mostrar()), ("f", nome.to_string())]));
+        }
+        out.push((st.st_dev, st.st_ino));
+        if d == casa {
+            return Ok(out);
+        }
+        match d.parent() {
+            Some(pai) if pai.starts_with(casa) => d = pai.to_path_buf(),
+            _ => return Err(nao_e()),
+        }
+    }
+}
+
+/// Whether a group is the person's own and nobody else's — the private group most distributions give each user, whose
+/// folders are then group-writable by default: its gid is the person's, it lists no other member, and no other account
+/// in /etc/passwd has it as its group.
+fn group_is_only_theirs(gid: u32, (uid, seu_gid, nome): &(u32, u32, String)) -> bool {
+    if gid != *seu_gid {
+        return false;
+    }
+    let so_ela = matches!(nix::unistd::Group::from_gid(nix::unistd::Gid::from_raw(gid)), Ok(Some(g)) if g.mem.iter().all(|m| m == nome));
+    let outras = std::fs::read_to_string("/etc/passwd").unwrap_or_default().lines().any(|l| {
+        let f: Vec<&str> = l.split(':').collect();
+        f.len() > 3 && f[3] == gid.to_string() && f[2] != uid.to_string()
+    });
+    so_ela && !outras
+}
+
+/// The folders of an app, checked now: the ones the person chose in the App Center (in kalangod's state), else the
+/// catalog's. Each must pass `grantable_folder` and still be the very folder kalangod saw when the person chose it (the
+/// same chain of identities); one that does not is dropped, with why. With `record` (a grant: the override is made from
+/// this), a folder with nothing recorded — chosen before kalangod kept identities, or one of the catalog's — is recorded
+/// now, the folders dropped are kept in the state (the App Center reads them) and each one newly dropped goes to the
+/// person's Timeline.
+fn check_folders(cfg: &crate::policy::Config, peer: &Peer, gc: GrantContext, app: &App, record: bool) -> Checked {
+    let estado = estado_do_app(cfg, peer.uid, &app.id);
+    let escolhidas = estado["pastas"].is_array();
+    let gravaveis = agent_writable(cfg, peer, gc);
+    let mut c = Checked::default();
+    let mut novas = serde_json::Map::new();
+    for n in &nomes_das_pastas(cfg, peer.uid, app) {
+        match grantable_folder(cfg, peer, n, &gravaveis) {
+            Ok((caminho, cadeia)) => {
+                let agora = GrantedFolder { caminho: caminho.clone(), cadeia };
+                let visto = &estado["identidades"][n];
+                if visto.is_null() {
+                    novas.insert(n.clone(), json!(agora));
+                    c.ok.push(caminho);
+                } else if serde_json::from_value::<GrantedFolder>(visto.clone()).ok().as_ref() == Some(&agora) {
+                    c.ok.push(caminho);
+                } else {
+                    #[rustfmt::skip]
+                    c.dropped.push((n.clone(), trf("{f} changed after you chose it: another folder or a link is in its place. Choose it again in the App Center if it is right", &[("f", n.clone())])));
+                }
+            }
+            // (a folder of the catalog that does not exist in this home is left out; the rest is dropped, with why)
+            Err(_) if !escolhidas && caminho_da_pasta(&peer.home, "", n).is_some_and(|p| !p.exists()) => {}
+            Err(e) => c.dropped.push((n.clone(), e)),
+        }
+    }
+    if record {
+        record_check(cfg, peer, gc, app, &estado, novas, &c.dropped);
+    }
+    c
+}
+
+/// Keeps what `check_folders` found (under the lock, read again: a choice the person made meanwhile is not undone) and
+/// tells the person, in the Timeline, of each folder newly left out.
+fn record_check(cfg: &crate::policy::Config, peer: &Peer, gc: GrantContext, app: &App, antes: &Value, novas: serde_json::Map<String, Value>, dropped: &[(String, String)]) {
+    let recusadas = dropped_json(dropped);
+    let novas_recusas: Vec<&(String, String)> = {
+        let _g = ESTADO.lock().unwrap_or_else(|e| e.into_inner());
+        let mut v = ler_ajustes(&cfg.state_dir, peer.uid);
+        let id = &app.id;
+        // (the person chose other folders while these were checked: this check is not theirs any more)
+        if v[id]["pastas"] != antes["pastas"] {
+            return;
+        }
+        let ja: Vec<Value> = v[id]["recusadas"].as_array().cloned().unwrap_or_default();
+        let mudou = !novas.is_empty() || v[id]["recusadas"] != recusadas;
+        if mudou {
+            if !v[id].is_object() {
+                v[id] = json!({});
+            }
+            if !v[id]["identidades"].is_object() {
+                v[id]["identidades"] = json!({});
+            }
+            for (n, x) in novas {
+                if v[id]["identidades"][&n].is_null() {
+                    v[id]["identidades"][&n] = x;
+                }
+            }
+            v[id]["recusadas"] = recusadas;
+            if let Err(e) = gravar_atomico(&ajustes_path(&cfg.state_dir, peer.uid), &v.to_string()) {
+                eprintln!("kalangod: {id}: {e}");
+            }
+        }
+        dropped.iter().filter(|(n, why)| !ja.iter().any(|x| x["pasta"] == n.as_str() && x["motivo"] == why.as_str())).collect()
+    };
+    let Some(tl) = gc.timeline else { return };
+    for (n, why) in novas_recusas {
+        tl.append(crate::timeline::Entry {
+            id: 0,
+            time: 0,
+            caller: "kalangod".into(),
+            uid: peer.uid,
+            pid: peer.pid,
+            tool: "craft.pasta_recusada".into(),
+            level: "usuario".into(),
+            args: json!({"app": app.id, "pasta": n, "motivo": why}),
+            status: "negado".into(),
+            summary: trf("{app} no longer sees {f}: {why}", &[("app", app.nome.clone()), ("f", n.clone()), ("why", why.clone())]),
+            inverse: None,
+            restore_point: None,
+            miniatura: None,
+            startup: None,
+            d1: None,
+        });
+    }
 }
 
 /// O override global da pessoa não alarga o que o app vê (ver `override_global_alarga`): conferido logo depois de refazer
@@ -468,21 +737,14 @@ fn instalados(peer: &Peer) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// As pastas de um app: as que a pessoa escolheu na Central (no estado do kalangod), senão as do catálogo; cada uma
-/// conferida agora (`pasta_segura`). Uma que não passa recusa a chamada (e entra na linha do tempo como erro).
+/// As pastas de um app conferidas agora (`check_folders`), sem gravar nada: uma que não passa é o erro.
+#[cfg(test)]
 fn pastas(cfg: &crate::policy::Config, peer: &Peer, app: &App) -> Result<Vec<PathBuf>, String> {
-    let v = json!({&app.id: estado_do_app(cfg, peer.uid, &app.id)});
-    let nomes = nomes_das_pastas(cfg, peer.uid, app);
-    let mut out = Vec::new();
-    for n in &nomes {
-        match pasta_segura(cfg, peer, n) {
-            Ok(p) => out.push(p),
-            // (uma pasta do catálogo que não existe nesta casa fica de fora; o resto recusa)
-            Err(_) if v[&app.id]["pastas"].is_null() && caminho_da_pasta(&peer.home, "", n).is_some_and(|p| !p.exists()) => {}
-            Err(e) => return Err(e),
-        }
+    let c = check_folders(cfg, peer, GrantContext::default(), app, false);
+    match c.dropped.into_iter().next() {
+        Some((_, e)) => Err(e),
+        None => Ok(c.ok),
     }
-    Ok(out)
 }
 
 /// "xdg-videos" → o XDG_VIDEOS_DIR da pessoa (ou ~/Videos); "~/x" → casa/x; um absoluto dentro da casa fica.
@@ -624,6 +886,7 @@ fn ficha() -> String {
 fn com_sessao<T>(
     cfg: &crate::policy::Config,
     peer: &Peer,
+    gc: GrantContext,
     app: &App,
     janela: bool,
     f: impl FnOnce(&mut kalango_craft::mcp::Sessao) -> Result<T, String>,
@@ -663,7 +926,7 @@ fn com_sessao<T>(
             match ja {
                 Some(e) => e,
                 None => {
-                    let s = iniciar_sessao(cfg, peer, app, janela)?;
+                    let s = iniciar_sessao(cfg, peer, gc, app, janela)?;
                     let nova = std::sync::Arc::new(Entrada { controle: s.controle(), sessao: Mutex::new(s) });
                     let mut g = tabela();
                     let t = g.as_mut().unwrap();
@@ -697,14 +960,15 @@ fn com_sessao<T>(
 }
 
 /// Inicia o servidor do app como a pessoa (sem segurar nenhum cadeado da tabela).
-fn iniciar_sessao(cfg: &crate::policy::Config, peer: &Peer, app: &App, janela: bool) -> Result<kalango_craft::mcp::Sessao, String> {
+fn iniciar_sessao(cfg: &crate::policy::Config, peer: &Peer, gc: GrantContext, app: &App, janela: bool) -> Result<kalango_craft::mcp::Sessao, String> {
     if janela && app.janela.is_none() {
         return Err(trf("{app} cannot be driven on a window by agents", &[("app", app.nome.clone())]));
     }
-    let ps = pastas(cfg, peer, app)?;
-    // (as permissões do app de novo, do estado do kalangod, antes de iniciar: um override alargado por fora some)
-    aplicar_permissoes(cfg, peer, app)
-        .map_err(|e| trf("{app}: the permissions could not be set, so it did not start: {e}", &[("app", app.nome.clone()), ("e", e)]))?;
+    // (as pastas conferidas de novo e as permissões do app refeitas, do estado do kalangod, logo antes de iniciar: um
+    // override alargado por fora some, e uma pasta trocada desde a escolha sai dele — a linha do tempo diz por quê)
+    let ps = aplicar_permissoes(cfg, peer, app, gc)
+        .map_err(|e| trf("{app}: the permissions could not be set, so it did not start: {e}", &[("app", app.nome.clone()), ("e", e)]))?
+        .ok;
     if app.raizes && ps.is_empty() {
         return Err(trf("{app} sees no folder of yours: choose one in the App Center", &[("app", app.nome.clone())]));
     }
@@ -740,7 +1004,7 @@ fn apps(c: &Ctx, args: &Value) -> Result<Out, String> {
         if args["ferramentas"] == true && pode {
             // (a versão instalada uma vez por app, não por ferramenta)
             let instalada = versao_verificada(c.cfg, c.peer, a);
-            let r = com_sessao(c.cfg, c.peer, a, false, |s| Ok(s.ferramentas.clone()));
+            let r = com_sessao(c.cfg, c.peer, GrantContext::of_call(c), a, false, |s| Ok(s.ferramentas.clone()));
             match r {
                 Ok(ts) => {
                     v["ferramentas"] = json!(ts.iter().map(|t| {
@@ -906,7 +1170,8 @@ pub fn cartao(cfg: &crate::policy::Config, peer: &Peer, args: &Value) -> Value {
     // (no máximo MAX_CAMINHOS no cartão, com "(+N a mais)": milhares de caminhos empurrariam o "Por quê" para fora da tela)
     let a_mais = caminhos.len().saturating_sub(MAX_CAMINHOS);
     caminhos.truncate(MAX_CAMINHOS);
-    let permitidas = pastas(cfg, peer, app).unwrap_or_default();
+    // (only the folders the app really sees now: one dropped since the person chose it is not "already allowed")
+    let permitidas = check_folders(cfg, peer, GrantContext::default(), app, false).ok;
     let mut para_onde: Vec<String> = caminhos
         .iter()
         .map(|c| {
@@ -961,7 +1226,7 @@ fn chamar(c: &Ctx, args: &Value) -> Result<Out, String> {
     let janela = args["janela"] == true;
     let a = args.get("argumentos").cloned().unwrap_or(json!({}));
     let (nivel, _) = classificar(catalogo(), app, &f, &a, janela, versao_verificada(c.cfg, c.peer, app).as_deref());
-    let r = com_sessao(c.cfg, c.peer, app, janela, |s| {
+    let r = com_sessao(c.cfg, c.peer, GrantContext::of_call(c), app, janela, |s| {
         // (uma ferramenta que o servidor não anuncia não é chamada)
         // (a versão instalada de novo, com a sessão em mãos: se mudou desde a classificação, a chamada não segue)
         let (de_novo, _) = classificar(catalogo(), app, &f, &a, janela, versao_verificada(c.cfg, c.peer, app).as_deref());
@@ -1088,7 +1353,10 @@ mod tests {
 
     #[test]
     fn folders_must_stay_inside_the_home_and_out_of_sensitive_places() {
+        // (a stand-in flatpak with nothing installed: choosing folders never makes the overrides of a real installation)
+        let _g = AMBIENTE.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
+        flatpak_que_aceita(d.path());
         let casa = d.path().join("casa");
         for x in ["Videos", "Projetos/a", ".ssh", ".config", "Protegida/x"] {
             std::fs::create_dir_all(casa.join(x)).unwrap();
@@ -1129,6 +1397,7 @@ mod tests {
         std::fs::remove_dir_all(casa.join("Projetos/a")).unwrap();
         std::os::unix::fs::symlink(casa.join(".ssh"), casa.join("Projetos/a")).unwrap();
         assert!(pastas(&cfg, &p, app).is_err());
+        std::env::remove_var("KALANGO_FLATPAK");
     }
 
     #[test]
@@ -1164,7 +1433,7 @@ mod tests {
         let app = catalogo().app("filmcraft").unwrap();
         // (the stand-in flatpak for this test only: KALANGO_FLATPAK is read when the command is made)
         std::env::set_var("KALANGO_FLATPAK", &fake);
-        let r = aplicar_permissoes(&cfg, &p, app);
+        let r = aplicar_permissoes(&cfg, &p, app, GrantContext::default());
         std::env::remove_var("KALANGO_FLATPAK");
         r.unwrap();
         let l = std::fs::read_to_string(&log).unwrap();
@@ -1413,7 +1682,7 @@ done
         let app = catalogo().app("filmcraft").unwrap();
         let t = std::time::Instant::now();
         std::thread::scope(|sc| {
-            let h = sc.spawn(|| com_sessao(&cfg, &p, app, false, |s| s.chamar("doc_inspect", json!({}), PRAZO)));
+            let h = sc.spawn(|| com_sessao(&cfg, &p, GrantContext::default(), app, false, |s| s.chamar("doc_inspect", json!({}), PRAZO)));
             // (the call is in flight: the session holds its own lock, the table is free)
             std::thread::sleep(Duration::from_millis(1500));
             let desligar = std::time::Instant::now();
@@ -1497,7 +1766,7 @@ done
         // off already: com_sessao itself refuses, whatever the caller checked before
         desligar();
         let mut rodou = false;
-        assert!(com_sessao(&cfg, &p, app, false, |_| {
+        assert!(com_sessao(&cfg, &p, GrantContext::default(), app, false, |_| {
             rodou = true;
             Ok(())
         })
@@ -1508,7 +1777,7 @@ done
         let rodou = std::sync::atomic::AtomicBool::new(false);
         std::thread::scope(|sc| {
             let h = sc.spawn(|| {
-                com_sessao(&cfg, &p, app, false, |_| {
+                com_sessao(&cfg, &p, GrantContext::default(), app, false, |_| {
                     rodou.store(true, std::sync::atomic::Ordering::SeqCst);
                     Ok(())
                 })
@@ -1562,19 +1831,199 @@ done
         let decoy = format!("--filesystem={}", casa.join("segredos").display());
         real(&["override", "--user", &decoy]);
         assert!(real(&["override", "--user", "--show"]).contains("segredos"));
-        let e = aplicar_permissoes(&cfg, &p, app).unwrap_err();
+        let e = aplicar_permissoes(&cfg, &p, app, GrantContext::default()).unwrap_err();
         assert!(e.contains("global Flatpak override") || e.contains("override global"), "{e}");
         assert!(verificar_override_global(&p, app).is_err());
-        assert!(iniciar_sessao(&cfg, &p, app, false).is_err(), "the server does not start");
+        assert!(iniciar_sessao(&cfg, &p, GrantContext::default(), app, false).is_err(), "the server does not start");
         // the app's own override was still made without the decoy
         assert!(!real(&["override", "--user", "--show", &app.id]).contains("segredos"));
         // the person removes it: everything works again
         real(&["override", "--user", "--reset"]);
-        aplicar_permissoes(&cfg, &p, app).unwrap();
+        aplicar_permissoes(&cfg, &p, app, GrantContext::default()).unwrap();
         verificar_override_global(&p, app).unwrap();
         // a global that only denies is fine
         real(&["override", "--user", "--nofilesystem=host"]);
         verificar_override_global(&p, app).unwrap();
+        std::env::remove_var("KALANGO_CRAFT_FLATPAK_USER_DIR");
+    }
+
+    #[test]
+    fn a_granted_folder_swapped_for_another_is_dropped_even_when_the_other_looks_fine() {
+        let _g = AMBIENTE.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        flatpak_que_aceita(d.path());
+        let casa = d.path().join("casa");
+        // a decoy of a sensitive folder that passes every name rule (no dot, inside the home)
+        for x in ["Projetos/a", "Cofre"] {
+            std::fs::create_dir_all(casa.join(x)).unwrap();
+        }
+        std::fs::write(casa.join("Cofre/id_ed25519"), "decoy").unwrap();
+        let (cfg, p) = pessoa(&casa, &d.path().join("estado"));
+        let app = catalogo().app("filmcraft").unwrap();
+        rpc(&cfg, &p, &json!({"acao": "definir", "app": "filmcraft", "pastas": ["~/Projetos/a"]})).unwrap();
+        let a = std::fs::canonicalize(casa.join("Projetos/a")).unwrap();
+        assert_eq!(pastas(&cfg, &p, app).unwrap(), vec![a.clone()]);
+        // swapped for a link to the decoy (the folder renamed away): it resolves to a folder that passes, and is refused
+        std::fs::rename(casa.join("Projetos/a"), casa.join("Projetos/a-velha")).unwrap();
+        std::os::unix::fs::symlink(casa.join("Cofre"), casa.join("Projetos/a")).unwrap();
+        let e = pastas(&cfg, &p, app).unwrap_err();
+        assert!(e.contains("link") || e.contains("atalho") || e.contains("ligação"), "{e}");
+        // swapped for the decoy itself (a real folder, renamed into its place): another folder, dropped
+        std::fs::remove_file(casa.join("Projetos/a")).unwrap();
+        std::fs::rename(casa.join("Cofre"), casa.join("Projetos/a")).unwrap();
+        let e = pastas(&cfg, &p, app).unwrap_err();
+        assert!(e.contains("changed after you chose it") || e.contains("mudou depois"), "{e}");
+        // the card does not call it "already allowed" either
+        let c = cartao(&cfg, &p, &json!({"app": "filmcraft", "ferramenta": "media_import", "argumentos": {"path": format!("{}/x.mp4", a.display())}}));
+        assert!(!c["para_onde"].as_str().unwrap().contains("already allowed") && !c["para_onde"].as_str().unwrap().contains("já permitida"), "{c}");
+        // the very folder back in its place: granted again
+        std::fs::rename(casa.join("Projetos/a"), casa.join("Cofre")).unwrap();
+        std::fs::rename(casa.join("Projetos/a-velha"), casa.join("Projetos/a")).unwrap();
+        assert_eq!(pastas(&cfg, &p, app).unwrap(), vec![a.clone()]);
+        // another folder of that name (the old one kept aside) is the person's to choose again: until then it is left out
+        std::fs::rename(casa.join("Projetos/a"), casa.join("Projetos/a-velha")).unwrap();
+        std::fs::create_dir_all(casa.join("Projetos/a")).unwrap();
+        assert!(pastas(&cfg, &p, app).is_err());
+        rpc(&cfg, &p, &json!({"acao": "definir", "app": "filmcraft", "pastas": ["~/Projetos/a"]})).unwrap();
+        assert_eq!(pastas(&cfg, &p, app).unwrap(), vec![a]);
+        std::env::remove_var("KALANGO_FLATPAK");
+    }
+
+    #[test]
+    fn a_folder_other_users_or_agents_could_swap_is_never_granted() {
+        let d = tempfile::tempdir().unwrap();
+        let casa = d.path().join("casa");
+        for x in ["Compartilhada/x", "Aberta", "Documentos/Livro", "Projetos/a", "Proprio", "Grupo/x", ".config"] {
+            std::fs::create_dir_all(casa.join(x)).unwrap();
+        }
+        std::fs::write(casa.join(".config/user-dirs.dirs"), "XDG_DOCUMENTS_DIR=\"$HOME/Documentos\"\n").unwrap();
+        let (cfg, p) = pessoa(&casa, &d.path().join("estado"));
+        let modo = |x: &str, m: u32| std::fs::set_permissions(casa.join(x), std::os::unix::fs::PermissionsExt::from_mode(m)).unwrap();
+        let w = agent_writable(&cfg, &p, GrantContext::default());
+        let ok = |n: &str, w: &[PathBuf]| grantable_folder(&cfg, &p, n, w);
+        // the person's own folders: granted, with a chain of identities up to the home
+        let (real, cadeia) = ok("~/Proprio", &w).unwrap();
+        assert_eq!(real, std::fs::canonicalize(casa.join("Proprio")).unwrap());
+        assert_eq!(cadeia.len(), 2, "the folder and the home");
+        // a folder above it that other users can write: refused (they could swap it); and the folder itself
+        modo("Compartilhada", 0o777);
+        let e = ok("~/Compartilhada/x", &w).unwrap_err();
+        assert!(e.contains("other users") || e.contains("outras pessoas") || e.contains("outros usuários"), "{e}");
+        modo("Aberta", 0o757);
+        assert!(ok("~/Aberta", &w).is_err());
+        // writable by a group that is not the person's own: refused (only when this user has another group to try)
+        if let Some(g) = nix::unistd::getgroups().unwrap_or_default().into_iter().find(|g| g.as_raw() != p.gid) {
+            nix::unistd::chown(&casa.join("Grupo"), None, Some(g)).unwrap();
+            modo("Grupo", 0o770);
+            assert!(ok("~/Grupo/x", &w).is_err());
+        }
+        // inside a work folder, where agents' commands write: refused, naming it; the work folder itself is fine
+        let e = ok("~/Documentos/Livro", &w).unwrap_err();
+        assert!(e.contains("Documentos") && (e.contains("agents") || e.contains("agentes")), "{e}");
+        assert!(ok("xdg-documents", &w).is_ok());
+        // inside a project folder the person gave agents (kept by kalangod, read from its state or the server's)
+        assert!(ok("~/Projetos/a", &w).is_ok());
+        let store = crate::allowlist::Store::open(&cfg.state_dir);
+        std::fs::create_dir_all(&cfg.state_dir).unwrap();
+        let projetos = std::fs::canonicalize(casa.join("Projetos")).unwrap();
+        store.add(p.uid, projetos.clone(), crate::allowlist::identity(&projetos, &std::fs::canonicalize(&casa).unwrap()).unwrap(), "adicionada");
+        let gc = GrantContext { folders: Some(&store), timeline: None };
+        assert!(ok("~/Projetos/a", &agent_writable(&cfg, &p, gc)).is_err());
+        assert!(ok("~/Projetos/a", &agent_writable(&cfg, &p, GrantContext::default())).is_err(), "the project folders on disk count too");
+        assert!(ok("~/Projetos", &agent_writable(&cfg, &p, gc)).is_ok(), "the project folder itself: agents cannot rename it");
+        // a link on the way (to a folder that would pass): the folder itself is asked for
+        std::os::unix::fs::symlink(casa.join("Proprio"), casa.join("atalho")).unwrap();
+        assert!(ok("~/atalho", &w).unwrap_err().contains("Proprio"));
+        // the person's choice is refused whole, and nothing is kept
+        assert!(rpc(&cfg, &p, &json!({"acao": "definir", "app": "filmcraft", "pastas": ["~/Proprio", "~/Documentos/Livro"]})).is_err());
+        assert!(estado_do_app(&cfg, p.uid, "ai.storyteller.filmcraft")["pastas"].is_null());
+    }
+
+    #[test]
+    fn a_folder_agents_can_now_write_around_leaves_the_permissions_at_once() {
+        let _g = AMBIENTE.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        let casa = d.path().join("casa");
+        std::fs::create_dir_all(casa.join("Projetos/a")).unwrap();
+        // a stand-in flatpak where FilmCraft is installed, writing down every call
+        let log = d.path().join("flatpak.log");
+        let fake = d.path().join("flatpak");
+        std::fs::write(&fake, format!("#!/bin/sh\necho \"$*\" >> {}\ncase \"$*\" in *\"list --app\"*) echo ai.storyteller.filmcraft;; esac\nexit 0\n", log.display())).unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::env::set_var("KALANGO_FLATPAK", &fake);
+        std::env::set_var("KALANGO_CRAFT_FLATPAK_USER_DIR", d.path().join("instalacao"));
+        let (cfg, p) = pessoa(&casa, &d.path().join("estado"));
+        let a = std::fs::canonicalize(casa.join("Projetos/a")).unwrap();
+        let ultimo_override = || std::fs::read_to_string(&log).unwrap().lines().rfind(|l| l.contains("--unshare=network")).unwrap_or("").to_string();
+        rpc(&cfg, &p, &json!({"acao": "definir", "app": "filmcraft", "pastas": ["~/Projetos/a"]})).unwrap();
+        assert!(ultimo_override().contains(&format!("--filesystem={}", a.display())), "{}", ultimo_override());
+        // the person lets agents' commands write in ~/Projetos: FilmCraft stops seeing ~/Projetos/a right then
+        let store = crate::allowlist::Store::open(&d.path().join("servidor"));
+        let projetos = a.parent().unwrap().to_path_buf();
+        store.add(p.uid, projetos.clone(), crate::allowlist::identity(&projetos, &std::fs::canonicalize(&casa).unwrap()).unwrap(), "adicionada");
+        let tl = crate::timeline::Timeline::open(&d.path().join("linha")).unwrap();
+        after_agents_gain_a_folder(&cfg, &p, GrantContext { folders: Some(&store), timeline: Some(&tl) });
+        std::env::remove_var("KALANGO_FLATPAK");
+        std::env::remove_var("KALANGO_CRAFT_FLATPAK_USER_DIR");
+        assert!(!ultimo_override().contains("Projetos/a"), "{}", ultimo_override());
+        // and the person is told why, once, in the Timeline and in the App Center's state
+        let ditas: Vec<_> = tl.all().into_iter().filter(|e| e.tool == "craft.pasta_recusada").collect();
+        assert_eq!(ditas.len(), 1, "{ditas:?}");
+        assert!(ditas[0].summary.contains("~/Projetos/a") && ditas[0].status == "negado", "{}", ditas[0].summary);
+        assert_eq!(estado_do_app(&cfg, p.uid, "ai.storyteller.filmcraft")["recusadas"][0]["pasta"], "~/Projetos/a");
+    }
+
+    #[test]
+    fn a_granted_folder_swapped_for_a_link_leaves_the_real_override_at_the_next_start() {
+        let _g = AMBIENTE.lock().unwrap_or_else(|e| e.into_inner());
+        if !exigir_flatpak() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let casa = d.path().join("casa");
+        for x in ["Projetos/a", "Cofre"] {
+            std::fs::create_dir_all(casa.join(x)).unwrap();
+        }
+        std::fs::write(casa.join("Cofre/id_ed25519"), "decoy").unwrap();
+        let scratch = d.path().join("flatpak");
+        std::env::remove_var("KALANGO_FLATPAK");
+        std::env::set_var("KALANGO_CRAFT_FLATPAK_USER_DIR", &scratch);
+        let mostrar = || {
+            let o = Command::new("flatpak").args(["override", "--user", "--show", "ai.storyteller.filmcraft"]).env("FLATPAK_USER_DIR", &scratch).env("LC_ALL", "C").output().unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8_lossy(&o.stdout).into_owned()
+        };
+        let (cfg, p) = pessoa(&casa, &d.path().join("estado"));
+        let app = catalogo().app("filmcraft").unwrap();
+        let tl = crate::timeline::Timeline::open(&d.path().join("linha")).unwrap();
+        let gc = GrantContext { folders: None, timeline: Some(&tl) };
+        let a = std::fs::canonicalize(casa.join("Projetos/a")).unwrap();
+        // the normal case: chosen, granted, in the real override
+        rpc_with(&cfg, &p, &json!({"acao": "definir", "app": "filmcraft", "pastas": ["~/Projetos/a"]}), gc).unwrap();
+        assert_eq!(aplicar_permissoes(&cfg, &p, app, gc).unwrap().ok, vec![a.clone()]);
+        assert!(mostrar().contains(&a.display().to_string()), "{}", mostrar());
+        // swapped for a link to the decoy after it was granted
+        std::fs::rename(casa.join("Projetos/a"), casa.join("Projetos/a-velha")).unwrap();
+        std::os::unix::fs::symlink(casa.join("Cofre"), casa.join("Projetos/a")).unwrap();
+        // the next start kalangod mediates: the folder leaves the override (the app would follow the link) and the server
+        // does not start without a folder; the person is told why
+        assert!(iniciar_sessao(&cfg, &p, gc, app, false).is_err());
+        let o = mostrar();
+        assert!(!o.contains("Projetos/a") && !o.contains("Cofre"), "{o}");
+        assert!(o.contains("!~/.ssh"), "the sensitive folders stay denied: {o}");
+        let ditas: Vec<_> = tl.all().into_iter().filter(|e| e.tool == "craft.pasta_recusada").collect();
+        assert_eq!(ditas.len(), 1);
+        assert!(ditas[0].summary.contains("FilmCraft") && ditas[0].summary.contains("~/Projetos/a"), "{}", ditas[0].summary);
+        // the App Center asks for the permissions again (as before the shell opens the app): still out, told once
+        let r = rpc_with(&cfg, &p, &json!({"acao": "aplicar", "app": "filmcraft"}), gc).unwrap();
+        assert_eq!(r["recusadas"][0]["pasta"], "~/Projetos/a", "{r}");
+        assert!(!mostrar().contains("Cofre"));
+        assert_eq!(tl.all().iter().filter(|e| e.tool == "craft.pasta_recusada").count(), 1, "not told again for the same reason");
+        // the very folder back: granted again
+        std::fs::remove_file(casa.join("Projetos/a")).unwrap();
+        std::fs::rename(casa.join("Projetos/a-velha"), casa.join("Projetos/a")).unwrap();
+        assert_eq!(aplicar_permissoes(&cfg, &p, app, gc).unwrap().ok, vec![a.clone()]);
+        assert!(mostrar().contains(&a.display().to_string()));
         std::env::remove_var("KALANGO_CRAFT_FLATPAK_USER_DIR");
     }
 
@@ -1788,7 +2237,7 @@ done
         let rodou = std::sync::atomic::AtomicBool::new(false);
         std::thread::scope(|sc| {
             let h = sc.spawn(|| {
-                com_sessao(&cfg, &p, app, false, |_| {
+                com_sessao(&cfg, &p, GrantContext::default(), app, false, |_| {
                     rodou.store(true, std::sync::atomic::Ordering::SeqCst);
                     Ok(())
                 })
@@ -1816,12 +2265,12 @@ done
         let app = catalogo().app("filmcraft").unwrap();
         let rodou = std::sync::atomic::AtomicBool::new(false);
         std::thread::scope(|sc| {
-            let h1 = sc.spawn(|| com_sessao(&cfg, &p, app, false, |s| s.chamar("doc_inspect", json!({}), PRAZO)));
+            let h1 = sc.spawn(|| com_sessao(&cfg, &p, GrantContext::default(), app, false, |s| s.chamar("doc_inspect", json!({}), PRAZO)));
             std::thread::sleep(Duration::from_millis(1500));
             // a second call waits for the first one's session; the session is killed from outside (not closed by the app,
             // so neither the generation nor the settings change)
             let h2 = sc.spawn(|| {
-                com_sessao(&cfg, &p, app, false, |_| {
+                com_sessao(&cfg, &p, GrantContext::default(), app, false, |_| {
                     rodou.store(true, std::sync::atomic::Ordering::SeqCst);
                     Ok(())
                 })

@@ -195,6 +195,10 @@ fn connect_by(path: &str, until: std::time::Instant) -> Result<std::os::unix::ne
 /// the person's socket, as root: the service tells kalangod by that uid. Nothing is ever started as root from a place the
 /// person can write.
 fn service(peer: &Peer, method: &str, params: &Value) -> Result<Value, String> {
+    #[cfg(test)]
+    if let Some(r) = STAND_IN.with(|s| s.borrow().as_ref().map(|f| f(method, params))) {
+        return r;
+    }
     if nix::unistd::geteuid().is_root() && peer.uid != 0 {
         return call_socket(&socket(peer), Some(peer.uid), method, params);
     }
@@ -209,6 +213,15 @@ fn service(peer: &Peer, method: &str, params: &Value) -> Result<Value, String> {
         Some(e) => Err(e["message"].as_str().unwrap_or("error").to_string()),
         None => Ok(v["result"].clone()),
     }
+}
+
+/// A service answering this test thread's calls, in place of the program and its socket (nothing shared with other tests).
+#[cfg(test)]
+type StandIn = Box<dyn Fn(&str, &Value) -> Result<Value, String>>;
+
+#[cfg(test)]
+thread_local! {
+    static STAND_IN: std::cell::RefCell<Option<StandIn>> = const { std::cell::RefCell::new(None) };
 }
 
 /// What the service says, without the key and without a ready signature (an agent must not get a way to call).
@@ -327,9 +340,73 @@ fn autorizar_nivel(_: &Ctx, a: &Value) -> Result<Out, String> {
     Ok(Out { value: json!({"autorizado": true}), summary: trf("the person allowed the level {to} for an internet trigger", &[("to", s(a, "para")?.to_string())]), inverse: None })
 }
 
-/// The approval itself is `needs_approval`'s; reaching here means the person said yes.
-fn autorizar_ampliacao(_: &Ctx, _: &Value) -> Result<Out, String> {
-    Ok(Out { value: json!({"autorizado": true}), summary: tr("the person allowed an internet trigger to accept more callers").to_string(), inverse: None })
+/// The approval itself is `needs_approval`'s; reaching here means the person said yes. Turning a trigger on (the service's
+/// question, "enable") goes on only if the trigger is still what the card showed: its facts are read from the service
+/// again now and compared with the card's, and they go back with the answer, as the precondition of the change.
+fn autorizar_ampliacao(c: &Ctx, a: &Value) -> Result<Out, String> {
+    let mut value = json!({"autorizado": true});
+    if a["o_que"] == "enable" {
+        let id = s(a, "id")?;
+        let shown = take_expected(c, "gatilho_internet.autorizar_ampliacao", a).ok_or_else(|| tr("the facts shown to you are missing: nothing was turned on").to_string())?;
+        let (t, flow_id) = trigger_now(c.peer, id)?;
+        if enable_facts(&t, flow_id)? != shown {
+            return Err(tr("the trigger changed after you answered: nothing was turned on").into());
+        }
+        value["esperado"] = shown;
+    }
+    Ok(Out { value, summary: tr("the person allowed an internet trigger to accept more callers").to_string(), inverse: None })
+}
+
+/// A trigger as the service describes it now (`internet.trigger_list`), and the flow it starts (`internet.trigger_show`).
+fn trigger_now(peer: &Peer, id: &str) -> Result<(Value, Option<String>), String> {
+    let list = service(peer, "internet.trigger_list", &json!({}))?;
+    let t = list.as_array().and_then(|a| a.iter().find(|t| t["id"] == id)).cloned().ok_or_else(|| tr("no such internet trigger").to_string())?;
+    let flow_id = service(peer, "internet.trigger_show", &json!({"id": id})).ok().and_then(|v| v["flow_id"].as_str().map(str::to_string));
+    Ok((t, flow_id))
+}
+
+/// What the card of turning a trigger on shows and is based on — level, signature, flow, address list and address, read
+/// strictly — and what the service refuses a trigger for when it is no longer that.
+fn enable_facts(t: &Value, flow_id: Option<String>) -> Result<Value, String> {
+    let (signed, level) = strict_facts(t)?;
+    Ok(json!({"level": level, "signed": signed, "flow_id": flow_id, "allow_ips": t["allow_ips"], "path": t["path"]}))
+}
+
+/// Turning a trigger on, as the person sees it: the text and the card, from what the service says of the trigger now,
+/// with its facts kept for the run (`_esperado`). The agent's `gatilho_internet.ativar` and the service's own question
+/// (`gatilho_internet.autorizar_ampliacao` "enable", when a program of the person's turns it on) both come here, so the two
+/// can never say different things of the same trigger (a public one is called public, in coral, with its level and
+/// address, whoever asks).
+fn enable_card(peer: &Peer, rule: &crate::policy::CallerRule, cfg: Option<&crate::policy::Config>, id: &str) -> Result<(String, Value), String> {
+    let (t, flow_id) = trigger_now(peer, id)?;
+    let facts = enable_facts(&t, flow_id)?;
+    let signed = facts["signed"] == true;
+    let level = facts["level"].as_str().unwrap_or("observar").to_string();
+    let text = lines_text(
+        trf("turn on the internet webhook trigger {id} (address {path}): its address starts answering when a tunnel is open", &[("id", one_line(&json!(id), 40)), ("path", one_line(&t["path"], 80))]),
+        trigger_lines(&t)?,
+    );
+    let mut card = card(
+        trf("Turn on the trigger {id}? Its address starts answering when a tunnel is open.", &[("id", one_line(&json!(id), 60))]),
+        Some((
+            tr("It can be fired from outside").to_string(),
+            if signed { tr("While a tunnel is open, anyone who has the key can fire this flow.").to_string() } else { tr("While a tunnel is open, anyone with the address can fire this flow: it has no signature.").to_string() },
+            if signed { "ouro" } else { "coral" },
+        )),
+        vec![
+            (tr("Trigger").to_string(), one_line(&json!(id), 40)),
+            (tr("Address").to_string(), one_line(&t["path"], 80)),
+            (tr("Signature").to_string(), if signed { tr("required (HMAC)").to_string() } else { tr("NONE (public)").to_string() }),
+            (tr("Level").to_string(), level_label(&level)),
+            (tr("Asked by").to_string(), caller_label(peer, rule, cfg)),
+        ],
+        tr("Turning it on does not open a tunnel; that is asked separately.").to_string(),
+        if signed { "ouro" } else { "coral" },
+        tr("Turn on").to_string(),
+        tr("Deny").to_string(),
+    );
+    card["_esperado"] = facts;
+    Ok((text, card))
 }
 
 fn desativar(c: &Ctx, a: &Value) -> Result<Out, String> {
@@ -838,41 +915,8 @@ pub fn needs_approval_card(peer: &Peer, rule: &crate::policy::CallerRule, cfg: O
             );
             Ok(Some((text, card)))
         }
-        "gatilho_internet.ativar" => {
-            let id = s(args, "id")?;
-            let list = service(peer, "internet.trigger_list", &json!({}))?;
-            let t = list.as_array().and_then(|a| a.iter().find(|t| t["id"] == id)).ok_or_else(|| tr("no such internet trigger").to_string())?;
-            let (signed, _) = strict_facts(t)?;
-            let level = t["level"].as_str().unwrap_or("observar");
-            let flow_id = service(peer, "internet.trigger_show", &json!({"id": id})).ok().and_then(|v| v["flow_id"].as_str().map(str::to_string));
-            let facts = json!({"level": level, "signed": signed, "flow_id": flow_id, "allow_ips": t["allow_ips"]});
-            let text = lines_text(
-                trf("turn on the internet webhook trigger {id} (address {path}): its address starts answering when a tunnel is open", &[("id", one_line(&json!(id), 40)), ("path", one_line(&t["path"], 80))]),
-                trigger_lines(t)?,
-            );
-            let card = card(
-                trf("Turn on the trigger {id}? Its address starts answering when a tunnel is open.", &[("id", one_line(&json!(id), 60))]),
-                Some((
-                    tr("It can be fired from outside").to_string(),
-                    if signed { tr("While a tunnel is open, anyone who has the key can fire this flow.").to_string() } else { tr("While a tunnel is open, anyone with the address can fire this flow: it has no signature.").to_string() },
-                    if signed { "ouro" } else { "coral" },
-                )),
-                vec![
-                    (tr("Trigger").to_string(), one_line(&json!(id), 40)),
-                    (tr("Address").to_string(), one_line(&t["path"], 80)),
-                    (tr("Signature").to_string(), if signed { tr("required (HMAC)").to_string() } else { tr("NONE (public)").to_string() }),
-                    (tr("Level").to_string(), level_label(level)),
-                    (tr("Asked by").to_string(), caller_label(peer, rule, cfg)),
-                ],
-                tr("Turning it on does not open a tunnel; that is asked separately.").to_string(),
-                if signed { "ouro" } else { "coral" },
-                tr("Turn on").to_string(),
-                tr("Deny").to_string(),
-            );
-            let mut card = card;
-            card["_esperado"] = facts;
-            Ok(Some((text, card)))
-        }
+        // (the same card as the service's own question to turn it on: `enable_card`)
+        "gatilho_internet.ativar" => enable_card(peer, rule, cfg, s(args, "id")?).map(Some),
         "gatilho_internet.girar_segredo" => {
             let id = s(args, "id")?;
             let text = trf("replace the key of the internet trigger {id}: the current key stops working at once, and the new one stays in the vault, never shown to the agent (to see a key, replace it yourself with kalango-fluxosd gatilho girar-segredo)", &[("id", one_line(&json!(id), 40))]);
@@ -897,17 +941,9 @@ pub fn needs_approval_card(peer: &Peer, rule: &crate::policy::CallerRule, cfg: O
             if !["public", "addresses", "enable"].contains(&what) {
                 return Err(tr("only “public” or “addresses” can be widened").into());
             }
+            // (turning it on, asked by the service: the very card of `gatilho_internet.ativar`, from what the trigger is now)
             if what == "enable" {
-                let card = card(
-                    trf("Turn on the trigger {id}? Its address starts answering when a tunnel is open.", &[("id", one_line(&json!(id), 60))]),
-                    Some((tr("It can be fired from outside").to_string(), tr("While a tunnel is open, anyone who has the key can fire this flow.").to_string(), "ouro")),
-                    vec![(tr("Trigger").to_string(), one_line(&json!(id), 40)), (tr("Asked by").to_string(), caller_label(peer, rule, cfg))],
-                    tr("Turning it on does not open a tunnel; that is asked separately.").to_string(),
-                    "ouro",
-                    tr("Turn on").to_string(),
-                    tr("Deny").to_string(),
-                );
-                return Ok(Some((trf("turn on the internet trigger {id}", &[("id", one_line(&json!(id), 40))]), card)));
+                return enable_card(peer, rule, cfg, id).map(Some);
             }
             let public = what == "public";
             let text = trf("let the internet trigger {id} accept more callers ({what})", &[("id", one_line(&json!(id), 40)), ("what", what.to_string())]);
@@ -1317,6 +1353,141 @@ mod tests {
     fn what_goes_back_to_an_agent_has_no_key_and_no_ready_signature() {
         let v = scrub(json!({"id": "gi-1", "secret": "abc", "secret_shown_once": true, "curl": "curl ...", "nested": [{"secret": "x", "ok": 1}]}));
         assert_eq!(v, json!({"id": "gi-1", "nested": [{"ok": 1}]}));
+    }
+
+    /// The service as a stand-in on this thread: the triggers it lists (the test changes them through `triggers`) and
+    /// the calls it got.
+    struct Service {
+        triggers: std::rc::Rc<std::cell::RefCell<Value>>,
+        calls: std::rc::Rc<std::cell::RefCell<Vec<(String, Value)>>>,
+    }
+
+    impl Service {
+        fn start(triggers: Value) -> Service {
+            let t = std::rc::Rc::new(std::cell::RefCell::new(triggers));
+            let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let (t2, c2) = (t.clone(), calls.clone());
+            STAND_IN.with(|s| {
+                *s.borrow_mut() = Some(Box::new(move |m: &str, p: &Value| {
+                    c2.borrow_mut().push((m.to_string(), p.clone()));
+                    match m {
+                        "internet.trigger_list" => Ok(t2.borrow().clone()),
+                        "internet.trigger_show" => Ok(json!({"id": p["id"], "flow_id": "receber-pedidos"})),
+                        "internet.trigger_set_enabled" => Ok(json!({"id": p["id"], "enabled": true})),
+                        _ => Err(format!("the stand-in has no {m}")),
+                    }
+                }))
+            });
+            Service { triggers: t, calls }
+        }
+    }
+
+    impl Drop for Service {
+        fn drop(&mut self) {
+            STAND_IN.with(|s| *s.borrow_mut() = None);
+        }
+    }
+
+    fn trigger(id: &str, signed: bool, level: &str) -> Value {
+        json!({"id": id, "path": format!("/h/{id}-8f3a"), "signed": signed, "level": level, "methods": ["POST"], "max_body_bytes": 65536,
+            "rate_per_minute": 5, "content_types": ["application/json"], "respond": {"mode": "accepted"}, "allow_ips": ["203.0.113.0/24"], "max_pending": 20})
+    }
+
+    fn the_service_program() -> Peer {
+        Peer { pid: 4321, uid: 1000, gid: 1000, exe: "/usr/lib/kalango/kalango-fluxosd".into(), cgroup: String::new(), home: "/x".into(), passwd_home: "/x".into(), user: "t".into(), has_tty: false }
+    }
+
+    fn row(card: &Value, k: &str) -> String {
+        card["linhas"].as_array().unwrap().iter().find(|r| r[0] == k).and_then(|r| r[1].as_str()).unwrap_or("").to_string()
+    }
+
+    #[test]
+    fn turning_on_a_public_trigger_says_so_with_its_level_and_address_whoever_asks() {
+        let _s = Service::start(json!([trigger("gi-pub", false, "observar")]));
+        let peer = the_service_program();
+        // the agent's tool and the service's own question (the person's program turned it on over the raw socket)
+        for (name, args) in [("gatilho_internet.ativar", json!({"id": "gi-pub"})), ("gatilho_internet.autorizar_ampliacao", json!({"id": "gi-pub", "o_que": "enable"}))] {
+            let (text, card) = needs_approval_card(&peer, &rule(Level::Sistema), None, name, &args).unwrap().unwrap();
+            assert_eq!(card["aviso"]["tom"], "coral", "{name}: {card}");
+            assert_eq!(card["risco"], "coral", "{name}");
+            assert!(card["aviso"]["texto"].as_str().unwrap().contains("no signature"), "{name}: {card}");
+            assert_eq!(row(&card, "Signature"), "NONE (public)", "{name}");
+            assert_eq!(row(&card, "Level"), "lowest (observe)", "{name}");
+            assert_eq!(row(&card, "Address"), "/h/gi-pub-8f3a", "{name}");
+            assert!(text.contains("PUBLIC, WITHOUT SIGNATURE") && text.contains("/h/gi-pub-8f3a"), "{name}: {text}");
+            assert_eq!(card["_esperado"]["signed"], false, "{name}");
+        }
+        // a signed one above the lowest: gold, the key, its level
+        let _s = Service::start(json!([trigger("gi-s", true, "usuario")]));
+        let (_, card) = needs_approval_card(&peer, &rule(Level::Sistema), None, "gatilho_internet.autorizar_ampliacao", &json!({"id": "gi-s", "o_que": "enable"})).unwrap().unwrap();
+        assert_eq!(card["aviso"]["tom"], "ouro");
+        assert_eq!(row(&card, "Signature"), "required (HMAC)");
+        assert_eq!(row(&card, "Level"), "User");
+        // a trigger the service does not describe strictly is an error, never a card that reads "signed"
+        let _s = Service::start(json!([{"id": "gi-x", "level": "observar"}]));
+        assert!(needs_approval_card(&peer, &rule(Level::Sistema), None, "gatilho_internet.autorizar_ampliacao", &json!({"id": "gi-x", "o_que": "enable"})).is_err());
+        assert!(needs_approval_card(&peer, &rule(Level::Sistema), None, "gatilho_internet.autorizar_ampliacao", &json!({"id": "nenhum", "o_que": "enable"})).is_err());
+    }
+
+    #[test]
+    fn both_ways_of_turning_a_trigger_on_show_the_same_card() {
+        let peer = the_service_program();
+        for t in [trigger("gi-1", false, "observar"), trigger("gi-1", true, "observar"), trigger("gi-1", true, "sistema")] {
+            let _s = Service::start(json!([t]));
+            let agent = needs_approval_card(&peer, &rule(Level::Sistema), None, "gatilho_internet.ativar", &json!({"id": "gi-1"})).unwrap().unwrap();
+            let service = needs_approval_card(&peer, &rule(Level::Sistema), None, "gatilho_internet.autorizar_ampliacao", &json!({"id": "gi-1", "o_que": "enable"})).unwrap().unwrap();
+            assert_eq!(agent, service, "{t}");
+        }
+    }
+
+    #[test]
+    fn turning_on_a_trigger_that_changed_after_the_answer_is_refused() {
+        let svc = Service::start(json!([trigger("gi-s", true, "observar")]));
+        let (peer, r) = (the_service_program(), rule(Level::Sistema));
+        let (d, cfg) = (tempfile::tempdir().unwrap(), crate::policy::Config::system_default());
+        let tl = crate::timeline::Timeline::open(d.path()).unwrap();
+        let c = Ctx { cfg: &cfg, peer: &peer, rule: &r, timeline: &tl, lan: None, state: None, startup_ok: vec![] };
+        let (name, args) = ("gatilho_internet.autorizar_ampliacao", json!({"id": "gi-s", "o_que": "enable"}));
+        let approve = || {
+            let (_, card) = needs_approval_card(&peer, &r, None, name, &args).unwrap().unwrap();
+            after_approval(&Who::of(&peer, &r), name, &args, &card);
+            card
+        };
+        // as the person saw it: yes, with the card's facts going back as the precondition
+        let card = approve();
+        let out = autorizar_ampliacao(&c, &args).unwrap();
+        assert_eq!(out.value["esperado"], card["_esperado"]);
+        assert_eq!(out.value["autorizado"], true);
+        // made public, raised, its address list emptied or its address changed between the answer and the run: refused
+        for (k, v) in [("signed", json!(false)), ("level", json!("sistema")), ("allow_ips", json!([])), ("path", json!("/h/outro"))] {
+            *svc.triggers.borrow_mut() = json!([trigger("gi-s", true, "observar")]);
+            approve();
+            svc.triggers.borrow_mut()[0][k] = v;
+            let e = autorizar_ampliacao(&c, &args).err().expect("refused");
+            assert!(e.contains("changed after you answered"), "{k}: {e}");
+        }
+        // gone meanwhile: refused
+        *svc.triggers.borrow_mut() = json!([trigger("gi-s", true, "observar")]);
+        approve();
+        *svc.triggers.borrow_mut() = json!([]);
+        assert!(autorizar_ampliacao(&c, &args).is_err());
+        // with no card behind it (nothing remembered, or used up already), it is never a yes
+        *svc.triggers.borrow_mut() = json!([trigger("gi-s", true, "observar")]);
+        assert!(autorizar_ampliacao(&c, &args).err().expect("refused").contains("missing"));
+        approve();
+        autorizar_ampliacao(&c, &args).unwrap();
+        assert!(autorizar_ampliacao(&c, &args).is_err(), "once");
+        // the agent's tool hands the very facts of its card to the service, which refuses a trigger that is no longer that
+        let card = {
+            let (_, card) = needs_approval_card(&peer, &r, None, "gatilho_internet.ativar", &json!({"id": "gi-s"})).unwrap().unwrap();
+            after_approval(&Who::of(&peer, &r), "gatilho_internet.ativar", &json!({"id": "gi-s"}), &card);
+            card
+        };
+        ativar(&c, &json!({"id": "gi-s"})).unwrap();
+        let calls = svc.calls.borrow();
+        let set = calls.iter().rev().find(|(m, _)| m == "internet.trigger_set_enabled").unwrap();
+        assert_eq!(set.1["expected"], card["_esperado"]);
+        assert_eq!(set.1["expected"]["flow_id"], "receber-pedidos");
     }
 
     #[test]

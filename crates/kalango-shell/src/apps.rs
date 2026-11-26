@@ -302,6 +302,19 @@ pub(crate) fn redraw_icons_at(scale: f64) {
 }
 
 pub fn abrir(app: &App) -> Result<(), String> {
+    // a creative app opens after kalangod checked its folders and made its permissions again (`criativos::open_creative`)
+    if crate::criativos::is_creative(&app.id) {
+        crate::criativos::open_creative(&app.id);
+        record_use(&app.id);
+        return Ok(());
+    }
+    launch_info(&app.info)?;
+    record_use(&app.id);
+    Ok(())
+}
+
+/// Starts an app from its desktop entry, without what the shell itself preloads.
+pub fn launch_info(info: &gio::DesktopAppInfo) -> Result<(), String> {
     let ctx = gtk::gdk::Display::default().map(|d| d.app_launch_context());
     // the shell runs with LD_PRELOAD=libgtk4-layer-shell and its apps do not need it (and the Remote's permission is refused
     // for anything preloaded): what the shell preloaded does not pass on to the apps it opens
@@ -309,9 +322,7 @@ pub fn abrir(app: &App) -> Result<(), String> {
         c.unsetenv("LD_PRELOAD");
         c.unsetenv("LD_AUDIT");
     }
-    app.info.launch(&[], ctx.as_ref()).map_err(|e| e.to_string())?;
-    record_use(&app.id);
-    Ok(())
+    info.launch(&[], ctx.as_ref()).map_err(|e| e.to_string())
 }
 
 // ------------------------------------------------------------------ use (for "Sugeridos agora")

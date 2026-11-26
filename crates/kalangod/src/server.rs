@@ -216,7 +216,7 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
             if !crate::allowlist::is_person_ui(peer, &st.cfg.interface_da_pessoa, &st.cfg.interface_ambiente_permitido) {
                 return Some(err(id, -32003, kalango_i18n::tr("only you change this, in the App Center")));
             }
-            match crate::tools::craft::rpc(&st.cfg, peer, &params) {
+            match crate::tools::craft::rpc_with(&st.cfg, peer, &params, crate::tools::craft::GrantContext::of(st)) {
                 Ok(v) => ok(id, v),
                 Err(e) => err(id, -32003, &e),
             }

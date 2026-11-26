@@ -787,13 +787,7 @@ impl Criativos {
             ab.add_css_class("cr-cheio");
             crate::central::posicao_debug_sempre("criativos abrir", ab.upcast_ref());
             let ida = app.id.clone();
-            ab.connect_clicked(move |_| {
-                let r = gio::DesktopAppInfo::new(&format!("{ida}.desktop")).map(|d| d.launch(&[], gdk::Display::default().map(|d| d.app_launch_context()).as_ref()).map_err(|e| e.to_string()))
-                    .unwrap_or_else(|| std::process::Command::new(instalar::flatpak()).args(["run", &ida]).spawn().map(|_| ()).map_err(|e| e.to_string()));
-                if let Err(e) = r {
-                    eprintln!("kalango-shell: abrir {ida}: {e}");
-                }
-            });
+            ab.connect_clicked(move |_| open_creative(&ida));
             bt.append(&ab);
         } else {
             bt.append(&self.acao(app, None));
@@ -1627,6 +1621,31 @@ pub fn permissoes(id: &str) -> Result<(), String> {
     sem_kalangod(id, r)
 }
 
+/// Whether a desktop id is one of the creative apps of the catalog (exactly its id).
+pub fn is_creative(id: &str) -> bool {
+    catalogo().apps.iter().any(|a| a.id == id)
+}
+
+/// Opens an installed creative app from the shell (the App Center's Open, the launcher, the dock): first kalangod checks
+/// its folders again and makes its Flatpak permissions again (`permissoes`: a folder swapped since the person chose it is
+/// dropped there and the Timeline says why; without kalangod the app sees no folder), then the app starts.
+pub fn open_creative(id: &str) {
+    let id = id.to_string();
+    glib::spawn_future_local(async move {
+        let i = id.clone();
+        if let Ok(Err(e)) = gio::spawn_blocking(move || permissoes(&i)).await {
+            eprintln!("kalango-shell: {id}: {e}");
+        }
+        let r = match gio::DesktopAppInfo::new(&format!("{id}.desktop")) {
+            Some(d) => crate::apps::launch_info(&d),
+            None => std::process::Command::new(instalar::flatpak()).args(["run", &id]).spawn().map(|_| ()).map_err(|e| e.to_string()),
+        };
+        if let Err(e) = r {
+            eprintln!("kalango-shell: abrir {id}: {e}");
+        }
+    });
+}
+
 /// O que fazer com a resposta do kalangod (separado para o teste).
 fn sem_kalangod(id: &str, r: Result<serde_json::Value, String>) -> Result<(), String> {
     match r {
@@ -1830,6 +1849,14 @@ pub fn agendar() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_catalogs_own_ids_open_through_kalangod() {
+        assert!(is_creative("ai.storyteller.filmcraft") && is_creative("ai.storyteller.anicraft"));
+        for other in ["filmcraft", "FilmCraft", "ai.storyteller.filmcraft.desktop", "os.kalango.Arquivos", ""] {
+            assert!(!is_creative(other), "{other}");
+        }
+    }
 
     #[test]
     fn sizes_read_like_the_design() {
