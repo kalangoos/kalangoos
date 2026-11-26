@@ -1452,9 +1452,6 @@ impl Agent {
                 if m["role"] == "tool" && m["content"].as_str().is_some_and(|c| c.contains("<<<DADOS EXTERNOS")) {
                     let tool = names.get(m["tool_call_id"].as_str().unwrap_or("")).cloned().unwrap_or_default();
                     self.remember_external(&tool, m["content"].as_str().unwrap_or(""));
-                    // (and for the traces: when in doubt it is marked)
-                    let kind = crate::traces::external_kind(&tool, &[]).unwrap_or("external:tool").to_string();
-                    self.trace_conv.add_taint(&kind);
                 }
                 self.messages.push(m);
             }
@@ -1466,8 +1463,8 @@ impl Agent {
         }
         // (the conversation's turns share its id in the traces)
         self.trace_conv.session = id.to_string();
-        // (a secret tool's result in the kept history marks every later turn)
-        self.trace_conv.restore_secret(&self.messages);
+        // (for the traces: what came from outside and a secret tool's result in the kept history mark every later turn)
+        self.trace_conv.restore(&self.messages);
         self.conversa = Some(dir);
     }
 

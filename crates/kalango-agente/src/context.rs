@@ -218,7 +218,7 @@ fn mark_of(m: &Value) -> Option<&'static str> {
 }
 
 /// The origin and the text inside a data envelope (`defesa::envelope`), if the content has one.
-fn unwrap_envelope(content: &str) -> Option<(String, String)> {
+pub(crate) fn unwrap_envelope(content: &str) -> Option<(String, String)> {
     let open = content.find("<<<DADOS EXTERNOS")?;
     let header_end = content[open..].find(">>>\n").map(|k| open + k)?;
     let header = &content[open..header_end];

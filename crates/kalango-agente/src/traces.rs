@@ -546,9 +546,57 @@ fn send_batch(s: &Shared, batch: &[SpanData], red: &Redactor, guard: &Redactor) 
     (worst, tally.into_inner())
 }
 
+/// Connects to the daemon's socket, giving up after `timeout`: a daemon that stopped accepting (its listen backlog
+/// full) makes a plain connect wait for ever, and this runs on the sender thread.
+fn connect(path: &Path, timeout: Duration) -> std::io::Result<UnixStream> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = path.as_os_str().as_bytes();
+    // SAFETY: an all-zero sockaddr_un is a valid value; the path is copied in below.
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if bytes.len() >= addr.sun_path.len() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "socket path too long"));
+    }
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (d, s) in addr.sun_path.iter_mut().zip(bytes) {
+        *d = *s as libc::c_char;
+    }
+    // SAFETY: socket(2) with constant arguments; the fd is owned by the UnixStream made from it right below.
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fd is a fresh socket that nothing else owns; the stream closes it.
+    let stream = unsafe { UnixStream::from_raw_fd(fd) };
+    let deadline = Instant::now() + timeout;
+    loop {
+        // SAFETY: addr is a valid sockaddr_un and the length is its size; fd is open (owned by `stream`).
+        let r = unsafe {
+            libc::connect(stream.as_raw_fd(), &addr as *const libc::sockaddr_un as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t)
+        };
+        if r == 0 {
+            break;
+        }
+        let e = std::io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::EISCONN) => break,
+            // the backlog is full (a Unix socket says so at once) or the connection is on its way: wait, up to the deadline
+            Some(libc::EAGAIN) | Some(libc::EINPROGRESS) | Some(libc::EALREADY) | Some(libc::EINTR) => {
+                if Instant::now() >= deadline {
+                    return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the daemon did not accept the connection"));
+                }
+                std::thread::sleep(Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())));
+            }
+            _ => return Err(e),
+        }
+    }
+    stream.set_nonblocking(false)?;
+    Ok(stream)
+}
+
 /// One HTTP/1.1 POST over the socket; the status code.
 fn post(path: &Path, body: &str, timeout: Duration) -> std::io::Result<u16> {
-    let mut c = UnixStream::connect(path)?;
+    let mut c = connect(path, timeout)?;
     c.set_write_timeout(Some(timeout))?;
     c.set_read_timeout(Some(timeout))?;
     let head = format!(
@@ -714,6 +762,25 @@ impl Conversation {
         self.secret |= context_has_secret(messages);
     }
 
+    /// A kept conversation picked up again in a new process: what its history holds from outside marks it again, as
+    /// the turns that brought it in did (a new process forgot it): a request with pasted text, the tools' results that
+    /// came in an envelope of outside data (when in doubt, `external:tool`), and a secret in it.
+    pub fn restore(&mut self, messages: &[Value]) {
+        let by_call = call_names(messages);
+        for m in messages {
+            let content = m["content"].as_str().unwrap_or("");
+            // a request with pasted text (its mark is saved with the conversation: context::PASTED_KEY)
+            if m["role"] == "user" && m.get(crate::context::PASTED_KEY).and_then(Value::as_bool) == Some(true) {
+                self.add_taint(PASTE);
+            }
+            if m["role"] == "tool" && content.contains("<<<DADOS EXTERNOS") {
+                let tool = m["tool_call_id"].as_str().and_then(|id| by_call.get(id)).cloned().unwrap_or_default();
+                self.add_taint(result_kind(&tool, content, &[]).unwrap_or("external:tool"));
+            }
+        }
+        self.restore_secret(messages);
+    }
+
     pub fn add_taint(&mut self, kind: &str) {
         if !self.taint.iter().any(|t| t == kind) {
             self.taint.push(kind.to_string());
@@ -813,10 +880,47 @@ const OWN_PREFIXES: &[&str] = &[
 /// or None for what is the agent's own or the computer's (see `OWN_PREFIXES`). Third-party content: the web, mail, the
 /// content of files, a connector's results, what a command prints, the screen, the logs, other machines (virtual and
 /// remote); anything not known is marked too.
+/// What one tool's result brings in from outside (see `external_kind`). By the tool's name, except for the tools that
+/// bring back what an earlier result said: `conversa.abrir` (a kept result again: the tool named in its envelope of
+/// outside data; without one, unknown, so marked) and `conversa.buscar` (passages of the archive: the most external of
+/// where they came from).
+pub fn result_kind(name: &str, text: &str, connectors: &[String]) -> Option<&'static str> {
+    match name {
+        "conversa.abrir" => match crate::context::unwrap_envelope(text) {
+            // (a reopened search or reopened result: what is inside it, which is shorter, so this ends)
+            Some((origin, body)) if origin.starts_with("conversa.") && body.len() < text.len() => result_kind(&origin, &body, connectors),
+            Some((origin, _)) => external_kind(&origin, connectors),
+            None => Some("external:tool"),
+        },
+        "conversa.buscar" => {
+            let body = match crate::context::unwrap_envelope(text) {
+                Some((origin, body)) if origin == "conversa.buscar" => body,
+                _ => text.to_string(),
+            };
+            let kinds: Vec<&'static str> = body
+                .lines()
+                .filter_map(|l| l.strip_prefix('[').and_then(|r| r.split_once("] ")).map(|(h, _)| h))
+                .filter_map(|h| match h.rsplit(" · ").next().unwrap_or("").trim() {
+                    "pessoa" | "agente" => None,
+                    "ferramenta" | "" => Some("external:tool"),
+                    who => external_kind(who, connectors),
+                })
+                .collect();
+            // (the most external, in the receiver's order for a trace: web, mail, a tool, a file)
+            ["external:web", "external:mail", "external:tool", "external:file"].into_iter().find(|k| kinds.contains(k))
+        }
+        _ => external_kind(name, connectors),
+    }
+}
+
 pub fn external_kind(name: &str, connectors: &[String]) -> Option<&'static str> {
     if let Some(c) = connectors.iter().find(|c| name.starts_with(&format!("{c}."))) {
         let l = c.to_lowercase();
         return Some(if ["mail", "gmail", "imap", "outlook"].iter().any(|w| l.contains(w)) { "external:mail" } else { "external:tool" });
+    }
+    // the calls that came into an internet trigger (their paths, headers and bodies are the internet's)
+    if matches!(name, "gatilho_internet.chamadas" | "internet.calls" | "internet.call_body") {
+        return Some("external:web");
     }
     let prefix = name.split('.').next().unwrap_or("");
     match prefix {
@@ -1039,7 +1143,7 @@ impl Turn {
                 None => return,
             };
             s.tools += 1;
-            let kind = if ok { external_kind(name, &i.connectors) } else { None };
+            let kind = if ok { result_kind(name, text, &i.connectors) } else { None };
             if let Some(k) = kind {
                 s.taint.insert(k.to_string());
             }
@@ -1442,7 +1546,7 @@ fn content_events(i: &Inner, input: &[Value], marks: &[Option<&str>], t: u64, se
             "tool" => m["tool_call_id"]
                 .as_str()
                 .and_then(|id| by_call.get(id))
-                .map(|n| external_kind(n, &i.connectors).unwrap_or("tool_local").to_string())
+                .map(|n| result_kind(n, m["content"].as_str().unwrap_or(""), &i.connectors).unwrap_or("tool_local").to_string())
                 .unwrap_or_else(|| "unknown".into()),
             // the conversation's own marks first (an engine's note; a request of this or an earlier turn with pasted
             // text); without them (an input built by hand), the note's key and this turn's request (as on the root)

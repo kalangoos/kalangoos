@@ -876,6 +876,36 @@ fn a_restored_conversation_with_a_secret_tool_result_starts_secret() {
     assert!(!conv.secret);
 }
 
+/// A conversation picked up again in a new process (the engine's `continuar`) gets back what its history holds from
+/// outside: a request pasted in an earlier turn (its mark in `mensagens.json`) as well as a page a tool read.
+#[test]
+fn a_restored_conversation_keeps_the_paste_and_the_outside_results_as_taint() {
+    use crate::context::PASTED_KEY;
+    let saved: Vec<Value> = serde_json::from_str(
+        &json!([
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "resuma: TEXTO COLADO", PASTED_KEY: true},
+            {"role": "assistant", "content": "resumo"},
+            {"role": "user", "content": "e agora?"},
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let mut conv = Conversation::new();
+    conv.restore(&saved);
+    assert_eq!(conv.taint, ["external:paste"], "the paste of an earlier turn still taints the conversation");
+    // with a page read too: both kinds, and nothing for a conversation that was all typed
+    let mut with_page = saved.clone();
+    with_page.push(assistant_call("c1", "web.ler", "{}"));
+    with_page.push(json!({"role": "tool", "tool_call_id": "c1", "content": crate::defesa::envelope("web.ler", "uma página")}));
+    let mut conv = Conversation::new();
+    conv.restore(&with_page);
+    assert_eq!(conv.taint, ["external:paste", "external:web"]);
+    let mut conv = Conversation::new();
+    conv.restore(&[json!({"role": "user", "content": "oi"}), json!({"role": "assistant", "content": "olá"})]);
+    assert!(conv.taint.is_empty() && !conv.secret);
+}
+
 #[test]
 fn a_new_conversation_starts_clean() {
     let a = Conversation::new();
@@ -1518,6 +1548,52 @@ fn the_ids_of_the_tool_results_in_the_input_are_labels_in_metadata_mode_without_
 
 // ---------------------------------------------------------------- taint, gates, approvals
 
+/// What brings back an earlier result (`conversa.abrir`, `conversa.buscar`) carries where that result came from, and
+/// the calls that came into an internet trigger are the internet's: none of them is the agent's own content.
+#[test]
+fn a_reopened_or_found_earlier_result_and_internet_calls_keep_their_outside_origin() {
+    use crate::defesa::envelope;
+    let page = envelope("web.ler", "texto de uma página");
+    let clock = envelope("relogio.agora", "10:00");
+    let found_web = "[m3 · troca 1 · web.ler] trecho da página\n[m1 · troca 1 · pessoa] o que diz o site?";
+    let found_own = "[m1 · troca 1 · pessoa] lembre do bolo\n[m2 · troca 1 · agente] lembrei";
+    let c = vec![];
+    assert_eq!(result_kind("conversa.abrir", &page, &c), Some("external:web"));
+    assert_eq!(result_kind("conversa.abrir", &clock, &c), None, "an own tool's result reopened is still own");
+    assert_eq!(result_kind("conversa.abrir", "texto sem envelope", &c), Some("external:tool"), "unknown origin: marked");
+    assert_eq!(result_kind("conversa.buscar", found_web, &c), Some("external:web"));
+    assert_eq!(result_kind("conversa.buscar", found_own, &c), None);
+    assert_eq!(result_kind("conversa.buscar", "[m4 · troca 2 · ferramenta] ?", &c), Some("external:tool"));
+    for name in ["gatilho_internet.chamadas", "internet.calls", "internet.call_body"] {
+        assert_eq!(external_kind(name, &c), Some("external:web"), "{name}");
+        assert_eq!(result_kind(name, "{}", &c), Some("external:web"), "{name}");
+    }
+    // the rest of the internet trigger's tools stay the agent's own (they configure it)
+    assert_eq!(external_kind("gatilho_internet.criar", &c), None);
+
+    // in a turn: the tool span, the taint, and the tool message in a later model call
+    let s = setup();
+    let t = begin(&s, Config::default(), "o que dizia a página?");
+    let c0 = t.clock();
+    t.chat("m", &msgs("o que dizia a página?"), c0, &reply("", &[("c1", "conversa.abrir", json!({"ref": "m3"}))]));
+    call_tool(&t, "conversa.abrir", json!({"ref": "m3"}), true, &page);
+    let input = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "o que dizia a página?"}),
+        assistant_call("c1", "conversa.abrir", "{\"ref\":\"m3\"}"),
+        json!({"role": "tool", "tool_call_id": "c1", "content": page}),
+    ];
+    let c1 = t.clock();
+    t.chat("m", &input, c1, &reply("dizia isto", &[]));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(4);
+    let tool = by_name(&spans, "execute_tool conversa.abrir")[0];
+    assert_eq!(s_attr(tool, "kalango.provenance"), Some("external:web"));
+    assert_eq!(list_attr(by_name(&spans, "chat")[1], "kalango.taint"), Some(vec!["external:web".to_string()]));
+    let msg = event_named(by_name(&spans, "chat")[1], "gen_ai.tool.message")[0];
+    assert_eq!(ev_attr(msg, "kalango.provenance").unwrap()["stringValue"], "external:web");
+}
+
 #[test]
 fn external_content_taints_what_follows_and_the_root() {
     let s = setup();
@@ -1712,6 +1788,57 @@ fn without_a_daemon_nothing_is_recorded_and_nothing_fails() {
     t.gate("forced_planejar");
     t.approval_answer(true);
     assert_eq!(sink.counters(), Counters::default());
+}
+
+/// A daemon that stopped accepting (its listen backlog full): connecting must give up after the I/O wait like the
+/// rest of the exchange, never block the sender thread for good.
+#[test]
+fn a_daemon_with_a_full_backlog_does_not_block_the_connect() {
+    use std::os::fd::FromRawFd;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("traind.sock");
+    // a listener that never accepts, with the smallest backlog
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    // SAFETY: the fd belongs to `listener`, alive for the whole test; listen(2) only changes its backlog.
+    assert_eq!(unsafe { libc::listen(std::os::fd::AsRawFd::as_raw_fd(&listener), 0) }, 0);
+    // fill the backlog with connections nobody accepts (non-blocking: they stop when it is full)
+    let mut pending = Vec::new();
+    for _ in 0..64 {
+        // SAFETY: plain socket(2); the fd is owned by the UnixStream made from it right below.
+        let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC, 0) };
+        assert!(fd >= 0);
+        // SAFETY: fd is a fresh socket owned by nobody else.
+        let stream = unsafe { UnixStream::from_raw_fd(fd) };
+        let addr = sockaddr_un(&path);
+        // SAFETY: addr is a valid sockaddr_un for the length given.
+        let r =
+            unsafe { libc::connect(fd, &addr as *const libc::sockaddr_un as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_un>() as u32) };
+        if r != 0 {
+            break;
+        }
+        pending.push(stream);
+    }
+    assert!(!pending.is_empty(), "some connections got into the backlog");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let p = path.clone();
+    std::thread::spawn(move || {
+        let t = Instant::now();
+        let r = post(&p, "{}", Duration::from_millis(200));
+        let _ = tx.send((r.is_err(), t.elapsed()));
+    });
+    let (failed, took) = rx.recv_timeout(Duration::from_secs(3)).expect("the connect blocked the sender thread");
+    assert!(failed && took < Duration::from_secs(2), "{failed} {took:?}");
+    drop(listener);
+}
+
+fn sockaddr_un(path: &Path) -> libc::sockaddr_un {
+    // SAFETY: an all-zero sockaddr_un is valid; the path is copied in below, shorter than sun_path.
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (d, s) in addr.sun_path.iter_mut().zip(std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str())) {
+        *d = *s as libc::c_char;
+    }
+    addr
 }
 
 #[test]
