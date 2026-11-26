@@ -1338,13 +1338,15 @@ impl Criativos {
                     *t.fase.lock().unwrap() = Fase::Instalando;
                 }
                 let r = instalar_preparado(app, &pr);
+                // (opened only once it installed and kalangod made its permissions again: a failed update keeps it closed)
+                let installed = r.is_ok();
                 if let Some(t) = &t {
                     *t.fase.lock().unwrap() = match r {
                         Ok(_) => Fase::Feito,
                         Err(e) => Fase::Falhou(e),
                     };
                 }
-                if logo && abertos.is_empty() {
+                if installed && logo && abertos.is_empty() {
                     let _ = std::process::Command::new(instalar::flatpak()).args(["run", &id]).spawn();
                 }
             }

@@ -164,8 +164,10 @@ cada app com o nível que vale), `craft.chamar` (`app`, `ferramenta`, `argumento
   ganham uma pasta de projeto ou de tarefa e quando outro app ganha pastas; o shell pede ao entrar na sessão
   (`reaplicar`: cada app por si, um que falha não para os outros; um override de antes desta conferência não sobrevive)
   e logo antes de abrir um app criativo de qualquer lugar do shell (`abrir`: lançador, doca, Central, busca, "Abrir
-  com", um arquivo ou link aberto com o app padrão). Todo lançamento do shell passa por `apps.rs`, e um teste confere
-  que nenhum outro arquivo abre apps por conta própria. Numa sessão de teste sem instalação de teste do Flatpak
+  com", um arquivo ou link aberto com o app padrão). Os lançamentos do shell passam por `apps.rs`, e um teste confere
+  que nenhum outro arquivo usa por conta própria as chamadas de lançamento do GIO e do GTK (`launch`,
+  `launch_default_for_uri`, `FileLauncher`); o único `flatpak run` direto abre o app logo depois de uma atualização
+  instalada, quando o kalangod acabou de refazer as permissões. Numa sessão de teste sem instalação de teste do Flatpak
   (`KALANGO_CRAFT_FLATPAK_USER_DIR`), o que é refeito por si só não mexe na instalação real.
   Até um `XDG_PICTURES_DIR="/"` escrito no `user-dirs.dirs` é recusado.
 
