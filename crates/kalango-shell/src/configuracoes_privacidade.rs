@@ -539,6 +539,8 @@ impl PrivacyPage {
         let ql = rotulo(tr("App or agent"), "cfg-sub");
         ql.set_xalign(0.0);
         ql.set_hexpand(true);
+        ql.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        ql.set_max_width_chars(1);
         cab.append(&ql);
         for (_, glifo, nome) in COLUNAS {
             let col = caixa(Orientation::Vertical, 4, "");
@@ -546,7 +548,13 @@ impl PrivacyPage {
             let i = ui_icon(glifo, "#8E8F99", 14);
             i.set_halign(Align::Center);
             col.append(&i);
-            col.append(&rotulo(tr(nome), "cfg-sub"));
+            // (a column's name wraps inside its 92 px instead of widening the table in German or Russian)
+            let nl = rotulo(tr(nome), "cfg-sub");
+            nl.set_wrap(true);
+            nl.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+            nl.set_max_width_chars(10);
+            nl.set_justify(gtk::Justification::Center);
+            col.append(&nl);
             cab.append(&col);
         }
         self.tabela.append(&cab);
@@ -597,6 +605,8 @@ impl PrivacyPage {
         t.append(&nl);
         let tl = rotulo(tipo, "cfg-sub");
         tl.set_xalign(0.0);
+        tl.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        tl.set_max_width_chars(1);
         t.append(&tl);
         t.set_hexpand(true);
         quem.append(&t);

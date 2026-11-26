@@ -21,6 +21,6 @@ tamanho de tela e nos dois temas. Apague esta seção se não se aplica. -->
 ## Conferido
 
 - [ ] Sem dados pessoais nem segredos (código, testes, capturas, logs)
-- [ ] Textos novos da interface com `tr("…")` e tradução no `pt_BR.json`
+- [ ] Textos novos da interface com `tr("…")` e tradução no `pt_BR.json` e nos outros catálogos (`scripts/i18n-faltando.py`)
 - [ ] Imagem, ícone, fonte ou dado de terceiros novo registrado no `ATTRIBUTION.md`
 - [ ] Workflows da CI não mudaram (ou este pull request é só sobre eles)

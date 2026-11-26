@@ -54,9 +54,15 @@ num pull request de correção: o diff fica ilegível.
 
 - **Rust em tudo o que é programa nosso.** Temas são CSS porque o GTK só lê CSS. Scripts de teste e de ambiente em
   shell são aceitos.
-- **Código em inglês, interface em português.** Nomes novos (funções, variáveis, tipos, comentários) em inglês. Não
-  renomeie o que já existe em português. Textos da interface passam por `tr("English text")` e ganham a tradução
-  em `crates/kalango-i18n/locales/pt_BR.json` — o teste `catalog_is_complete_and_has_no_leftovers` confere.
+- **Código em inglês, interface em nove idiomas.** Nomes novos (funções, variáveis, tipos, comentários) em inglês.
+  Não renomeie o que já existe em português. Textos da interface passam por `tr("English text")` e ganham a
+  tradução em `crates/kalango-i18n/locales/pt_BR.json` e em cada um dos outros catálogos (`es`, `fr`, `it`, `de`,
+  `ja`, `ru`, `zh_CN`) — os testes do `kalango-i18n` reprovam listando as chaves que faltam.
+  `python3 scripts/i18n-faltando.py --exportar /tmp/faltando` gera um arquivo por idioma com o que traduzir e
+  `--aplicar <idioma> <arquivo>` põe as traduções no lugar, na ordem do `pt_BR`. Termos em
+  [`docs/i18n/GLOSSARIO.md`](docs/i18n/GLOSSARIO.md). Por que reprovar em vez de cair no inglês: um texto que falta
+  aparece em inglês no meio de uma tela em japonês sem ninguém notar; com a regra, o mesmo pull request que cria o
+  texto o traduz, enquanto o contexto está fresco.
 - **Design primeiro.** Toda tela nova, ou mudança visível numa tela, nasce no Design System (FigCraft) antes do
   código, e a implementação deve bater com ele. Sem telas de outro sistema (GNOME, Yaru, Adwaita): os apps do
   sistema são do KalangoOS.

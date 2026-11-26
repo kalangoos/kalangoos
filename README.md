@@ -59,7 +59,8 @@ arriscado e pode ser desfeito.
 | Agentes locais (`kalango-agente`, LFM3 via llama.cpp) e gestão de contexto | Funcionam; o modelo de decisão d1 (opcional, baixado à parte) responde nos blocos "Decidir" dos Fluxos e recomenda na tela de aprovação; aprovar sozinho o que é de baixo risco é opcional e vem desligado |
 | Kalango Remote e Kalango Audio | Vêm na ISO (repositórios próprios, em commits fixos). O Remote tem senha fixa, duas etapas, gravação, servidor próprio e modo de privacidade; ainda não foi testado entre dois computadores físicos nem numa sessão real (não aninhada) do niri; o Mosh não foi testado; o caminho da tela de bloqueio e o quadro de transição sob a cobertura do modo de privacidade só são cobertos pelo código, não por um teste |
 | Kalango VirtualDesk e Kalango Fluxos | Repositórios próprios, **fora da ISO** da prévia: o `kalangod` já tem as ferramentas `vm.*` e o shell tem as telas (Sandbox, editor de fluxo); o serviço de fluxos é de um repositório privado |
-| Hardware real, acessibilidade, inglês | **Pendentes**: matriz de hardware incompleta, sem certificação de acessibilidade, interface só em português |
+| Idiomas | A interface existe em nove idiomas (inglês, português do Brasil, espanhol, francês, italiano, alemão, japonês, russo e chinês simplificado). **O português é o idioma de origem; os outros sete catálogos foram traduzidos por IA e nenhuma pessoa nativa os revisou** ([docs/i18n/REVISAO.md](docs/i18n/REVISAO.md)): podem ter erros de sentido e de tom |
+| Hardware real, acessibilidade | **Pendentes**: matriz de hardware incompleta, sem certificação de acessibilidade |
 
 ## Como é feito
 
@@ -141,7 +142,7 @@ can be undone.
 - **Its own desktop.** A Rust and GTK 4 shell on the [niri](https://github.com/YaLTeR/niri) compositor, with the
   system's own apps and one design system.
 
-The docs and the UI are in Brazilian Portuguese first; English comes next ([ROADMAP.md](ROADMAP.md), phase 6).
+The docs and the UI are in Brazilian Portuguese first. The UI also exists in English, Spanish, French, Italian, German, Japanese, Russian and Simplified Chinese; those seven catalogs are AI-generated and have not been reviewed by native speakers ([docs/i18n/REVISAO.md](docs/i18n/REVISAO.md)).
 Build and run steps are above (to try the ISO in a VM, see [docs/NOTAS-0.1.0.md](docs/NOTAS-0.1.0.md)); contributions are welcome in Portuguese or English ([CONTRIBUTING.md](CONTRIBUTING.md)).
 The code is licensed under the GNU GPL, version 3 or later ([LICENSE](LICENSE)); the KalangoOS name, mascot and
 logos are the project's brand and are not covered by it ([LICENSE-brand.txt](LICENSE-brand.txt)).

@@ -2418,7 +2418,7 @@ impl Conversa {
                 d.set_tooltip_text(Some(&name));
                 row.append(&d);
                 let options = ["livre", "perguntar", "nunca"];
-                let dd = gtk::DropDown::from_strings(&[tr("Free"), tr("Ask"), tr("Never")]);
+                let dd = gtk::DropDown::from_strings(&[tr("Permission: free"), tr("Permission: ask"), tr("Permission: never")]);
                 dd.add_css_class("permissao-escolha");
                 let current = item["permissao"].as_str().unwrap_or("livre");
                 dd.set_selected(options.iter().position(|o| *o == current).unwrap_or(0) as u32);

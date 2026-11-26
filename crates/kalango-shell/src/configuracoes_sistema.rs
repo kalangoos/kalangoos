@@ -46,7 +46,11 @@ fn row(title: &str, sub: Option<&str>, control: &impl IsA<gtk::Widget>) -> gtk::
     let t = caixa(Orientation::Vertical, 1, "");
     t.set_hexpand(true);
     t.set_valign(Align::Center);
-    t.append(&left(title, "cfg-texto-13"));
+    // (a long title wraps instead of widening the panel: German "Warnen, wenn der Speicherplatz knapp wird")
+    let tl = left(title, "cfg-texto-13");
+    tl.set_wrap(true);
+    tl.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    t.append(&tl);
     if let Some(s) = sub {
         let l = left(s, "cfg-sub");
         l.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -661,7 +665,8 @@ impl SystemPage {
         dp.append(&lc);
         let at = caixa(Orientation::Vertical, 2, "cfg-cartao");
         at.append(&rotulo_cartao("spark", tr("AGENTS AND TRANSLATION")));
-        let answers = gtk::DropDown::new(Some(gtk::StringList::new(&[tr("The same as the system"), "Português (Brasil)", "English", "Español"])), None::<gtk::Expression>);
+        let answer_names: Vec<String> = std::iter::once(tr("The same as the system").to_string()).chain(ANSWER_LANGUAGES[1..].iter().map(|l| kalango_i18n::language_name(l))).collect();
+        let answers = gtk::DropDown::new(Some(gtk::StringList::new(&answer_names.iter().map(String::as_str).collect::<Vec<_>>())), None::<gtk::Expression>);
         answers.add_css_class("cfg-seletor");
         answers.set_size_request(190, 34);
         at.append(&row(tr("Language of the answers"), Some(tr("what the agent writes back")), &answers));
@@ -879,7 +884,7 @@ impl SystemPage {
         let w = Rc::downgrade(self);
         self.answers.connect_selected_notify(move |d| {
             if w.upgrade().is_some_and(|p| !p.loading.get()) {
-                let v = ["", "pt_BR", "en_US", "es_ES"].get(d.selected() as usize).copied().unwrap_or("");
+                let v = ANSWER_LANGUAGES.get(d.selected() as usize).copied().unwrap_or("");
                 crate::configuracoes::salvar_ajuste("idioma_respostas", json!(v));
                 if depurando() {
                     eprintln!("debug sistema: idioma das respostas \"{v}\"");
@@ -1666,7 +1671,7 @@ impl SystemPage {
         self.seconds.set_active(a["relogio_segundos"].as_bool().unwrap_or(false));
         self.first_day.set_selected(a["primeiro_dia_da_semana"].as_u64().unwrap_or(0).min(1) as u32);
         let ans = a["idioma_respostas"].as_str().unwrap_or("");
-        self.answers.set_selected(["", "pt_BR", "en_US", "es_ES"].iter().position(|x| *x == ans).unwrap_or(0) as u32);
+        self.answers.set_selected(ANSWER_LANGUAGES.iter().position(|x| *x == ans).unwrap_or(0) as u32);
         self.tick();
         self.loading.set(false);
         let w = Rc::downgrade(self);
@@ -1693,9 +1698,7 @@ impl SystemPage {
                     p.zone.set_selected(i as u32);
                 }
             }
-            let mut locs = locales;
-            locs.sort();
-            locs.dedup();
+            let locs = kalango_i18n::offered_languages(&locales);
             if *p.languages.borrow() != locs {
                 let names: Vec<String> = locs.iter().map(|l| locale_name(l)).collect();
                 let model = gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>());
@@ -1727,6 +1730,20 @@ impl SystemPage {
         t.set_valign(Align::Center);
         t.append(&left(tr("Other languages"), "cfg-texto-13"));
         t.append(&left(&if others.is_empty() { tr("none").to_string() } else { others.iter().map(|o| locale_name(o)).collect::<Vec<_>>().join(", ") }, "cfg-sub"));
+        // (Traditional Chinese, Korean…: the system takes the language, the screens stay in English)
+        if kalango_i18n::without_translation(lang) {
+            let note = left(&trf("{language} has no translation yet: the screens show English.", &[("language", locale_name(lang))]), "cfg-sub");
+            note.set_wrap(true);
+            note.set_max_width_chars(52);
+            t.append(&note);
+        }
+        // (the seven catalogs beyond Portuguese are AI translations that no native speaker has reviewed yet)
+        if kalango_i18n::machine_translated(lang) {
+            let note = left(tr("This translation was made by an AI and has not been reviewed by a native speaker yet. If something reads wrong, tell us."), "cfg-sub");
+            note.set_wrap(true);
+            note.set_max_width_chars(52);
+            t.append(&note);
+        }
         self.others.append(&t);
         let add = gtk::MenuButton::new();
         add.add_css_class("cfg-botao-menu");
@@ -2121,21 +2138,28 @@ fn avatar(a: &Account, px: i32) -> gtk::Widget {
 
 /// A locale's name in words ("pt_BR.UTF-8" → "Português (Brasil)").
 fn locale_name(l: &str) -> String {
-    let code = l.split('.').next().unwrap_or(l);
-    let (lang, region) = code.split_once('_').unwrap_or((code, ""));
-    let langs = [("pt", "Português"), ("en", "English"), ("es", "Español"), ("fr", "Français"), ("de", "Deutsch"), ("it", "Italiano"), ("ja", "日本語"), ("zh", "中文"), ("ru", "Русский"), ("C", "C")];
-    let regions = [("BR", "Brasil"), ("PT", "Portugal"), ("US", "US"), ("GB", "UK"), ("ES", "España"), ("MX", "México"), ("AR", "Argentina"), ("FR", "France"), ("DE", "Deutschland")];
-    let ln = langs.iter().find(|(c, _)| *c == lang).map(|(_, n)| n.to_string()).unwrap_or_else(|| lang.to_string());
-    match regions.iter().find(|(c, _)| *c == region).map(|(_, n)| n.to_string()).or_else(|| (!region.is_empty()).then(|| region.to_string())) {
-        Some(r) => format!("{ln} ({r})"),
-        None => ln,
-    }
+    kalango_i18n::language_name(l)
 }
+
+/// The choices of "Language of the answers": the system's (empty), then the KalangoOS languages.
+const ANSWER_LANGUAGES: &[&str] = &["", "en_US", "pt_BR", "es_ES", "fr_FR", "it_IT", "de_DE", "ja_JP", "ru_RU", "zh_CN"];
 
 /// "R$ 1.234,56" in the person's formats.
 fn money_example() -> String {
     let lc = std::env::var("LC_MONETARY").or_else(|_| std::env::var("LANG")).unwrap_or_default();
-    if lc.starts_with("pt_BR") { "R$ 1.234,56".into() } else if lc.starts_with("en_US") { "$1,234.56".into() } else { "1 234,56".into() }
+    let code = lc.split(['.', '@']).next().unwrap_or("");
+    match code {
+        "pt_BR" => "R$ 1.234,56",
+        "en_US" => "$1,234.56",
+        "en_GB" => "£1,234.56",
+        "de_DE" | "de_AT" | "es_ES" | "it_IT" => "1.234,56 €",
+        "fr_FR" | "fr_BE" => "1\u{202f}234,56 €",
+        "ja_JP" => "¥1,235",
+        "ru_RU" => "1\u{a0}234,56 ₽",
+        "zh_CN" => "¥1,234.56",
+        _ => "1 234,56",
+    }
+    .into()
 }
 
 /// The person's caches (what apps make again); the shell's own previews stay.

@@ -10,7 +10,7 @@
 //! page or a file and not from the person stops the task.
 
 use crate::kalangod::Tool;
-use kalango_i18n::{tr, trf};
+use kalango_i18n::{tr, tr_model, trf, trf_model};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -70,7 +70,7 @@ pub fn wanted(lower: &str) -> bool {
 pub fn tool() -> Tool {
     Tool {
         name: TOOL.into(),
-        description: tr("Proposes connecting to another computer through Kalango Remote: it shows the person a plan (the computer, the steps, the limits) and connects only if they approve it with a click. You cannot approve it, connect any other way or act on the other computer yourself").into(),
+        description: tr_model("Proposes connecting to another computer through Kalango Remote: it shows the person a plan (the computer, the steps, the limits) and connects only if they approve it with a click. You cannot approve it, connect any other way or act on the other computer yourself").into(),
         schema: json!({"type": "object", "properties": {
             "computador": {"type": "string", "description": "the other computer as the person called it (\"notebook da mãe\"), or its name in Kalango Remote"},
             "pedido": {"type": "string", "description": "what the person asked for, in their words (optional)"},
@@ -108,9 +108,9 @@ fn clean(s: &str, max: usize) -> String {
 pub fn build_plan(args: &Value) -> Result<Value, String> {
     let device = clean(args["computador"].as_str().unwrap_or(""), MAX_DEVICE);
     if device.is_empty() {
-        return Err(tr("which computer? the plan needs its name").to_string());
+        return Err(tr_model("which computer? the plan needs its name").to_string());
     }
-    let mut steps = vec![json!({"title": trf("Connect to {device}", &[("device", device.clone())]), "detail": "", "approval": "you"})];
+    let mut steps = vec![json!({"title": trf("Connect to {device}", &[("device", device.clone())]), "detail": "", "approval": "you"})]; // ui: the title in the approval panel
     for p in args["passos"].as_array().into_iter().flatten().filter_map(Value::as_str) {
         let title = clean(p, MAX_TITLE);
         if !title.is_empty() && steps.len() < MAX_STEPS {
@@ -142,8 +142,8 @@ pub fn interpret(code: Option<i32>, stdout: &str, stderr: &str) -> Outcome {
         (Some(0), Some("approved")) => Outcome::Approved,
         (Some(1), Some("cancelled")) | (Some(1), None) => Outcome::Cancelled,
         (Some(3), Some("adjust")) => Outcome::Adjust,
-        (Some(0), _) => Outcome::Failed(tr("Kalango Remote ended without a decision").to_string()),
-        _ => Outcome::Failed(clean(if stderr.trim().is_empty() { tr("Kalango Remote did not answer") } else { stderr }, 200)),
+        (Some(0), _) => Outcome::Failed(tr_model("Kalango Remote ended without a decision").to_string()),
+        _ => Outcome::Failed(clean(if stderr.trim().is_empty() { tr_model("Kalango Remote did not answer") } else { stderr }, 200)),
     }
 }
 
@@ -181,7 +181,7 @@ pub fn propose(args: &Value, on_status: &dyn Fn(String)) -> (bool, String) {
     on_status(tr("waiting for you to decide on the plan in Kalango Remote…").to_string());
     let mut child = match Command::new(program()).args(["agent-plan", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
         Ok(c) => c,
-        Err(e) => return (false, trf("could not start Kalango Remote: {error}", &[("error", e.to_string())])),
+        Err(e) => return (false, trf_model("could not start Kalango Remote: {error}", &[("error", e.to_string())])),
     };
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(plan.to_string().as_bytes());
@@ -202,7 +202,7 @@ pub fn propose(args: &Value, on_status: &dyn Fn(String)) -> (bool, String) {
     };
     let (stdout, stderr) = (out_t.join().unwrap_or_default(), err_t.join().unwrap_or_default());
     let Some(status) = status else {
-        return (false, tr("the person did not decide in time: nothing was done").to_string());
+        return (false, tr_model("the person did not decide in time: nothing was done").to_string());
     };
     outcome_text(interpret(status.code(), &stdout, &stderr), &device)
 }
@@ -210,9 +210,9 @@ pub fn propose(args: &Value, on_status: &dyn Fn(String)) -> (bool, String) {
 /// What the model is told for each outcome.
 pub fn outcome_text(o: Outcome, device: &str) -> (bool, String) {
     match o {
-        Outcome::Approved => (true, trf("The person approved the plan and Kalango Remote is connecting to {device}. Whoever is at that computer may still have to allow it. You cannot do anything on the other computer: tell the person the connection was started and that they take it from there.", &[("device", device.to_string())])),
-        Outcome::Cancelled => (false, tr("the person did not approve the plan; do not try it another way").to_string()),
-        Outcome::Adjust => (true, tr("The person wants the plan changed, not carried out. Ask what to change in a short sentence and end the turn; do not propose it again until they answer.").to_string()),
+        Outcome::Approved => (true, trf_model("The person approved the plan and Kalango Remote is connecting to {device}. Whoever is at that computer may still have to allow it. You cannot do anything on the other computer: tell the person the connection was started and that they take it from there.", &[("device", device.to_string())])),
+        Outcome::Cancelled => (false, tr_model("the person did not approve the plan; do not try it another way").to_string()),
+        Outcome::Adjust => (true, tr_model("The person wants the plan changed, not carried out. Ask what to change in a short sentence and end the turn; do not propose it again until they answer.").to_string()),
         Outcome::Failed(why) => (false, why),
     }
 }
