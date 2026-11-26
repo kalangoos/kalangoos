@@ -123,7 +123,9 @@ fn key_words(key: &str) -> Vec<String> {
 }
 
 /// The last words of a key that name something about a secret, not the secret (`password_policy`, `token_ttl`,
-/// `--password-file`, `secret_rotation_days`).
+/// `--password-file`, `secret_rotation_days`). Only the text heuristics use them; a JSON key keeps a string value only
+/// when it is not denied at all. (`hint`, `prompt`, `field`, `label`, `env`, `var`, `stdin` and `required` are left out:
+/// a value under them can be the secret itself.)
 const ABOUT_A_SECRET: &[&str] = &[
     "policy",
     "endpoint",
@@ -150,26 +152,18 @@ const ABOUT_A_SECRET: &[&str] = &[
     "expires",
     "expiration",
     "format",
-    "hint",
-    "field",
-    "prompt",
-    "label",
     "mode",
     "scope",
     "scopes",
     "algorithm",
     "kind",
     "enabled",
-    "required",
     "rotation",
     "domain",
     "provider",
     "version",
     "regex",
     "pattern",
-    "env",
-    "var",
-    "stdin",
 ];
 
 /// A key of two or more words whose last word only describes the secret (see [`ABOUT_A_SECRET`]).
@@ -184,9 +178,21 @@ impl Redactor {
         Redactor { deny: deny.iter().map(|k| normalize(k)).collect() }
     }
 
-    fn denied(&self, key: &str) -> bool {
+    /// A key named after a secret, as a JSON key is read: fail closed, whatever its last word says.
+    fn denied_key(&self, key: &str) -> bool {
         let k = normalize(key);
-        !k.is_empty() && !describes_a_secret(key) && (self.deny.iter().any(|d| k.contains(d.as_str())) || suffix_key(key).is_some())
+        !k.is_empty() && (self.deny.iter().any(|d| k.contains(d.as_str())) || suffix_key(key).is_some())
+    }
+
+    /// A name in text that points at a secret: a denied key that does not only describe the secret (`password_policy:
+    /// strict`, `token_endpoint: https://…`).
+    fn denied(&self, key: &str) -> bool {
+        self.denied_key(key) && !describes_a_secret(key)
+    }
+
+    /// A number kept under a denied JSON key: a count (`max_tokens`), or a number about a secret (`password_min_length`).
+    fn keeps_number(&self, key: &str, v: &Value) -> bool {
+        matches!(v, Value::Number(_)) && (!self.numbers_are_secret(key) || describes_a_secret(key))
     }
 
     /// A denied key whose value goes even when it is a number.
@@ -209,8 +215,8 @@ impl Redactor {
                             stats.redacted += 1;
                             return (k.clone(), Value::String("[REDACTED:env]".into()));
                         }
-                        let kept_number = matches!(x, Value::Number(_)) && !self.numbers_are_secret(k);
-                        if self.denied(k) && !kept_number && !matches!(x, Value::Bool(_) | Value::Null) {
+                        let kept_number = self.keeps_number(k, x);
+                        if self.denied_key(k) && !kept_number && !matches!(x, Value::Bool(_) | Value::Null) {
                             stats.redacted += 1;
                             return (k.clone(), Value::String(REDACTED.into()));
                         }
@@ -271,8 +277,8 @@ impl Redactor {
                     // (an environment key with anything but its marker, or a denied key whose value is not a number, a boolean,
                     // empty or a marker: the first pass missed it)
                     let leaked_env = ENV_KEYS.contains(&kn.as_str()) && !x.is_null();
-                    let kept_number = matches!(x, Value::Number(_)) && !self.numbers_are_secret(k);
-                    let leaked_secret = self.denied(k) && !kept_number && !matches!(x, Value::Bool(_) | Value::Null);
+                    let kept_number = self.keeps_number(k, x);
+                    let leaked_secret = self.denied_key(k) && !kept_number && !matches!(x, Value::Bool(_) | Value::Null);
                     if (leaked_env || leaked_secret) && !marker(x) {
                         n += 1;
                     }
@@ -459,6 +465,17 @@ impl Redactor {
                 }
                 None => {
                     ve = value_end(b, vs);
+                    // (a `$(…)`, `${…}` or `{{…}}` is judged, and cut, whole: `$(echo X)`)
+                    for (open, close) in [("$(", ")"), ("${", "}"), ("{{", "}}")] {
+                        if s[vs..].starts_with(open) {
+                            // (on its line, at most 256 bytes ahead)
+                            let window = &b[vs..(vs + 256).min(b.len())];
+                            let window = &window[..window.iter().position(|c| *c == b'\n').unwrap_or(window.len())];
+                            if let Some(e) = window.windows(close.len()).position(|w| w == close.as_bytes()) {
+                                ve = ve.max(vs + e + close.len());
+                            }
+                        }
+                    }
                     if !self.value_shaped(&s[vs..ve], &s[ve..], colon, name) {
                         i = ve.max(i + 1);
                         continue;
@@ -474,13 +491,12 @@ impl Redactor {
                         while we < b.len() && !b[we].is_ascii_whitespace() && !matches!(b[we], b'"' | b'\'' | b',' | b';') {
                             we += 1;
                         }
-                        // ("auth: token refreshed" is a log line: after a scheme, a word that does not look like a
-                        // credential is not one, except under `Authorization`)
+                        // (after a scheme the next word goes whatever its shape; "auth: token refreshed" is a log line,
+                        // and `Bearer $TOKEN` names a variable)
                         let next = &s[w..we.max(w)];
-                        if we > w
-                            && value_is_literal(next, &s[we..])
-                            && (normalize(name).contains("authorization") || credential_shaped(next) || next.contains(['.', '-', '_', '=', '/', '+']))
-                        {
+                        let common = COMMON_AFTER_SCHEME.contains(&fold_accents(next.trim_end_matches(['.', ',', ';', ':', '!', '?'])).as_str());
+                        let variable = interpolation_at(next).is_some_and(|n| n == next.len());
+                        if we > w && !common && !variable {
                             ve = we;
                         } else {
                             i = ve.max(i + 1);
@@ -526,7 +542,9 @@ impl Redactor {
         }
         // a YAML tag (`secret: !vault |`); a word under a bare `auth` that is not a credential (`auth=ok`)
         if (value.len() > 1 && value.starts_with('!') && value[1..].bytes().all(|c| c.is_ascii_alphabetic()))
-            || (suffix_key(name) == Some("auth") && !credential_shaped(value))
+            || (suffix_key(name) == Some("auth")
+                && !credential_shaped(value)
+                && !matches!(value.to_ascii_lowercase().as_str(), "bearer" | "basic" | "token" | "digest"))
         {
             return false;
         }
@@ -936,6 +954,58 @@ const KNOWN_TYPES: &[&str] = &[
     "Uint8Array",
 ];
 
+/// Common words that follow `token` in a log line ("auth: token refreshed"): not a credential after a scheme.
+const COMMON_AFTER_SCHEME: &[&str] = &[
+    "refreshed",
+    "expired",
+    "missing",
+    "invalid",
+    "required",
+    "revoked",
+    "rotated",
+    "renewed",
+    "created",
+    "deleted",
+    "issued",
+    "granted",
+    "denied",
+    "rejected",
+    "accepted",
+    "failed",
+    "verified",
+    "validated",
+    "received",
+    "sent",
+    "saved",
+    "stored",
+    "updated",
+    "generated",
+    "found",
+    "error",
+    "mismatch",
+    "unknown",
+    "empty",
+    "none",
+    "null",
+    "set",
+    "unset",
+    "reset",
+    "ok",
+    "not",
+    "is",
+    "was",
+    "has",
+    "for",
+    "from",
+    "cache",
+    "expirado",
+    "invalido",
+    "renovado",
+    "ausente",
+    "recebido",
+    "salvo",
+];
+
 /// Words that start code, not a literal value (`await getToken()`, `new Secret(…)`).
 const CODE_WORDS: &[&str] = &[
     "await", "new", "yield", "typeof", "lambda", "function", "async", "not", "self", "this", "raise", "return", "throw", "continue", "break",
@@ -988,17 +1058,32 @@ fn value_is_literal(value: &str, rest: &str) -> bool {
     if matches!(lower.as_str(), "true" | "false" | "null" | "none" | "nil" | "undefined") || CODE_WORDS.contains(&value) {
         return false;
     }
-    if value.starts_with(['{', '[', '(', '<']) || value.starts_with("${") || value.starts_with("$(") || value.contains("{{") || value.contains("::") {
+    // the value and what follows it on its line: a shape of code must be whole there
+    // (at most 256 bytes ahead: a value is judged in one pass, whatever the length of the text)
+    let mut ahead = rest.len().min(256);
+    while !rest.is_char_boundary(ahead) {
+        ahead -= 1;
+    }
+    let line = format!("{value}{}", rest[..ahead].split('\n').next().unwrap_or(""));
+    // a structure that opens here and goes on (`auth: { user: …`, `tokens: [`)
+    // (or a remark in parentheses on its line, several words: "Senha: (deixe em branco)")
+    if matches!(value, "{" | "[" | "(") || (line.starts_with('(') && closes(&line) && line[1..line.find(')').unwrap_or(1)].contains(' ')) {
         return false;
     }
-    // `$VAR` (a name without digits: `$ecret123` is a password)
-    if let Some(var) = value.strip_prefix('$') {
-        if !var.is_empty() && var.bytes().all(|c| c.is_ascii_alphabetic() || c == b'_') {
+    // a whole interpolation (`${VAR}`, `$(cat file)`, `{{ x }}`, `$VAR`) and nothing glued after it
+    if let Some(n) = interpolation_at(&line) {
+        if n >= value.len() {
             return false;
         }
     }
-    // (`%VAR%`, and a format placeholder: `%s`, `%(name)s`)
-    if (value.len() > 2 && value.starts_with('%') && value.ends_with('%'))
+    // a placeholder in angle brackets: words without digits (`<seu token aqui>`, `<your-api-key>`)
+    if let Some(inner) = line.strip_prefix('<').and_then(|l| l.split_once('>')).map(|(a, _)| a) {
+        if !inner.trim().is_empty() && inner.chars().all(|c| c.is_alphabetic() || matches!(c, ' ' | '-' | '_')) {
+            return false;
+        }
+    }
+    // `%VAR%`, and a format placeholder: `%s`, `%(name)s`
+    if (value.len() > 2 && value.starts_with('%') && value.ends_with('%') && variable_name(&value[1..value.len() - 1]))
         || (value.starts_with('%') && value[1..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '('))
     {
         return false;
@@ -1006,64 +1091,119 @@ fn value_is_literal(value: &str, rest: &str) -> bool {
     if value.len() >= 3 && value.chars().all(|c| matches!(c, '*' | 'x' | 'X' | '•' | '.')) {
         return false;
     }
-    // a call or an index: an identifier path right before `(` or `[`
+    // a call or an index on an identifier path (`lexer.next_token()`, `os.environ["X"]`, `std::env::var("X")`),
+    // its bracket closed on the line
     let ident_path = |p: &str| {
         !p.is_empty()
             && p.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_' || c == '$')
-            && p.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'$' | b'?'))
+            && p.bytes().any(|c| c.is_ascii_alphabetic())
+            && !p.contains(":::")
+            && p.split("::").all(|seg| !seg.is_empty() && seg.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'$' | b'?')))
     };
-    if let Some(at) = value.find(['(', '[']) {
-        if ident_path(&value[..at]) {
+    if let Some(at) = line.find(['(', '[']) {
+        if at <= value.len() && ident_path(&line[..at]) && closes(&line[at..]) {
             return false;
         }
     }
-    if rest.starts_with(['(', '[']) && ident_path(value) {
-        return false;
-    }
     // a field of a configuration object: `os.environ`, `process.env.API_KEY`, `settings.SECRET_KEY`
     if let Some((first, more)) = value.split_once('.') {
-        if !more.is_empty() && ident_path(value) && CONFIG_OBJECTS.contains(&first.to_ascii_lowercase().as_str()) {
+        if !more.is_empty() && !value.contains("::") && ident_path(value) && CONFIG_OBJECTS.contains(&first.to_ascii_lowercase().as_str()) {
             return false;
         }
     }
     true
 }
 
-/// A quoted value that only interpolates something else (`"${DB_PASSWORD}"`, `` `Bearer ${token}` ``, `"{{ secret }}"`).
+/// A name of a variable: an identifier without digits (`DB_PASSWORD`, `token`, `apiKey`); `banana2024` is not one.
+fn variable_name(t: &str) -> bool {
+    !t.is_empty() && t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') && t.bytes().all(|c| c.is_ascii_alphabetic() || c == b'_')
+}
+
+/// What `${…}`, `{…}` or `{{…}}` hold when they interpolate: variables, fields, indexes and defaults
+/// (`secrets.GITHUB_TOKEN`, `JWT_SECRET:-`, `token[:4]`), never a credential-shaped word.
+fn expression(c: &str) -> bool {
+    let c = c.trim();
+    !c.is_empty()
+        && c.chars().all(|ch| ch.is_ascii_alphanumeric() || " _.:-[]'\"|()!?,".contains(ch))
+        && c.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+            .filter(|t| !t.is_empty())
+            .all(|t| variable_name(t) || t.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// What `$(…)` holds when it reads a secret from somewhere: a command named by a word without digits (`cat`, `pass`,
+/// `vault`); `echo` and `printf` would print the secret itself.
+fn command_substitution(c: &str) -> bool {
+    c.split_whitespace().next().is_some_and(|w| variable_name(w) && !matches!(w, "echo" | "printf" | "print"))
+}
+
+/// The length of the interpolation that starts `v` (`${VAR}`, `$(cmd)`, `{{ x }}`, `{x}`, `$VAR`), when it is whole
+/// and holds a variable, an expression or a command.
+fn interpolation_at(v: &str) -> Option<usize> {
+    if let Some(name) = v.strip_prefix('$').filter(|n| !n.starts_with(['{', '('])) {
+        let n = name.bytes().take_while(|c| c.is_ascii_alphanumeric() || *c == b'_').count();
+        return variable_name(&name[..n]).then_some(1 + n);
+    }
+    let (open, close, ok): (&str, &str, fn(&str) -> bool) = if v.starts_with("{{") {
+        ("{{", "}}", expression)
+    } else if v.starts_with("${") {
+        ("${", "}", expression)
+    } else if v.starts_with("$(") {
+        ("$(", ")", command_substitution)
+    } else if v.starts_with('{') {
+        ("{", "}", expression)
+    } else {
+        return None;
+    };
+    let e = v[open.len()..].find(close)?;
+    ok(&v[open.len()..open.len() + e]).then_some(open.len() + e + close.len())
+}
+
+/// A quoted value that only interpolates something else (`"${DB_PASSWORD}"`, `` `Bearer ${token}` ``, `"{{ secret }}"`):
+/// every interpolation whole and holding a variable or an expression, and nothing else but a scheme word. When in
+/// doubt (`"$banana2024"`, `"{banana2024}"`) it is a literal.
 fn interpolation_only(v: &str) -> bool {
-    // the text with every `${…}`, `{{…}}`, `{…}`, `$(…)` and `$NAME` taken out
     let b = v.as_bytes();
     let (mut rest, mut found, mut i) = (String::new(), false, 0);
     while i < b.len() {
-        let open = if b[i..].starts_with(b"{{") {
-            Some(("}}", 2))
-        } else if b[i..].starts_with(b"${") || b[i..].starts_with(b"$(") {
-            Some((if b[i + 1] == b'{' { "}" } else { ")" }, 2))
-        } else if b[i] == b'{' {
-            Some(("}", 1))
-        } else {
-            None
-        };
-        if let Some((close, len)) = open {
-            if let Some(e) = v[i + len..].find(close) {
-                found = true;
-                i += len + e + close.len();
-                continue;
+        if matches!(b[i], b'$' | b'{') {
+            match interpolation_at(&v[i..]) {
+                Some(n) => {
+                    found = true;
+                    i += n;
+                    continue;
+                }
+                None => return false,
             }
-        }
-        if b[i] == b'$' && b.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_') {
-            found = true;
-            i += 1;
-            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
-                i += 1;
-            }
-            continue;
         }
         let n = v[i..].chars().next().map_or(1, char::len_utf8);
         rest.push_str(&v[i..i + n]);
         i += n;
     }
     found && rest.split_whitespace().all(|w| matches!(w.to_ascii_lowercase().as_str(), "bearer" | "basic" | "token"))
+}
+
+/// Whether the bracket at the start of `t` closes on its line.
+fn closes(t: &str) -> bool {
+    let (open, close) = match t.as_bytes().first() {
+        Some(b'(') => (b'(', b')'),
+        Some(b'[') => (b'[', b']'),
+        _ => return false,
+    };
+    let mut depth = 0usize;
+    for &c in t.as_bytes() {
+        if c == b'\n' {
+            return false;
+        }
+        if c == open {
+            depth += 1;
+        } else if c == close {
+            depth -= 1;
+            if depth == 0 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The words that name a password (the value after them may be several words, and is a secret even when it is a
@@ -1592,7 +1732,13 @@ fn phrase_ranges(s: &str) -> Vec<(usize, usize)> {
             };
             let inner = ws + q.len_utf8();
             if let Some(c) = s[inner..].find(close).map(|c| inner + c) {
-                if c > inner && !s[inner..c].contains('\n') && !s[inner..c].starts_with("[REDACTED") && (strong || credential_shaped(&s[inner..c])) {
+                let quoted = &s[inner..c];
+                if c > inner
+                    && !quoted.contains('\n')
+                    && !quoted.starts_with("[REDACTED")
+                    && !interpolation_only(quoted)
+                    && (strong || credential_shaped(quoted))
+                {
                     ranges.push((inner, c));
                 }
                 k = j + 1;
@@ -2583,6 +2729,115 @@ mod tests {
             assert!(!red(&text).contains(&pw), "{text}");
             assert!(r.scan_text(&text) > 0, "the final scan must see the secret in {text}");
             assert_eq!(r.scan_text(&red(&text)), 0, "what was redacted is clean: {}", red(&text));
+        }
+    }
+
+    /// A JSON key whose last word describes the secret (`password_hint`, `api_key_env`) still loses a string value, and
+    /// the final scan flags it when it is left; only a number or a boolean under it stays (`password_min_length: 12`).
+    #[test]
+    fn keys_that_describe_a_secret_fail_closed() {
+        let pw = weak_pw();
+        let r = Redactor::default();
+        for key in [
+            "password_hint",
+            "token_prompt",
+            "secret_field",
+            "api_key_env",
+            "password_stdin",
+            "token_var",
+            "password_required",
+            "secret_label",
+            "token_endpoint",
+            "password_policy",
+        ] {
+            let v = json!({ key: pw });
+            assert_eq!(r.redact_value(&v, &mut Stats::default())[key], REDACTED, "{key}");
+            assert_eq!(r.scan_value(&v), 1, "the final scan flags {key}");
+            assert_gone(&v.to_string(), &pw);
+        }
+        // in text, only the descriptions of a secret that cannot hold one stay
+        for t in [format!("password_hint: {pw}"), format!("api_key_env={pw}"), format!("token_prompt: {pw}"), format!("app --password-stdin {pw}")] {
+            assert_gone(&t, &pw);
+        }
+        let counts = json!({ "password_min_length": 12, "token_ttl": 3600, "password_required": true });
+        assert_eq!(r.redact_value(&counts, &mut Stats::default()), counts);
+        assert_eq!(r.scan_value(&counts), 0);
+    }
+
+    /// A quoted value is an interpolation only when what it interpolates is a variable or an expression, not a
+    /// credential (`"$banana2024"`, `"{banana2024}"` go; `"${DB_PASSWORD}"`, `f'Bearer {token}'` stay).
+    #[test]
+    fn interpolation_needs_a_variable() {
+        let pw = weak_pw();
+        for t in [
+            format!("password = \"${pw}\""),
+            format!("token: \"{{{pw}}}\""),
+            format!("secret: \"${{{pw}}}\""),
+            format!("api_key: \"{{{{ {pw} }}}}\""),
+            format!("token: 'Bearer {{{pw}}}'"),
+            format!("password: \"$({pw})\""),
+        ] {
+            assert_gone(&t, &pw);
+        }
+        for ok in [
+            "password: \"${DB_PASSWORD}\"",
+            "token: \"{{ secrets.GITHUB_TOKEN }}\"",
+            "session.headers.update({'Authorization': f'Bearer {token}'})",
+            "password = \"$DB_PASSWORD\"",
+            "secret: \"${JWT_SECRET:-}\"",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// An unquoted value is code only when the whole of it is code: a balanced call or index on an identifier path, a
+    /// complete `${VAR}` or `$(command)`, a Rust path, a placeholder in angle brackets, a structure that opens there.
+    #[test]
+    fn code_shapes_must_be_whole() {
+        let pw = weak_pw();
+        for t in [
+            format!("password={{{pw}"),
+            format!("token=[{pw}]"),
+            format!("password=({pw})"),
+            format!("secret=<{pw}>"),
+            format!("password=${{{pw}"),
+            format!("token={{{{{pw}"),
+            format!("password=abc::{pw}"),
+            format!("password=$(echo {pw})"),
+            format!("token=f({pw}"),
+        ] {
+            assert_gone(&t, &pw);
+        }
+        for ok in [
+            "auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },",
+            "let password = std::env::var(\"DB_PASSWORD\")?;",
+            "token: <seu token aqui>",
+            "export GITHUB_TOKEN=${GITHUB_TOKEN:-}",
+            "TOKEN=$(cat ~/.config/token)",
+            "token = lexer.next_token()",
+            "API_KEY = os.environ[\"API_KEY\"]",
+            "cookie: { secure: true, httpOnly: true },",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// After a scheme (`Bearer`, `Basic`, `Token`) under a secret's name the next word goes, whatever its shape; a log
+    /// line where the scheme word is followed by a common word ("token refreshed") stays.
+    #[test]
+    fn the_word_after_a_scheme_goes() {
+        let word = concat!("hunter", "pass");
+        for t in [
+            format!("X-Auth: Bearer {word}"),
+            format!("token: Bearer {word}"),
+            format!("api_key: Token {word}"),
+            format!("Authorization: Basic {word}"),
+        ] {
+            assert_gone(&t, word);
+        }
+        for ok in ["2026-11-26T10:12:03Z INFO auth: token refreshed for user=ana", "auth: token expired", "WARN auth: token missing", "token: Bearer"]
+        {
+            assert_eq!(red(ok), ok, "{ok}");
         }
     }
 
