@@ -18,6 +18,12 @@
 #   KALANGO_IMAGEM_LOGIN=1 imagem/construir.sh   (abre a tela de entrada)
 #   KALANGO_IMAGEM_ISO=1 imagem/construir.sh     a ISO para instalar (target/iso/kalangoos.iso): sem conta nenhuma;
 #                                         liga ao vivo (casper) e abre o instalador; BIOS e UEFI
+#
+# A raiz tem duas etapas, e a primeira (os pacotes do Ubuntu, ~9 min) não depende dos nossos binários nem do kernel:
+#   KALANGO_IMAGEM_ISO=1 KALANGO_IMAGEM_BASE=raiz.tar imagem/construir.sh base    só a etapa 1: grava raiz.tar
+#   KALANGO_IMAGEM_ISO=1 KALANGO_IMAGEM_BASE=raiz.tar imagem/construir.sh         se raiz.tar existe, parte dela (etapa 2:
+#                                         o kernel, a camada e os ajustes); sem ele, faz as duas etapas de uma vez
+# A CI monta a etapa 1 num job à parte, em paralelo com a compilação, e a guarda em cache.
 set -euo pipefail
 # (NetworkManager-wait-online.service fica mascarado, no hook mais abaixo: nada na imagem espera "rede no ar" e, num
 # computador com porta de cabo sem cabo, ele falhava depois de ~60 s e segurava o boot da sessão ao vivo)
@@ -35,12 +41,49 @@ mkdir -p "$W" && chmod 755 "$W"
 SUITE=${KALANGO_IMAGEM_SUITE:-resolute}
 MIRROR=${KALANGO_IMAGEM_MIRROR:-http://archive.ubuntu.com/ubuntu}
 DEPS=$ROOT/poc/.deps
+MODO=${1:-tudo}
+BASE=${KALANGO_IMAGEM_BASE:-}
+[ "$MODO" = tudo ] || [ "$MODO" = base ] || { echo "uso: imagem/construir.sh [base]"; exit 2; }
+[ "$MODO" != base ] || [ -n "$BASE" ] || BASE=$OUT/raiz-base.tar
+if [ "$MODO" != base ]; then
 for f in target/release/kalango-shell target/release/kalangod target/release/kalango-agente target/release/kalango-aprovacao target/release/kalango-tela \
          target/release/kalango-entrada target/release/kalango-instalador "$DEPS/src/niri/target/release/niri"; do
   [ -x "$f" ] || { echo "falta $f: compile antes (cargo build --release; o niri em poc/.deps/src/niri)"; exit 1; }
 done
 KDEB=${KERNEL_DEB:-$(ls kernel/out/linux-image-*-kalango_*_amd64.deb 2>/dev/null | grep -v dbg | head -1)}
 [ -f "$KDEB" ] || { echo "falta o pacote do kernel em kernel/out (kernel/build.sh)"; exit 1; }
+fi
+
+# ---- os pacotes: o que os nossos programas usam (as bibliotecas que eles carregam) e os serviços que as telas controlam
+PAC=$(grep -v '^\s*#' imagem/pacotes.txt | tr -s ' \n' ',' | sed 's/^,//; s/,$//')
+# (ao vivo: o casper; o instalador o tira do sistema instalado. O initramfs é refeito depois da camada: leva o
+# casper.conf do KalangoOS — a conta ao vivo e o nome do computador)
+[ "$ISO" = 1 ] && PAC="$PAC,casper"
+
+# (o que o mmdebstrap grava e o que deixa de fora: nas duas etapas, e a chave do cache da CI muda com este arquivo)
+DPKGOPTS=(
+  --dpkgopt='path-exclude=/usr/share/doc/*' --dpkgopt='path-include=/usr/share/doc/*/copyright'
+  --dpkgopt='path-exclude=/usr/share/man/*' --dpkgopt='path-exclude=/usr/share/info/*'
+  --dpkgopt='path-exclude=/usr/share/locale/*' --dpkgopt='path-include=/usr/share/locale/pt_BR/*'
+  --dpkgopt='path-include=/usr/share/locale/pt/*' --dpkgopt='path-include=/usr/share/locale/locale.alias'
+  --dpkgopt='path-include=/usr/share/locale/es/*' --dpkgopt='path-include=/usr/share/locale/fr/*'
+  --dpkgopt='path-include=/usr/share/locale/it/*' --dpkgopt='path-include=/usr/share/locale/de/*'
+  --dpkgopt='path-include=/usr/share/locale/ja/*' --dpkgopt='path-include=/usr/share/locale/ru/*'
+  --dpkgopt='path-include=/usr/share/locale/zh_CN/*'
+  --dpkgopt='path-exclude=/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'
+  --dpkgopt='path-exclude=/usr/share/fonts/opentype/noto/NotoSerifCJK-*'
+)
+mmdebstrap() { env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME="$HOME" TMPDIR="$W" /usr/bin/mmdebstrap "$@"; }
+
+# ---- etapa 1: a raiz só com os pacotes (sem nada nosso por cima)
+if [ "$MODO" = base ]; then
+  rm -f "$BASE"
+  mmdebstrap --mode=unshare --variant=minbase --components=main,universe "${DPKGOPTS[@]}" --include="$PAC" "$SUITE" "$BASE" "$MIRROR"
+  # (os nós de dispositivo do /dev não se recriam sem root: a etapa 2 deixa o mmdebstrap criar os dele)
+  tar --numeric-owner -tvf "$BASE" | awk '$1 ~ /^[cb]/ {print $6}' | xargs -r tar --delete -f "$BASE"
+  echo "raiz de pacotes: $BASE ($(du -h --apparent-size "$BASE" | cut -f1))"
+  exit 0
+fi
 
 # ---- a camada do KalangoOS: os arquivos nos lugares da imagem
 C=$W/camada
@@ -328,49 +371,41 @@ CONTA='chroot "$1" useradd --create-home --shell /bin/bash --groups sudo,video,r
 # (a ISO: nenhuma conta na imagem — o casper cria a ao vivo no boot, o instalador cria a de quem instala)
 if [ "$ISO" = 1 ]; then CONTA=true; SENHA=true; fi
 
-# ---- os pacotes: o que os nossos programas usam (as bibliotecas que eles carregam) e os serviços que as telas controlam
-PAC=$(grep -v '^\s*#' imagem/pacotes.txt | tr -s ' \n' ',' | sed 's/^,//; s/,$//')
-# (ao vivo: o casper; o instalador o tira do sistema instalado. O initramfs é refeito depois da camada: leva o
-# casper.conf do KalangoOS — a conta ao vivo e o nome do computador)
-[ "$ISO" = 1 ] && PAC="$PAC,casper"
-
 # ---- a raiz
 # (and the files copied in, whatever made them: nothing of the system writable by a group or by everyone)
 find "$C" ! -type l -perm /022 -exec chmod go-w {} +
 rm -f "$OUT/kalangoos.tar"
-env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME="$HOME" TMPDIR="$W" /usr/bin/mmdebstrap \
-  --mode=unshare --variant=minbase --components=main,universe \
-  --dpkgopt='path-exclude=/usr/share/doc/*' --dpkgopt='path-include=/usr/share/doc/*/copyright' \
-  --dpkgopt='path-exclude=/usr/share/man/*' --dpkgopt='path-exclude=/usr/share/info/*' \
-  --dpkgopt='path-exclude=/usr/share/locale/*' --dpkgopt='path-include=/usr/share/locale/pt_BR/*' \
-  --dpkgopt='path-include=/usr/share/locale/pt/*' --dpkgopt='path-include=/usr/share/locale/locale.alias' \
-  --dpkgopt='path-include=/usr/share/locale/es/*' --dpkgopt='path-include=/usr/share/locale/fr/*' \
-  --dpkgopt='path-include=/usr/share/locale/it/*' --dpkgopt='path-include=/usr/share/locale/de/*' \
-  --dpkgopt='path-include=/usr/share/locale/ja/*' --dpkgopt='path-include=/usr/share/locale/ru/*' \
-  --dpkgopt='path-include=/usr/share/locale/zh_CN/*' \
-  --dpkgopt='path-exclude=/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc' \
-  --dpkgopt='path-exclude=/usr/share/fonts/opentype/noto/NotoSerifCJK-*' \
-  --include="$PAC" \
-  --customize-hook="copy-in '$W/kernel.deb' /tmp" \
-  --customize-hook='chroot "$1" dpkg -i /tmp/kernel.deb && rm -f "$1/tmp/kernel.deb"' \
-  --customize-hook="sync-in '$C' /" \
-  --customize-hook="cd '$C' && find . -print0 | (cd \"\$1\" && xargs -0 chown -h 0:0)" \
-  --customize-hook='find "$1/usr/local" ! -type l -perm /022 -exec chmod go-w,g-s {} + ; chgrp -R -h 0 "$1/usr/local"' \
-  --customize-hook='chroot "$1" useradd --system --create-home --home-dir /var/lib/greeter --shell /usr/sbin/nologin --groups video,render,input greeter || true' \
-  --customize-hook='printf "%s UTF-8\n" pt_BR.UTF-8 en_US.UTF-8 es_ES.UTF-8 fr_FR.UTF-8 it_IT.UTF-8 de_DE.UTF-8 ja_JP.UTF-8 ru_RU.UTF-8 zh_CN.UTF-8 > "$1/etc/locale.gen" && chroot "$1" locale-gen && printf "LANG=pt_BR.UTF-8\n" > "$1/etc/default/locale"' \
-  --customize-hook='chroot "$1" sh -c "getent group sudo >/dev/null || groupadd --system sudo"' \
-  --customize-hook="$CONTA" \
-  --customize-hook="$SENHA" \
-  --customize-hook='chroot "$1" systemctl enable greetd.service NetworkManager.service bluetooth.service ntpd-rs.service || true' \
-  --customize-hook='chroot "$1" systemctl set-default graphical.target' \
-  --customize-hook='chroot "$1" systemctl mask getty@tty1.service autovt@tty1.service' \
-  --customize-hook='chroot "$1" systemctl mask NetworkManager-wait-online.service' \
-  --customize-hook='[ ! -x "$1/usr/bin/glib-compile-schemas" ] || chroot "$1" glib-compile-schemas /usr/share/glib-2.0/schemas' \
-  --customize-hook='chroot "$1" update-initramfs -u -k all' \
-  --customize-hook='ln -sf ../usr/lib/os-release "$1/etc/os-release"; rm -f "$1"/etc/update-motd.d/*; rm -f "$1"/etc/legal; : > "$1/etc/motd"' \
-  --customize-hook="rm -f \"\$1/etc/apt/sources.list\" && printf 'Types: deb\\nURIs: http://archive.ubuntu.com/ubuntu\\nSuites: $SUITE $SUITE-updates $SUITE-backports\\nComponents: main restricted universe multiverse\\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\\n\\nTypes: deb\\nURIs: http://security.ubuntu.com/ubuntu\\nSuites: $SUITE-security\\nComponents: main restricted universe multiverse\\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\\n' > \"\$1/etc/apt/sources.list.d/ubuntu.sources\"" \
-  --customize-hook='rm -rf "$1"/var/cache/apt/archives/*.deb "$1"/var/lib/apt/lists/*' \
-  "$SUITE" "$OUT/kalangoos.tar" "$MIRROR"
+HOOKS=(
+  --customize-hook="copy-in '$W/kernel.deb' /tmp"
+  --customize-hook='chroot "$1" dpkg -i /tmp/kernel.deb && rm -f "$1/tmp/kernel.deb"'
+  --customize-hook="sync-in '$C' /"
+  --customize-hook="cd '$C' && find . -print0 | (cd \"\$1\" && xargs -0 chown -h 0:0)"
+  --customize-hook='find "$1/usr/local" ! -type l -perm /022 -exec chmod go-w,g-s {} + ; chgrp -R -h 0 "$1/usr/local"'
+  --customize-hook='chroot "$1" useradd --system --create-home --home-dir /var/lib/greeter --shell /usr/sbin/nologin --groups video,render,input greeter || true'
+  --customize-hook='printf "%s UTF-8\n" pt_BR.UTF-8 en_US.UTF-8 es_ES.UTF-8 fr_FR.UTF-8 it_IT.UTF-8 de_DE.UTF-8 ja_JP.UTF-8 ru_RU.UTF-8 zh_CN.UTF-8 > "$1/etc/locale.gen" && chroot "$1" locale-gen && printf "LANG=pt_BR.UTF-8\n" > "$1/etc/default/locale"'
+  --customize-hook='chroot "$1" sh -c "getent group sudo >/dev/null || groupadd --system sudo"'
+  --customize-hook="$CONTA"
+  --customize-hook="$SENHA"
+  --customize-hook='chroot "$1" systemctl enable greetd.service NetworkManager.service bluetooth.service ntpd-rs.service || true'
+  --customize-hook='chroot "$1" systemctl set-default graphical.target'
+  --customize-hook='chroot "$1" systemctl mask getty@tty1.service autovt@tty1.service'
+  --customize-hook='chroot "$1" systemctl mask NetworkManager-wait-online.service'
+  --customize-hook='[ ! -x "$1/usr/bin/glib-compile-schemas" ] || chroot "$1" glib-compile-schemas /usr/share/glib-2.0/schemas'
+  --customize-hook='chroot "$1" update-initramfs -u -k all'
+  --customize-hook='ln -sf ../usr/lib/os-release "$1/etc/os-release"; rm -f "$1"/etc/update-motd.d/*; rm -f "$1"/etc/legal; : > "$1/etc/motd"'
+  --customize-hook="rm -f \"\$1/etc/apt/sources.list\" && printf 'Types: deb\\nURIs: http://archive.ubuntu.com/ubuntu\\nSuites: $SUITE $SUITE-updates $SUITE-backports\\nComponents: main restricted universe multiverse\\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\\n\\nTypes: deb\\nURIs: http://security.ubuntu.com/ubuntu\\nSuites: $SUITE-security\\nComponents: main restricted universe multiverse\\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\\n' > \"\$1/etc/apt/sources.list.d/ubuntu.sources\""
+  --customize-hook='rm -rf "$1"/var/cache/apt/archives/*.deb "$1"/var/lib/apt/lists/*'
+)
+# (etapa 2 quando a CI já montou a raiz de pacotes: parte dela, sem baixar nem instalar nada do Ubuntu; o resultado é o
+# mesmo conjunto de arquivos da montagem de uma vez só, que fica como caminho quando não há raiz pronta)
+if [ -n "$BASE" ] && [ -f "$BASE" ]; then
+  echo ">> partindo da raiz de pacotes $BASE"
+  mmdebstrap --mode=unshare --variant=custom --setup-hook="tar-in '$BASE' /" "${DPKGOPTS[@]}" "${HOOKS[@]}" \
+    "$SUITE" "$OUT/kalangoos.tar" "$MIRROR"
+else
+  mmdebstrap --mode=unshare --variant=minbase --components=main,universe "${DPKGOPTS[@]}" --include="$PAC" "${HOOKS[@]}" \
+    "$SUITE" "$OUT/kalangoos.tar" "$MIRROR"
+fi
 
 # ---- os arquivos do sistema são do root: os nossos entram copiados do computador de quem constrói (uid 1000, que na
 # imagem é a conta da pessoa) — uma imagem com /usr da conta deixaria qualquer programa dela trocar o sistema

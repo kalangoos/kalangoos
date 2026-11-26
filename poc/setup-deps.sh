@@ -37,7 +37,9 @@ printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontco
 echo "pronto: $ROOT"
 
 # gtk4-layer-shell não tem pacote no Ubuntu 24.04: compila do código-fonte para a pasta local
-if [ ! -f "$ROOT/usr/lib/x86_64-linux-gnu/pkgconfig/gtk4-layer-shell-0.pc" ]; then
+# (KALANGO_SEM_LAYER_SHELL=1: não compila; a CI usa assim no job do llama.cpp, que só quer o glslc e o Moli e não tem as
+# bibliotecas de desenvolvimento do GTK 4 que a compilação pede)
+if [ "${KALANGO_SEM_LAYER_SHELL:-0}" != 1 ] && [ ! -f "$ROOT/usr/lib/x86_64-linux-gnu/pkgconfig/gtk4-layer-shell-0.pc" ]; then
   [ -x .deps/venv/bin/meson ] || { python3 -m venv .deps/venv && .deps/venv/bin/pip install -q meson; }
   TAG=$(git ls-remote --tags --refs https://github.com/wmww/gtk4-layer-shell 'v1.*' | awk -F/ '{print $3}' | sort -V | tail -1)
   rm -rf .deps/src && git clone -q --depth 1 --branch "$TAG" https://github.com/wmww/gtk4-layer-shell .deps/src

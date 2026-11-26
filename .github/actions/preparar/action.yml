@@ -12,27 +12,35 @@ inputs:
     description: "Extra key for the cargo cache, so jobs that build different things keep separate caches"
     required: false
     default: "ci"
+  gtk:
+    description: "\"false\": skip the GTK 4 / VTE / Poppler / GStreamer / flatpak libraries and gtk4-layer-shell (jobs that build something else: niri, llama.cpp)"
+    required: false
+    default: "true"
+  cargo-cache:
+    description: "\"false\": no Swatinem/rust-cache (jobs that do not build this workspace)"
+    required: false
+    default: "true"
+  pacotes-extras:
+    description: "More apt packages, installed in the same single apt call as the rest"
+    required: false
+    default: ""
 
 runs:
   using: "composite"
   steps:
     - name: Bibliotecas do sistema
-      shell: bash
-      run: |
-        set -euo pipefail
-        # The man-db trigger rebuilds the manual index after every install; CI never reads it.
-        sudo rm -f /var/lib/man-db/auto-update
-        sudo apt-get -o Acquire::Retries=3 update -q
+      uses: ./.github/actions/apt
+      with:
         # GTK 4, VTE (Terminal), Poppler (PDF), GStreamer (media) for the shell; clang + libbpf for the eBPF program of
         # kalangod; meson/ninja/wayland for gtk4-layer-shell; python3 for the stand-in servers some tests start; flatpak for the
         # kalango-craft test that checks the real `flatpak override` result in a scratch installation (it never installs an app).
-        sudo apt-get -o Acquire::Retries=3 install -y -q --no-install-recommends \
-          build-essential pkg-config clang libbpf-dev \
-          libgtk-4-dev libvte-2.91-gtk4-dev libpoppler-glib-dev \
-          libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-          libwayland-dev wayland-protocols meson ninja-build python3 flatpak
+        pacotes: >-
+          build-essential pkg-config clang
+          ${{ inputs.gtk == 'true' && 'libbpf-dev libgtk-4-dev libvte-2.91-gtk4-dev libpoppler-glib-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwayland-dev wayland-protocols meson ninja-build python3 flatpak' || '' }}
+          ${{ inputs.pacotes-extras }}
 
     - name: gtk4-layer-shell (cache)
+      if: inputs.gtk == 'true'
       id: layer-shell-cache
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
@@ -40,7 +48,7 @@ runs:
         key: gtk4-layer-shell-1c963c51514581c41b9bdae08cdf69171265cdda-${{ runner.os }}-${{ runner.arch }}-v1
 
     - name: gtk4-layer-shell (compilar)
-      if: steps.layer-shell-cache.outputs.cache-hit != 'true'
+      if: inputs.gtk == 'true' && steps.layer-shell-cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         # v1.3.0 (with the session lock the lock screen uses); the commit, not the tag, so a moved tag changes nothing
@@ -56,6 +64,7 @@ runs:
         ninja -C "$src/build" install
 
     - name: Variáveis do build
+      if: inputs.gtk == 'true'
       shell: bash
       run: |
         set -euo pipefail
@@ -77,6 +86,7 @@ runs:
         rustc --version
 
     - name: Cache do cargo
+      if: inputs.cargo-cache == 'true'
       uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
         shared-key: ${{ inputs.cache-key }}
