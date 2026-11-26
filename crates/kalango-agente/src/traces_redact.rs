@@ -188,6 +188,20 @@ const ABOUT_A_SECRET: &[&str] = &[
     "retries",
     "tries",
     "failures",
+    "at",
+    "date",
+    "time",
+    "timestamp",
+    "changed",
+    "updated",
+    "created",
+    "since",
+    "title",
+    "placeholder",
+    "description",
+    "tooltip",
+    "caption",
+    "message",
 ];
 
 /// Keys about tokens of text, not credentials (`"tokenizer": "lfm3"`).
@@ -222,7 +236,7 @@ impl Redactor {
         named
             && !self.keeps_number(key, v)
             && !matches!(v, Value::Bool(_) | Value::Null)
-            && !text.is_some_and(|t| mask(t) || (describes_a_secret(key) && !credential_shaped(t)))
+            && !text.is_some_and(|t| mask(t) || (describes_a_secret(key) && (!credential_shaped(t) || timestamp(t))))
     }
 
     /// A name in text that points at a secret: a denied key that does not only describe the secret (`password_policy:
@@ -475,6 +489,12 @@ impl Redactor {
                 continue;
             };
             let name = &s[st..e];
+            // ("Boarding pass: seat 14C" is a ticket)
+            let before_name = s[..st].trim_end_matches([' ', '\t']).rsplit([' ', '\t', '\n']).next().unwrap_or("").to_ascii_lowercase();
+            if name.eq_ignore_ascii_case("pass") && PASS_TICKETS.contains(&before_name.as_str()) {
+                i += 1;
+                continue;
+            }
             // a cookie header: every pair loses its value (the attributes of `Set-Cookie` stay)
             if matches!(normalize(name).as_str(), "cookie" | "setcookie") {
                 let end = s[i..].find('\n').map_or(s.len(), |n| i + n);
@@ -545,7 +565,7 @@ impl Redactor {
                     }
                     ve = value_end(b, vs);
                     // (a `$(…)`, `${…}` or `{{…}}` is judged, and cut, whole: `$(echo X)`)
-                    for (open, close) in [("$(", ")"), ("${", "}"), ("{{", "}}")] {
+                    for (open, close) in [("$(", ")"), ("${{", "}}"), ("${", "}"), ("{{", "}}")] {
                         if s[vs..].starts_with(open) {
                             // (on its line, at most 256 bytes ahead)
                             let window = &b[vs..(vs + 256).min(b.len())];
@@ -600,7 +620,7 @@ impl Redactor {
             let value = &s[vs..ve];
             // (a label of several words with a preposition, "senha do usuário:", is a sentence as often as a label: its
             // value goes when it looks like a credential)
-            if (by_label && !strong && !credential_shaped(value)) || (shaped_only && !literal_secret(value)) {
+            if (by_label && !strong && !credential_shaped(value)) || (shaped_only && (!literal_secret(value) || timestamp(value))) {
                 i = ve.max(i + 1);
                 continue;
             }
@@ -774,7 +794,12 @@ impl Redactor {
                             }
                         }
                     } else if self.denied(flag) {
-                        if let Some((vat, v)) = value_at(n + 1) {
+                        // (`--password-stdin` reads it from the input: the word after it is the next argument, unless it
+                        // looks like a credential; "the --token flag" is prose)
+                        let stdin = flag.ends_with("-stdin");
+                        if let Some((vat, v)) = value_at(n + 1)
+                            .filter(|(_, v)| !matches!(*v, "flag" | "option" | "argument" | "parameter" | "switch") && (!stdin || literal_secret(v)))
+                        {
                             push(vat, v.len());
                         }
                     }
@@ -1102,6 +1127,16 @@ fn cookie_values(s: &str, from: usize, end: usize) -> Vec<(usize, usize)> {
     out
 }
 
+/// Words before `pass` that make it a ticket ("Boarding pass: seat 14C").
+const PASS_TICKETS: &[&str] = &["boarding", "bus", "day", "season", "ski", "backstage", "press", "hall", "transit", "museum"];
+
+/// A date or a time (`2026-11-26`, `2026-11-26T10:00:00Z`): a value about a secret, not one.
+fn timestamp(t: &str) -> bool {
+    t.len() >= 8
+        && t.bytes().filter(|c| c.is_ascii_digit()).count() >= 6
+        && t.bytes().all(|c| c.is_ascii_digit() || matches!(c, b'-' | b':' | b'T' | b'Z' | b'.' | b'+' | b' '))
+}
+
 /// A mask in place of a value (`***`, `...`, `xxxx`, `••••`): not a secret.
 fn mask(t: &str) -> bool {
     t.chars().count() >= 3 && t.chars().all(|c| matches!(c, '*' | 'x' | 'X' | '•' | '.' | '…'))
@@ -1207,7 +1242,6 @@ fn scheme_ranges(s: &str) -> Vec<(usize, usize)> {
             || !value_is_literal(v, "")
             || body.contains('=')
             || parameter
-            || COMMON_AFTER_SCHEME.contains(&v.to_ascii_lowercase().as_str())
         {
             continue;
         }
@@ -1817,7 +1851,10 @@ fn interpolation_at(v: &str) -> Option<usize> {
         let n = name.bytes().take_while(|c| c.is_ascii_alphanumeric() || *c == b'_').count();
         return variable_name(&name[..n]).then_some(1 + n);
     }
-    let (open, close, ok): (&str, &str, fn(&str) -> bool) = if v.starts_with("{{") {
+    // (`${{ … }}` is a GitHub Actions expression, whole up to its `}}`)
+    let (open, close, ok): (&str, &str, fn(&str) -> bool) = if v.starts_with("${{") {
+        ("${{", "}}", expression)
+    } else if v.starts_with("{{") {
         ("{{", "}}", expression)
     } else if v.starts_with("${") {
         ("${", "}", expression)
@@ -2493,6 +2530,16 @@ fn phrase_ranges(s: &str) -> Vec<(usize, usize)> {
             k = after_name;
             continue;
         }
+        // a prompt answered on its line: `Password for ana@host: X`, `[sudo] password for ana: X` (the answer, whole)
+        if strong && cleaned.get(after_name).is_some_and(|w| matches!(w.as_str(), "for" | "de" | "para" | "для")) {
+            if let (Some(who), Some(answer)) = (words.get(after_name + 1), words.get(after_name + 2)) {
+                if who.0.ends_with(':') && !s[who.2..answer.1].contains('\n') && !answer.0.starts_with("[REDACTED") {
+                    ranges.push((answer.1, answer.2));
+                    k = after_name + 3;
+                    continue;
+                }
+            }
+        }
         // (a name that ends its clause, `{ password, …rest }`, is not followed by its value)
         if words[after_name - 1].0.ends_with([',', ';', ')']) {
             k += 1;
@@ -2534,7 +2581,7 @@ fn phrase_ranges(s: &str) -> Vec<(usize, usize)> {
             let mut j = after_name;
             let mut skipped = 0;
             while j < words.len() && skipped <= 2 {
-                if shaped_at(j) && !cleaned[j].is_empty() {
+                if shaped_at(j) && !cleaned[j].is_empty() && !words[j].0.ends_with(':') {
                     return Some(j);
                 }
                 let w = cleaned[j].as_str();
@@ -4039,6 +4086,70 @@ mod tests {
         ] {
             assert_eq!(red(ok), ok, "{ok}");
         }
+    }
+
+    /// A GitHub Actions expression, `${{ … }}`, is a whole reference: it stays, and nothing of it is cut halfway; one
+    /// that holds a credential instead of a name goes whole.
+    #[test]
+    fn github_actions_expressions_stay_whole() {
+        for ok in [
+            "TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+            "password: ${{ secrets.DB_PASSWORD }}",
+            "GH_TOKEN: ${{ github.token }}",
+            "env:\n  API_KEY: ${{ secrets.API_KEY }}\n  X: 1",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+        let pw = weak_pw();
+        assert_eq!(red(&format!("password: ${{{{ {pw} }}}}")), format!("password: {REDACTED}"));
+    }
+
+    /// A password prompt answered on its line (`Password for ana@host: X`, `[sudo] password for ana: X`): the answer
+    /// goes, whole, and who it is for stays.
+    #[test]
+    fn a_password_prompt_with_its_answer_goes() {
+        let pw = concat!("Tr0ub", "4dor&3");
+        assert_eq!(red(&format!("Password for ana@host: {pw}")), format!("Password for ana@host: {REDACTED}"));
+        assert_eq!(red(&format!("[sudo] password for ana: {pw}")), format!("[sudo] password for ana: {REDACTED}"));
+        assert_gone(&format!("Enter password for root: {pw}"), "4dor");
+        assert_eq!(red("Password for ana@host:"), "Password for ana@host:");
+    }
+
+    /// Names that are about a password, not the password: a timestamp under `passwordChangedAt`, an i18n key
+    /// (`settings.password.title`), a boarding pass, a flag talked about in prose, `--password-stdin`.
+    #[test]
+    fn names_about_a_password_stay() {
+        for ok in [
+            "passwordChangedAt: 2026-11-26",
+            "{\"passwordChangedAt\": \"2026-11-26T10:00:00Z\"}",
+            "\"settings.password.title\": \"Senha\"",
+            "settings.password.placeholder = Digite sua senha",
+            "Boarding pass: seat 14C",
+            "Use the --token flag to pass the key.",
+            "docker login --password-stdin registry.example.com",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+        // (the same names before a credential still lose it)
+        let pw = weak_pw();
+        let r = Redactor::default();
+        assert_eq!(r.redact_value(&json!({ "passwordChangedAt": pw }), &mut Stats::default())["passwordChangedAt"], REDACTED);
+        assert_gone(&format!("settings.password.title = {pw}"), &pw);
+        assert_gone(&format!("tool --token {pw}"), &pw);
+    }
+
+    /// The final scan on its own, piece by piece: an environment key that kept its value, a key that is a token, and a
+    /// secret that only decoding the JSON inside a string shows.
+    #[test]
+    fn the_final_scan_reads_env_keys_object_keys_and_json_in_strings() {
+        let r = Redactor::default();
+        assert_eq!(r.scan_value_at(&json!({ "env": { "HOME": "/home/ana" } }), 0), 1, "an environment key with its value");
+        assert_eq!(r.scan_value_at(&json!({ "env": "[REDACTED:env]" }), 0), 0);
+        let token = concat!("ghp", "_abcdefghijklmnopqrstuvwxyz0123456789");
+        assert!(r.scan_value_at(&json!({ token: 1 }), 0) >= 1, "a key that is a token");
+        let inner = format!("{{\"pass\\u0077ord\": \"{}\"}}", weak_pw());
+        assert!(r.scan_plain_text(&inner) == 0, "the text alone does not show it");
+        assert_eq!(r.scan_value_at(&json!({ "note": inner }), 0), 1, "decoding the JSON in the string does");
     }
 
     /// Code and configuration that name a secret without holding one (the critic's false positives).
