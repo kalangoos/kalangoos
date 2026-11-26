@@ -223,7 +223,9 @@ struct Tally {
 /// `kalango.redactions.final` saying how many it found; if it is still not clean the span is left out.
 fn guarded_otlp(sp: &SpanData, first: &Redactor, guard: &Redactor, tally: &mut Tally) -> Option<Value> {
     let mut v = sp.to_otlp(first);
-    let hits = guard.scan_value(&v) + guard.scan_text(&v.to_string());
+    // (the values, each with the same rules as the first pass: the serialized JSON around a value, `"}}],"name":`,
+    // must not make a kept `${{ … }}` or "Password:" look like a secret; strings in strings are decoded by scan_value)
+    let hits = guard.scan_value(&v);
     if hits == 0 {
         return Some(v);
     }
@@ -237,7 +239,7 @@ fn guarded_otlp(sp: &SpanData, first: &Redactor, guard: &Redactor, tally: &mut T
             }
         }
     }
-    if guard.scan_value(&v) + guard.scan_text(&v.to_string()) > 0 {
+    if guard.scan_value(&v) > 0 {
         tally.dropped += 1;
         return None;
     }
@@ -498,17 +500,17 @@ enum Outcome {
 }
 
 /// The body to write for `chunk`, or None when nothing may be sent. The last look (`scan`, the final detector over the
-/// whole body as it will be written to the socket) runs here: after the spans were each cleaned it should never find
+/// values of the whole body, the resource's included, as it will be written to the socket) runs here: after the spans were each cleaned it should never find
 /// anything, and if it does, or if it fails (a panic), nothing is sent and the spans are counted as dropped.
-fn final_body(chunk: &[&SpanData], red: &Redactor, guard: &Redactor, tally: &mut Tally, scan: &dyn Fn(&str) -> usize) -> Option<String> {
-    let body = request_body(chunk, red, guard, tally).to_string();
+fn final_body(chunk: &[&SpanData], red: &Redactor, guard: &Redactor, tally: &mut Tally, scan: &dyn Fn(&Value) -> usize) -> Option<String> {
+    let body = request_body(chunk, red, guard, tally);
     let found = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scan(&body))).unwrap_or(1);
     if found > 0 {
         tally.hits += 1;
         tally.dropped += chunk.len() as u64;
         return None;
     }
-    Some(body)
+    Some(body.to_string())
 }
 
 fn send_batch(s: &Shared, batch: &[SpanData], red: &Redactor, guard: &Redactor) -> (Outcome, Tally) {
@@ -521,7 +523,7 @@ fn send_batch(s: &Shared, batch: &[SpanData], red: &Redactor, guard: &Redactor) 
         if chunk.is_empty() {
             return;
         }
-        let Some(body) = final_body(chunk, red, guard, &mut tally.borrow_mut(), &|b| guard.scan_text(b)) else {
+        let Some(body) = final_body(chunk, red, guard, &mut tally.borrow_mut(), &|b| guard.scan_value(b)) else {
             chunk.clear();
             return;
         };

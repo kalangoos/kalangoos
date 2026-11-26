@@ -1873,6 +1873,84 @@ fn a_conversation_picked_up_again_brings_its_taint_turns_and_outside_results() {
     assert!(p.conv.taint.is_empty() && !p.conv.secret);
 }
 
+/// The final pass looks at the span's values with the same exceptions as the first pass: what the first pass kept
+/// (a whole `${{ … }}` reference, a boarding pass, a bare "Password:" label, sampling settings) is not taken out
+/// because of how the serialized JSON around it happens to read.
+#[test]
+fn the_final_pass_keeps_what_the_first_pass_kept() {
+    let (red, guard) = (Redactor::default(), Redactor::default());
+    for t in [
+        "TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+        "password: ${{ secrets.DB_PASSWORD }}",
+        "Boarding pass: seat 14C",
+        "Boarding pass: seat 14C\n",
+        "Password:",
+        "Senha:",
+        "max_tokens = 512\ntemperature = 0.2",
+    ] {
+        let t = t.to_string();
+        assert_eq!(red.redact_str(&t, &mut crate::traces_redact::Stats::default()), t, "the first pass keeps {t:?}");
+        let mut tally = Tally::default();
+        let v = guarded_otlp(&span_with(Attr::Str(t.clone())), &red, &guard, &mut tally).expect("sent");
+        let text = v.to_string();
+        assert!(!text.contains("final_pass") && tally.hits == 0, "the final pass took {t:?} out: {text}");
+        let esc = serde_json::to_string(&t).unwrap();
+        assert!(text.contains(&esc[1..esc.len() - 1]), "the content is sent whole: {text}");
+    }
+    // (that it still stops what a weak first pass lets through is property_b_the_final_pass_alone_stops_…)
+}
+
+/// The whole path a body takes (first pass, final pass over the values, the last look) is linear: 1 MB of spans
+/// with minified JSON full of secret names costs about twice 512 KB, and stays far from the seconds per span that a
+/// quadratic look-behind cost (round 5: 4.2 s for one 62 KB string).
+#[test]
+fn a_megabyte_body_is_cleaned_in_linear_time() {
+    let (red, guard) = (Redactor::default(), Redactor::default());
+    let unit = r#"{"name":"ana","password":"x","token":"y"},"#;
+    let piece: String = format!("[{}]", unit.repeat(60_000 / unit.len()));
+    let time = |spans: usize| {
+        let sp: Vec<SpanData> = (0..spans).map(|_| span_with(Attr::Str(piece.clone()))).collect();
+        let chunk: Vec<&SpanData> = sp.iter().collect();
+        let t = Instant::now();
+        let mut tally = Tally::default();
+        let body = final_body(&chunk, &red, &guard, &mut tally, &|b| guard.scan_value(b));
+        assert!(body.is_some_and(|b| !b.contains("\"password\":\"x\"")), "the passwords are cut");
+        t.elapsed()
+    };
+    let half = time(8);
+    let full = time(16);
+    eprintln!("final pass, 512 KB: {half:?}, 1 MB: {full:?}");
+    assert!(full < Duration::from_secs(20), "1 MB took {full:?}");
+    assert!(full.as_secs_f64() < 3.0 * half.as_secs_f64().max(0.05), "not linear: {half:?} then {full:?}");
+}
+
+/// How often the final pass takes out content the first pass left whole, over the critic's corpora (run by hand:
+/// `cargo test … -- --ignored final_pass_rate --nocapture`).
+#[test]
+#[ignore = "reads the critic's corpora from the scratchpad"]
+fn final_pass_rate_on_texts_the_first_pass_keeps() {
+    let dir = "/tmp/claude-1000/-home-home-Documentos-repositorios/67b4c35b-2158-48d2-8770-ae5884d4592b/scratchpad/critico-rastros5/";
+    let (red, guard) = (Redactor::default(), Redactor::default());
+    for f in ["fp5.txt", "fp4.txt", "keep5.txt"] {
+        let src = std::fs::read_to_string(format!("{dir}{f}")).unwrap();
+        let texts: Vec<&str> = src.split("\n=====\n").map(|t| t.trim_end_matches('\n')).filter(|t| !t.is_empty()).collect();
+        let (mut kept, mut removed) = (0, 0);
+        for t in &texts {
+            if red.redact_str(t, &mut crate::traces_redact::Stats::default()) != *t {
+                continue;
+            }
+            kept += 1;
+            let mut tally = Tally::default();
+            let v = guarded_otlp(&span_with(Attr::Str(t.to_string())), &red, &guard, &mut tally);
+            if v.is_none_or(|v| v.to_string().contains("final_pass")) {
+                removed += 1;
+                eprintln!("REMOVED {f}: {t:?}");
+            }
+        }
+        eprintln!("FINAL PASS {f}: {removed} of {kept} texts the first pass keeps were taken out ({} texts)", texts.len());
+    }
+}
+
 /// The last look over the whole body before it is written: when it finds something, or fails, nothing is sent and
 /// the spans are counted as dropped.
 #[test]
@@ -1881,7 +1959,7 @@ fn the_last_look_over_the_body_stops_it_and_a_panic_in_it_does_too() {
     let sp = span_with(Attr::Str("um texto comum".into()));
     let chunk = [&sp];
     let mut t = Tally::default();
-    let body = final_body(&chunk, &red, &guard, &mut t, &|b| guard.scan_text(b)).expect("a clean body goes");
+    let body = final_body(&chunk, &red, &guard, &mut t, &|b| guard.scan_value(b)).expect("a clean body goes");
     assert!(body.contains("um texto comum") && t.dropped == 0);
     let mut t = Tally::default();
     assert!(final_body(&chunk, &red, &guard, &mut t, &|_| 1).is_none(), "a finding stops the body");
