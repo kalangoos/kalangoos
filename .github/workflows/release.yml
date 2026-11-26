@@ -6,19 +6,48 @@ name: Release
 #
 # The installable ISO (imagem/construir.sh) is built and tested in a VM on every run: the live session comes up with the
 # installer, the installer really installs onto an empty virtual disk, and the installed system boots into its
-# session. A tag attaches the tested ISO to the draft. The kernel is built in its own job and cached by its
-# configuration (kernel/config-*), so most runs reuse it.
+# session. A tag attaches the tested ISO to the draft.
+#
+# The pieces of the ISO that do not depend on each other are built in jobs that run at the same time, and the ISO job only
+# assembles them: the OS binaries (binarios), the kernel, niri, llama.cpp + Moli, Kalango Remote, Kalango Audio and the
+# root filesystem of Ubuntu packages (rootfs). Each piece is cached by everything that changes its result (the key is
+# written in its job), so a run that changes nothing in a piece reuses it. This workflow has no pull request trigger:
+# it only runs on a tag, on a schedule or a push of main, and by hand, so no pull request can restore or write these caches.
+#
+# "Somente as peças": a push to main (paths above), the every-other-day schedule and a manual run with somente-pecas build
+# only the cached pieces and save their caches under refs/heads/main, which is the only place a tag run can restore them
+# from (a cache is visible to the ref that saved it and to the default branch; a tag does not see another tag's or a
+# branch's). They never assemble the ISO, upload release artifacts or publish.
 on:
   push:
     tags: ["v*"]
+    # a push to main that changes what the cached pieces are made of only warms the caches (see "somente as peças")
+    branches: [main]
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/actions/**"
+      - "imagem/dependencias.sh"
+      - "imagem/pacotes.txt"
+      - "imagem/construir.sh"
+      - "imagem/manifesto-pecas.sh"
+      - "poc/setup-deps.sh"
+      - "kernel/**"
   schedule:
+    # Mondays: the whole release run (ISO included), the dry run that finds release-only breakage
     - cron: "40 4 * * 1"
+    # every other day: only the pieces, so the caches of main are always fresh when a tag arrives (a cache is evicted after
+    # 7 days without access, and the keys of some pieces carry the month or the ISO week)
+    - cron: "40 3 * * 0,2-6"
   workflow_dispatch:
     inputs:
       versao:
         description: "Versão para um teste, por exemplo 0.1.0-dev.1 (vazio: a do Cargo.toml)"
         type: string
         default: ""
+      somente-pecas:
+        description: "Só constrói as peças e grava os caches (sem montar a ISO nem os binários); use depois de mesclar na main"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,10 +59,14 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # the native apps that live in their own repositories, at fixed commits (bump them here, in their own pull request)
+  REMOTE_REF: e1795114c4c5cb4959731e0461e7adaf7daaad5a
+  AUDIO_REF: 3e68e3437356086e2e108d3dded0ed9ddfc688c2
 
 jobs:
   binarios:
     name: Binários (linux x86_64)
+    if: ${{ !(github.event_name == 'push' && github.ref_type == 'branch' || inputs.somente-pecas || github.event.schedule == '40 3 * * 0,2-6') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     outputs:
@@ -94,6 +127,22 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 14
+      # the ISO job reuses these instead of compiling the same crates a second time (it adds kalango-tela, which the
+      # tarball does not carry)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: os-binarios
+          path: |
+            target/release/kalango-shell
+            target/release/kalangod
+            target/release/kalango-agente
+            target/release/kalango-aprovacao
+            target/release/kalango-entrada
+            target/release/kalango-instalador
+            target/release/kalango-tela
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 1
 
   kernel:
     name: Kernel do KalangoOS
@@ -133,11 +182,12 @@ jobs:
           KALANGO_KERNEL_SEM_DBG=1 kernel/build.sh "$v" || { tail -80 "kernel/out/build-$v.log"; exit 1; }
           rm -f kernel/out/linux-headers-*.deb kernel/out/linux-libc-dev_*.deb
 
-  imagem:
-    name: ISO (montar e instalar numa VM)
-    needs: [binarios, kernel]
+  niri:
+    name: Peça da imagem (niri)
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 60
+    outputs:
+      chave: ${{ steps.chave.outputs.chave }}
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
@@ -146,74 +196,397 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Espaço em disco
-        run: |
-          # the image, its squashfs, the ISO and the test VM's disk need ~15 GB beside the cargo build
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo mkdir -p /mnt/kalango && sudo chown "$USER" /mnt/kalango
-          df -h / /mnt
-      - name: Kernel (do cache)
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # key: the script that pins the niri commit and builds it + the install of the build environment (the toolchain
+      # version lives in the preparar action) + the month, so system library fixes are picked up at least monthly
+      - name: Chave do cache
+        id: chave
+        env:
+          HASH: ${{ hashFiles('imagem/dependencias.sh', '.github/actions/preparar/action.yml', '.github/actions/apt/action.yml') }}
+        run: echo "chave=niri-${HASH}-$(date +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - name: Cache do niri
+        id: cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: kernel/out/*.deb
-          key: ${{ needs.kernel.outputs.chave }}
-          fail-on-cache-miss: true
+          path: |
+            poc/.deps/src/niri/target/release/niri
+            poc/.deps/src/niri/resources/niri-session
+            poc/.deps/src/niri/resources/niri.service
+            poc/.deps/src/niri/resources/niri-shutdown.target
+            poc/.deps/root/usr/lib/x86_64-linux-gnu/libdisplay-info.so.1
+            pecas-manifesto/niri.txt
+          key: ${{ steps.chave.outputs.chave }}
       - uses: ./.github/actions/preparar
+        if: steps.cache.outputs.cache-hit != 'true'
         with:
-          cache-key: imagem
-      - name: Ferramentas da imagem
+          gtk: "false"
+          cargo-cache: "false"
+          pacotes-extras: libudev-dev libgbm-dev libxkbcommon-dev libegl1-mesa-dev libinput-dev libseat-dev libpipewire-0.3-dev libpango1.0-dev libdisplay-info-dev libdbus-1-dev libsystemd-dev
+      - name: Compilar o niri
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          sudo apt-get -o Acquire::Retries=3 install -y -q --no-install-recommends \
-            mmdebstrap squashfs-tools fakeroot e2fsprogs xorriso mtools grub-pc-bin grub-efi-amd64-bin \
-            qemu-system-x86 qemu-utils ovmf cmake libvulkan-dev \
-            libudev-dev libgbm-dev libxkbcommon-dev libegl1-mesa-dev libinput-dev libseat-dev libpipewire-0.3-dev \
-            libpango1.0-dev libdisplay-info-dev libdbus-1-dev libsystemd-dev
-          # mmdebstrap --mode=unshare builds the image without root: it needs subordinate ids for this user and user
+          imagem/dependencias.sh niri
+          # (the niri was linked against the Ubuntu 24.04 libdisplay-info.so.1: the image build copies it along)
+          mkdir -p poc/.deps/root/usr/lib/x86_64-linux-gnu
+          cp -L /usr/lib/x86_64-linux-gnu/libdisplay-info.so.1 poc/.deps/root/usr/lib/x86_64-linux-gnu/
+          # (only the files the cache keeps: the rest of the resources folder is not restored)
+          r=poc/.deps/src/niri/resources
+          imagem/manifesto-pecas.sh gravar niri poc/.deps/src/niri/target/release/niri "$r/niri-session" "$r/niri.service" \
+            "$r/niri-shutdown.target" poc/.deps/root/usr/lib/x86_64-linux-gnu/libdisplay-info.so.1
+      - name: Conferir o manifesto
+        run: imagem/manifesto-pecas.sh conferir niri
+
+  llama:
+    name: Peça da imagem (llama.cpp e Moli)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      chave: ${{ steps.chave.outputs.chave }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Chave do cache
+        id: chave
+        env:
+          HASH: ${{ hashFiles('imagem/dependencias.sh', 'poc/setup-deps.sh', '.github/actions/apt/action.yml') }}
+        run: echo "chave=llama-${HASH}-$(date +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - name: Cache do llama.cpp e do Moli
+        id: cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            poc/.deps/src/llama.cpp/build-imagem/bin/llama-server
+            poc/.deps/src/llama.cpp/build-imagem/bin/lib*.so*
+            poc/.deps/moli
+            pecas-manifesto/llama.txt
+          key: ${{ steps.chave.outputs.chave }}
+      - uses: ./.github/actions/apt
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          pacotes: build-essential pkg-config clang cmake libvulkan-dev
+      - name: Compilar
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          # glslc and the SPIR-V headers (apt-get download, no sudo) and Moli; then llama.cpp itself
+          KALANGO_SEM_LAYER_SHELL=1 KALANGO_DEPS="glslc spirv-headers" poc/setup-deps.sh
+          imagem/dependencias.sh llama
+          imagem/manifesto-pecas.sh gravar llama poc/.deps/src/llama.cpp/build-imagem/bin/llama-server \
+            poc/.deps/src/llama.cpp/build-imagem/bin/lib*.so* poc/.deps/moli
+      - name: Conferir (o Moli ausente não derruba a montagem da imagem, só a deixa sem ele)
+        run: |
+          test -x poc/.deps/moli/moli && test -x poc/.deps/src/llama.cpp/build-imagem/bin/llama-server
+          imagem/manifesto-pecas.sh conferir llama
+
+  remote:
+    name: Kalango Remote
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      chave: ${{ steps.chave.outputs.chave }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # key: the pinned commit + the build environment (toolchain and system libraries are defined in the two actions)
+      # the month too: deps.sh downloads the codec libraries (libvpx...) from the Ubuntu archive at build time
+      - name: Chave do cache
+        id: chave
+        env:
+          HASH: ${{ hashFiles('.github/actions/preparar/action.yml', '.github/actions/apt/action.yml') }}
+        run: echo "chave=remote-${REMOTE_REF}-${HASH}-$(date +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: kalangoos/kalango-remote
+          ref: ${{ env.REMOTE_REF }}
+          path: apps/kalango-remote
+          # (RustDesk's hbb_common is a submodule)
+          submodules: true
+          persist-credentials: false
+      - name: Cache do Kalango Remote
+        id: cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            apps/kalango-remote/target/release/kalango-remote
+            apps/kalango-remote/target/release/kalango-remote-core
+            apps/kalango-remote/kalangoos/.deps/bin/cloudflared
+            apps/kalango-remote/kalangoos/.deps/root/usr/lib/x86_64-linux-gnu/libvpx.so.9
+            pecas-manifesto/remote.txt
+          key: ${{ steps.chave.outputs.chave }}
+      # (no rust-cache here: the RustDesk core's target is ~5 GB and would eat the 10 GB cache budget of the repository;
+      # the binaries cached by commit already skip the build, and a commit bump pays one full build)
+      - uses: ./.github/actions/preparar
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          cargo-cache: "false"
+          # the RustDesk core is GTK 3 (its process runs apart from the GTK 4 window)
+          pacotes-extras: libgtk-3-dev
+      - name: Compilar
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          # (no -u: env.sh is sourced)
+          set -eo pipefail
+          # the RustDesk core's codec libraries and cloudflared (pinned with its SHA-256), without sudo
+          cd apps/kalango-remote
+          kalangoos/scripts/deps.sh
+          kalangoos/scripts/cloudflared.sh
+          source kalangoos/scripts/env.sh
+          cargo build --release --locked -p kalango-remote -p kalango-remote-core --features kalango-remote-core/linux-pkg-config
+          # (libvpx.so.9 is a link into the extracted package: the cache keeps files, so keep the file itself)
+          so=kalangoos/.deps/root/usr/lib/x86_64-linux-gnu/libvpx.so.9
+          cp -L "$so" "$so.tmp" && mv -f "$so.tmp" "$so"
+          cd ../..
+          imagem/manifesto-pecas.sh gravar remote apps/kalango-remote/target/release/kalango-remote \
+            apps/kalango-remote/target/release/kalango-remote-core apps/kalango-remote/kalangoos/.deps/bin/cloudflared "apps/kalango-remote/$so"
+      - name: Conferir o manifesto
+        run: imagem/manifesto-pecas.sh conferir remote
+
+  audio:
+    name: Kalango Audio
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      chave: ${{ steps.chave.outputs.chave }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Chave do cache
+        id: chave
+        env:
+          HASH: ${{ hashFiles('.github/actions/preparar/action.yml', '.github/actions/apt/action.yml') }}
+        run: echo "chave=audio-${AUDIO_REF}-${HASH}-$(date +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: kalangoos/kalango-audio
+          ref: ${{ env.AUDIO_REF }}
+          path: apps/kalango-audio
+          persist-credentials: false
+      - name: Cache do Kalango Audio
+        id: cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            apps/kalango-audio/target/release/kalango-audio
+            pecas-manifesto/audio.txt
+          key: ${{ steps.chave.outputs.chave }}
+      - uses: ./.github/actions/preparar
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          cargo-cache: "false"
+      - name: Compilar
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          (cd apps/kalango-audio && cargo build --release --locked)
+          imagem/manifesto-pecas.sh gravar audio apps/kalango-audio/target/release/kalango-audio
+      - name: Conferir o manifesto
+        run: imagem/manifesto-pecas.sh conferir audio
+
+  rootfs:
+    name: Raiz de pacotes do Ubuntu
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      chave: ${{ steps.chave.outputs.chave }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # key: the package list and the script that holds the mmdebstrap options + the ISO week: the archive moves on (security
+      # updates), so the packages are re-resolved at least weekly (the weekly run on main refreshes it)
+      - name: Chave do cache
+        id: chave
+        env:
+          HASH: ${{ hashFiles('imagem/pacotes.txt', 'imagem/construir.sh', '.github/actions/apt/action.yml') }}
+        run: echo "chave=rootfs-${HASH}-$(date +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Cache da raiz
+        id: cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            rootfs/raiz.tar
+            pecas-manifesto/rootfs.txt
+          key: ${{ steps.chave.outputs.chave }}
+      - uses: ./.github/actions/apt
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          pacotes: mmdebstrap
+      - name: Montar a raiz
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          KALANGO_IMAGEM_ISO: "1"
+          KALANGO_IMAGEM_TMP: /mnt/kalango/build
+        run: |
+          set -euo pipefail
+          # mmdebstrap --mode=unshare builds the root without root: it needs subordinate ids for this user and user
           # namespaces, which Ubuntu 24.04 restricts through AppArmor
+          grep -q "^$USER:" /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
+          grep -q "^$USER:" /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo mkdir -p /mnt/kalango && sudo chown "$USER" /mnt/kalango
+          mkdir -p rootfs
+          KALANGO_IMAGEM_BASE="$PWD/rootfs/raiz.tar" imagem/construir.sh base
+          imagem/manifesto-pecas.sh gravar rootfs rootfs/raiz.tar
+      - name: Conferir o manifesto
+        run: imagem/manifesto-pecas.sh conferir rootfs
+
+  imagem:
+    name: ISO (montar e instalar numa VM)
+    needs: [binarios, kernel, niri, llama, remote, audio, rootfs]
+    if: ${{ !(github.event_name == 'push' && github.ref_type == 'branch' || inputs.somente-pecas || github.event.schedule == '40 3 * * 0,2-6') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Espaço em disco (apagando em segundo plano, enquanto o resto prepara)
+        run: |
+          # the image, its squashfs, the ISO and the test VM's disk need ~15 GB
+          sudo mkdir -p /mnt/kalango && sudo chown "$USER" /mnt/kalango
+          nohup sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL > /dev/null 2>&1 &
+      - uses: ./.github/actions/apt
+        with:
+          pacotes: >-
+            mmdebstrap squashfs-tools fakeroot e2fsprogs xorriso mtools grub-pc-bin grub-efi-amd64-bin
+            qemu-system-x86 qemu-utils ovmf python3
+      - name: Usuário sem root, namespaces e KVM
+        run: |
+          set -euo pipefail
           grep -q "^$USER:" /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
           grep -q "^$USER:" /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           # the VM test: KVM for this user (the runner has the device, not the permission)
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
-      - name: Peças da imagem (niri, llama.cpp, Moli)
-        run: imagem/dependencias.sh
-      - name: Binários
-        run: >-
-          cargo build --release --locked
-          -p kalango-shell -p kalangod -p kalango-agente -p kalango-aprovacao -p kalango-entrada -p kalango-instalador -p kalango-tela
-      # the native apps that live in their own repositories, at fixed commits (bump them here, in their own pull request)
+      # the native apps' repositories at the pinned commits (the cache below brings the compiled files; the icons and
+      # launchers come from the source)
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kalangoos/kalango-remote
-          ref: e1795114c4c5cb4959731e0461e7adaf7daaad5a
+          ref: ${{ env.REMOTE_REF }}
           path: apps/kalango-remote
-          # (RustDesk's hbb_common is a submodule)
-          submodules: true
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kalangoos/kalango-audio
-          ref: 3e68e3437356086e2e108d3dded0ed9ddfc688c2
+          ref: ${{ env.AUDIO_REF }}
           path: apps/kalango-audio
           persist-credentials: false
-      - name: Kalango Remote e Kalango Audio
+      # every piece comes from the job that built it, by the exact key; a miss is an error, never a silent rebuild
+      - name: Kernel (do cache)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: kernel/out/*.deb
+          key: ${{ needs.kernel.outputs.chave }}
+          fail-on-cache-miss: true
+      - name: Raiz de pacotes (do cache)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            rootfs/raiz.tar
+            pecas-manifesto/rootfs.txt
+          key: ${{ needs.rootfs.outputs.chave }}
+          fail-on-cache-miss: true
+      - name: niri (do cache)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            poc/.deps/src/niri/target/release/niri
+            poc/.deps/src/niri/resources/niri-session
+            poc/.deps/src/niri/resources/niri.service
+            poc/.deps/src/niri/resources/niri-shutdown.target
+            poc/.deps/root/usr/lib/x86_64-linux-gnu/libdisplay-info.so.1
+            pecas-manifesto/niri.txt
+          key: ${{ needs.niri.outputs.chave }}
+          fail-on-cache-miss: true
+      - name: llama.cpp e Moli (do cache)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            poc/.deps/src/llama.cpp/build-imagem/bin/llama-server
+            poc/.deps/src/llama.cpp/build-imagem/bin/lib*.so*
+            poc/.deps/moli
+            pecas-manifesto/llama.txt
+          key: ${{ needs.llama.outputs.chave }}
+          fail-on-cache-miss: true
+      - name: Kalango Remote (do cache)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            apps/kalango-remote/target/release/kalango-remote
+            apps/kalango-remote/target/release/kalango-remote-core
+            apps/kalango-remote/kalangoos/.deps/bin/cloudflared
+            apps/kalango-remote/kalangoos/.deps/root/usr/lib/x86_64-linux-gnu/libvpx.so.9
+            pecas-manifesto/remote.txt
+          key: ${{ needs.remote.outputs.chave }}
+          fail-on-cache-miss: true
+      - name: Kalango Audio (do cache)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            apps/kalango-audio/target/release/kalango-audio
+            pecas-manifesto/audio.txt
+          key: ${{ needs.audio.outputs.chave }}
+          fail-on-cache-miss: true
+      # the OS binaries of this very run (job binarios): the same crates, compiled once
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: os-binarios
+          path: target/release
+      - name: Conferir as peças (manifestos e arquivos)
         run: |
           set -euo pipefail
-          # the RustDesk core is GTK 3 (its process runs apart from the GTK 4 window)
-          sudo apt-get -o Acquire::Retries=3 install -y -q --no-install-recommends libgtk-3-dev
-          # Remote: the RustDesk core's codec libraries and cloudflared (pinned with its SHA-256), without sudo
-          (cd apps/kalango-remote && kalangoos/scripts/deps.sh && kalangoos/scripts/cloudflared.sh \
-            && source kalangoos/scripts/env.sh \
-            && cargo build --release --locked -p kalango-remote -p kalango-remote-core --features kalango-remote-core/linux-pkg-config)
-          (cd apps/kalango-audio && cargo build --release --locked)
+          # each cached piece against the manifest written by the run that built it (SHA-256 of every file); the manifests
+          # travel with the ISO (PROVENIENCIA-PECAS.txt), so the published ISO says which run built each piece
+          for p in niri llama remote audio rootfs; do imagem/manifesto-pecas.sh conferir "$p"; done
+          mkdir -p dist-iso
+          { echo "KalangoOS: peças da ISO vindas de cache, com o run e o commit que as construíram e o SHA-256 de cada arquivo."
+            echo "A atestação de origem do GitHub cobre a montagem (este run); estas peças foram construídas em runs anteriores."
+            echo; cat pecas-manifesto/*.txt; } > dist-iso/PROVENIENCIA-PECAS.txt
+          chmod +x target/release/kalango-* target/release/kalangod poc/.deps/src/niri/target/release/niri \
+            poc/.deps/src/llama.cpp/build-imagem/bin/llama-server poc/.deps/moli/moli \
+            apps/kalango-remote/target/release/kalango-remote apps/kalango-remote/target/release/kalango-remote-core \
+            apps/kalango-remote/kalangoos/.deps/bin/cloudflared apps/kalango-audio/target/release/kalango-audio
+          for f in target/release/kalango-shell target/release/kalangod target/release/kalango-agente target/release/kalango-aprovacao \
+                   target/release/kalango-entrada target/release/kalango-instalador target/release/kalango-tela \
+                   poc/.deps/src/niri/target/release/niri poc/.deps/moli/moli rootfs/raiz.tar \
+                   apps/kalango-remote/kalangoos/.deps/root/usr/lib/x86_64-linux-gnu/libvpx.so.9; do
+            [ -s "$f" ] || { echo "::error::falta $f"; exit 1; }
+          done
+          ls -l kernel/out/*.deb
+          while pgrep -x rm > /dev/null; do sleep 2; done   # the disk cleanup started at the beginning
+          df -h / /mnt
       - name: Montar a ISO
         env:
           KALANGO_REMOTE_DIR: ${{ github.workspace }}/apps/kalango-remote
           KALANGO_AUDIO_DIR: ${{ github.workspace }}/apps/kalango-audio
           KALANGO_IMAGEM_ISO: "1"
           KALANGO_IMAGEM_TMP: /mnt/kalango/build
+          KALANGO_IMAGEM_BASE: ${{ github.workspace }}/rootfs/raiz.tar
           # no local model in the ISO the CI publishes (its licence is being reviewed): the agent gets it later
           KALANGO_MODELOS: /nenhum
         run: imagem/construir.sh
@@ -273,6 +646,7 @@ jobs:
           subject-path: |
             dist/*.tar.gz
             dist/*.iso
+            dist/PROVENIENCIA-PECAS.txt
       - name: Rascunho no GitHub
         env:
           GH_TOKEN: ${{ github.token }}
