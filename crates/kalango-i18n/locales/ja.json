@@ -6395,6 +6395,7 @@
  "another remote command of this conversation is still running: wait for it": "この会話の別のリモートコマンドがまだ実行中です：終わるまで待ってください",
  "too many remote calls to {machine} in a minute (at most {max}): wait a little": "{machine} へのリモート呼び出しが1分間に多すぎます（最大 {max} 回）：少し待ってください",
  "Kalango Remote is not installed": "Kalango Remote がインストールされていません",
+ "Kalango Remote at {path} is not safe to run: it must belong to root and not be writable by anyone else": "{path} の Kalango Remote は実行するのに安全ではありません：root が所有し、他の誰も書き込めない必要があります",
  "Kalango Remote did not answer: {e}": "Kalango Remote が応答しませんでした：{e}",
  "no saved machine with the id “{id}”: see remoto.maquinas": "id「{id}」の保存済みマシンはありません：remoto.maquinas を参照してください",
  "not a machine id: use one from remoto.maquinas": "マシンの id ではありません：remoto.maquinas の id を使ってください",

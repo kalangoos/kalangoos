@@ -244,22 +244,49 @@ fn rate_ok(peer: &Peer, machine: &str, max: usize, kind: &str) -> Result<(), Str
 
 // ---------------------------------------------------------------- Kalango Remote
 
-fn program(peer: &Peer) -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("KALANGO_REMOTE").map(PathBuf::from).filter(|p| p.is_file()) {
-        return Some(p);
+/// Where Kalango Remote may be run from: system places only. Never a folder of the person (`~/.local/bin`) or
+/// `/usr/local/bin`: an agent writes there, and kalangod is not confined like the agent is.
+const SYSTEM_REMOTE: [&str; 2] = ["/usr/bin/kalango-remote", "/usr/libexec/kalango/kalango-remote"];
+
+/// What kalangod may execute, judged on the OPEN file (fstat of the descriptor, not of the path, so it cannot be swapped
+/// in between): a regular file that belongs to root and that no group or other can write.
+fn check_executable(file: &std::fs::File, uid_ok: u32) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let m = file.metadata().map_err(|e| e.to_string())?;
+    if m.is_file() && m.uid() == uid_ok && m.mode() & 0o022 == 0 && m.mode() & 0o111 != 0 {
+        Ok(())
+    } else {
+        Err(String::new())
     }
-    let fixed = [
-        PathBuf::from("/usr/bin/kalango-remote"),
-        PathBuf::from("/usr/local/bin/kalango-remote"),
-        peer.passwd_home.join(".local/bin/kalango-remote"),
-    ];
-    fixed.into_iter().find(|p| p.is_file())
+}
+
+/// The first of `candidates` that exists; it must pass `check_executable` (owner root) or the call is refused.
+fn pick(candidates: &[PathBuf]) -> Result<PathBuf, String> {
+    for c in candidates {
+        let Ok(file) = std::fs::File::open(c) else { continue };
+        return match check_executable(&file, 0) {
+            Ok(()) => Ok(c.clone()),
+            Err(_) => Err(trf("Kalango Remote at {path} is not safe to run: it must belong to root and not be writable by anyone else",
+                &[("path", c.display().to_string())],
+            )),
+        };
+    }
+    Err(tr("Kalango Remote is not installed").to_string())
+}
+
+/// `KALANGO_REMOTE` is read from kalangod's own environment (set by whoever starts the service, never by an agent:
+/// tests use it for their stand-in); otherwise only the system places above.
+fn program() -> Result<PathBuf, String> {
+    if let Some(p) = std::env::var_os("KALANGO_REMOTE").map(PathBuf::from).filter(|p| p.is_file()) {
+        return Ok(p);
+    }
+    pick(&SYSTEM_REMOTE.map(PathBuf::from))
 }
 
 /// Runs `kalango-remote ARGS` as the person (their vault and machines), with what it needs from the environment and
 /// nothing else, and returns the JSON line it printed.
 fn remote(peer: &Peer, args: &[&str]) -> Result<Value, String> {
-    let exe = program(peer).ok_or_else(|| tr("Kalango Remote is not installed").to_string())?;
+    let exe = program()?;
     let mut cmd = Command::new(exe);
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if nix::unistd::geteuid().is_root() && peer.uid != 0 {
@@ -710,5 +737,32 @@ mod tests {
             let (a, b) = (std::fs::read(dir.join(theirs)).unwrap(), std::fs::read(here.join(ours)).unwrap());
             assert!(a == b, "{theirs} (Remote) and {ours} (kalangod) differ");
         }
+    }
+
+    #[test]
+    fn only_a_root_owned_file_nobody_else_can_write_is_run() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let home_bin = dir.path().join("home/.local/bin");
+        std::fs::create_dir_all(&home_bin).unwrap();
+        // a fake planted in the person's own folder (they own it, 0755): never run
+        let fake = home_bin.join("kalango-remote");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = pick(std::slice::from_ref(&fake)).unwrap_err();
+        assert!(err.contains("not safe to run"), "{err}");
+        // a system binary with mode 0777 is refused as well (a copy of a root-owned file made writable here is still the person's)
+        let open = dir.path().join("open");
+        std::fs::write(&open, "x").unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(check_executable(&std::fs::File::open(&open).unwrap(), 0).is_err());
+        assert!(check_executable(&std::fs::File::open(&open).unwrap(), nix::unistd::getuid().as_raw()).is_err(), "writable by others");
+        // the legitimate one: owned by root, 0755 (any system binary stands for it)
+        let good = PathBuf::from("/usr/bin/true");
+        assert_eq!(pick(&[dir.path().join("missing"), good.clone()]).unwrap(), good);
+        // nothing there: not installed
+        assert!(pick(&[dir.path().join("missing")]).unwrap_err().contains("not installed"));
+        // the places searched are system ones only
+        assert!(SYSTEM_REMOTE.iter().all(|p| p.starts_with("/usr/") && !p.contains("local")));
     }
 }

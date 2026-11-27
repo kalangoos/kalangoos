@@ -6395,6 +6395,7 @@
  "another remote command of this conversation is still running: wait for it": "une autre commande distante de cette conversation est encore en cours : attendez-la",
  "too many remote calls to {machine} in a minute (at most {max}): wait a little": "trop d'appels distants vers {machine} en une minute (au plus {max}) : attendez un peu",
  "Kalango Remote is not installed": "Kalango Remote n'est pas installé",
+ "Kalango Remote at {path} is not safe to run: it must belong to root and not be writable by anyone else": "Kalango Remote dans {path} n'est pas sûr à exécuter : il doit appartenir à root et ne pas être modifiable par quelqu'un d'autre",
  "Kalango Remote did not answer: {e}": "Kalango Remote n'a pas répondu : {e}",
  "no saved machine with the id “{id}”: see remoto.maquinas": "aucune machine enregistrée avec l'id « {id} » : voir remoto.maquinas",
  "not a machine id: use one from remoto.maquinas": "ce n'est pas un id de machine : utilisez-en un de remoto.maquinas",

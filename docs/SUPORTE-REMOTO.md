@@ -95,6 +95,9 @@ sem `-f`, sem `--`, sem opção que não esteja na forma. `--help`, `-o ProxyCom
   `restart`…); senão a tarefa para antes de perguntar.
 * O Remote repete as verificações (perfil, formas da lista para `consult`, caracteres de controle) porque
   `kalango-remote ssh-run` pode ser chamado por qualquer processo seu: o `kalangod` não é a única barreira.
+* O `kalangod` só executa o `kalango-remote` de `/usr/bin` ou `/usr/libexec/kalango`, e só se o arquivo aberto for de
+  root e não gravável por grupo ou outros (conferido no descritor, não no caminho). Nunca `~/.local/bin` nem
+  `/usr/local/bin`: um agente grava ali. `KALANGO_REMOTE` só vale no ambiente do próprio serviço (usado pelos testes).
 * Os verbos do comando (`restart`, `stop`, `disable`, `--now`, `daemon-reload`…) também precisam vir de você: o motor só
   aceita um verbo se você o pediu ("reinicie" → `restart`, "pare" → `stop`…); o que uma máquina imprimiu não conta.
 

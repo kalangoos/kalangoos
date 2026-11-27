@@ -6395,6 +6395,7 @@
  "another remote command of this conversation is still running: wait for it": "此对话的另一条远程命令仍在运行：请等待",
  "too many remote calls to {machine} in a minute (at most {max}): wait a little": "一分钟内对 {machine} 的远程调用过多（最多 {max} 次）：请稍等",
  "Kalango Remote is not installed": "未安装 Kalango Remote",
+ "Kalango Remote at {path} is not safe to run: it must belong to root and not be writable by anyone else": "{path} 处的 Kalango Remote 运行不安全：它必须属于 root，且不能被其他任何人写入",
  "Kalango Remote did not answer: {e}": "Kalango Remote 没有响应：{e}",
  "no saved machine with the id “{id}”: see remoto.maquinas": "没有 id 为“{id}”的已保存机器：请查看 remoto.maquinas",
  "not a machine id: use one from remoto.maquinas": "不是机器 id：请使用 remoto.maquinas 中的一个",
