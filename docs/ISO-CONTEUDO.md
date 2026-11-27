@@ -281,17 +281,22 @@ parado não gasta nada; com o VirtualDesk fechado, nenhum processo roda (as máq
   kernel nega (`Operation not permitted`). A janela que resta: o primeiro segundo depois de a sessão começar, antes de
   qualquer agente existir.
   **A guarda e o banco dos Fluxos** (achado da segunda VM, 2026-11-27): com a guarda de fato ativa e o cgroup dos agentes
-  existindo desde o início da sessão, o `kalango-fluxosd` (que roda na fatia dos agentes) **não abria o próprio banco**
-  (`~/.local/share/kalango/fluxos` é pasta protegida dos agentes): o serviço falhava ao subir. Antes isso passava
-  despercebido porque a guarda ainda estava desligada, e depois porque a primeira abertura caía na janela de 1 s. A correção:
-  o serviço roda na fatia `kalango-agentes-plataforma.slice`, **filha** da dos agentes (para a política do `kalangod`, que
-  reconhece agentes por `/kalango-agentes.slice`, nada muda) mas **isenta da guarda do kernel** (mapa `CG_ISENTOS`; o programa
-  olha os ancestrais nos níveis 1 a 8, e quem tem uma fatia isenta entre eles não é tratado como agente). Quem escolhe a fatia
-  é um drop-in que a imagem instala (`kalango-fluxos.service.d/10-plataforma.conf`); a unidade vazia e ativa desde o início da
-  sessão é `kalango-agentes-plataforma.slice`. **Decisão de segurança a confirmar**: um processo que um agente pusesse nessa fatia
-  (`systemd-run --user --slice=kalango-agentes-plataforma.slice`) também seria isento, como já escapa da guarda quem se põe numa
-  fatia qualquer; o que segura o agente é o Landlock e a política do `kalangod`, a guarda do kernel é a camada a mais. Provado
-  na VM: o serviço sobe nessa fatia, responde `agentes.listar` e, no mesmo boot, um processo na fatia dos agentes continua negado.
+  existindo desde o início da sessão, o `kalango-fluxosd` (que roda na fatia dos agentes, porque é por ela que a política do
+  `kalangod` o reconhece) **não abria o próprio banco** (`~/.local/share/kalango/fluxos` é pasta protegida dos agentes): o
+  serviço falhava ao subir. Antes isso passava despercebido porque a guarda estava desligada (o verificador recusava o programa)
+  e, depois, porque a primeira abertura caía na janela de 1 s.
+  **Decisão** (a revisão de segurança derrubou cada isenção que tentei): uma exceção para o serviço, seja por cgroup (um cgroup
+  irmão, o cgroup folha, o ancestral), por programa (o inode do `kalango-fluxosd`) ou por PID, pode ser contornada por um
+  processo da mesma pessoa que entre no cgroup (`cgroup.procs`), copie o programa ou o execute com `LD_PRELOAD`; e a exceção
+  por PID só existe depois de o serviço nascer, que é justamente quando ele abre o banco. Por isso **não há isenção**: a pasta
+  `~/.local/share/kalango/fluxos` (e só ela: `FORA_DA_GUARDA_DO_KERNEL` em `guard.rs`) sai da guarda do kernel e continua
+  protegida dos agentes pela política do `kalangod` e pelo Landlock (`policy::KALANGO_PROTECTED`, que o teste confere). O que
+  se perde: um processo de agente que escapasse do Landlock (sem Landlock, na fatia dos agentes) abriria o banco dos Fluxos;
+  ele já escapa da guarda do kernel saindo da fatia (a guarda é por cgroup), então a guarda nunca foi a fronteira. Os 7 outros
+  protegidos, a pasta do Mind e `~/.ssh` incluídos, seguem na guarda do kernel. **Para fechar esse resto de verdade** é preciso
+  outra identidade: o serviço dos Fluxos como outro usuário do sistema, dono da pasta (decisão dos mantenedores; não feita aqui).
+  Provado na VM: com a guarda ativa o serviço sobe, abre o banco e responde `agentes.listar`, e um comando na fatia dos agentes
+  continua sem abrir `~/.ssh` nem a pasta do Mind.
   **Limite e falha fechada**: a primeira versão guardava 64 usuários numa tabela e os excedentes ficavam sem proteção, em silêncio.
   Agora o limite é o do mapa (4096 cgroups de agentes) e, se um dia passar disso, o `kalangod` conta quantos não couberam
   (`plano_agentes`), `kernel.seguranca` mostra `guarda_ebpf_completa: false` e a linha do tempo recebe o alerta "a guarda cobre só

@@ -17,7 +17,6 @@
 #define MAX_DEPTH 24
 #define NAME_LEN 64
 #define MAX_AGENTES 4096
-#define MAX_ISENTOS 256
 
 // Só os campos usados; CO-RE acha a posição real no kernel em execução.
 struct super_block { __u32 s_dev; } __attribute__((preserve_access_index));
@@ -49,10 +48,6 @@ struct { __uint(type, BPF_MAP_TYPE_ARRAY); __uint(max_entries, 3); __type(key, _
 // (user.slice/user-UID.slice/user@UID.service/kalango.slice/kalango-agentes.slice), onde roda o kalango-fluxosd e o que
 // `systemd-run --user` cria. id do cgroup -> 1; o kalangod os registra e tira (varredura de 1 s). Sem limite por usuário.
 struct { __uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, MAX_AGENTES); __type(key, __u64); __type(value, __u8); } CG_AGENTES SEC(".maps");
-// a plataforma dos agentes (kalango-agentes.slice/kalango-agentes-plataforma.slice, onde roda o kalango-fluxosd): fica DENTRO
-// da fatia dos agentes para a política do kalangod, mas é a dona das pastas que a guarda protege dos agentes (o banco dos
-// Fluxos): quem tem este cgroup entre os ancestrais não é tratado como agente. id do cgroup -> 1.
-struct { __uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, MAX_ISENTOS); __type(key, __u64); __type(value, __u8); } CG_ISENTOS SEC(".maps");
 // pastas protegidas, por (dispositivo, inode)
 struct { __uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, 4096); __type(key, struct chave_inode); __type(value, __u8); } PROTEGIDAS SEC(".maps");
 struct { __uint(type, BPF_MAP_TYPE_RINGBUF); __uint(max_entries, 1 << 20); } EVENTOS SEC(".maps");
@@ -62,16 +57,11 @@ struct { __uint(type, BPF_MAP_TYPE_RINGBUF); __uint(max_entries, 1 << 20); } EVE
 // guarda inteira ficava desligada). O cgroup dos agentes fica no nível 2 (sistema) ou 5 (gerenciador de usuário); os níveis
 // 1 a 8 cobrem os dois com folga. Um nível além da profundidade do processo devolve id 0, que não está no mapa.
 #define NIVEL(n) { __u64 cg = bpf_get_current_ancestor_cgroup_id(n); \
-    if (cg) { \
-        if (bpf_map_lookup_elem(&CG_ISENTOS, &cg)) return 0; \
-        if (bpf_map_lookup_elem(&CG_AGENTES, &cg)) agente = 1; \
-    } }
+    if (cg && bpf_map_lookup_elem(&CG_AGENTES, &cg)) return 1; }
 
 static __always_inline int eh_agente(void) {
-    int agente = 0;
-    // (todos os níveis: a plataforma, que isenta, fica abaixo da fatia dos agentes, que marca)
     NIVEL(1) NIVEL(2) NIVEL(3) NIVEL(4) NIVEL(5) NIVEL(6) NIVEL(7) NIVEL(8)
-    return agente;
+    return 0;
 }
 
 static __always_inline void emitir(__u32 tipo, __u32 bloqueado, __u64 dev, __u64 ino, __u32 flags, const unsigned char *nome) {

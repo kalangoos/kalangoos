@@ -341,12 +341,6 @@ if quer KALANGO_IMAGEM_FLUXOS "$FLUXOS/target/release/kalango-fluxosd" "o servi�
   install -m 644 "$FLUXOS/dist/systemd/kalango-fluxos.service" "$FLUXOS/dist/systemd/kalango-fluxos.socket" "$C/usr/lib/systemd/user/"
   # (ativação por soquete: o systemd só abre o soquete; o serviço sobe na primeira conexão, do shell ou do kalangod)
   ln -s ../kalango-fluxos.socket "$C/usr/lib/systemd/user/sockets.target.wants/kalango-fluxos.socket"
-  # (o serviço roda na fatia da plataforma: dentro da dos agentes para a política do kalangod, isenta da guarda do kernel,
-  # porque ele é o dono das pastas que a guarda protege dos agentes. Ver crates/kalangod/dist/kalango-agentes-plataforma-usuario.slice)
-  install -m 644 crates/kalangod/dist/kalango-agentes-plataforma-usuario.slice "$C/usr/lib/systemd/user/kalango-agentes-plataforma.slice"
-  ln -s ../kalango-agentes-plataforma.slice "$C/usr/lib/systemd/user/default.target.wants/kalango-agentes-plataforma.slice"
-  d usr/lib/systemd/user/kalango-fluxos.service.d
-  printf '[Service]\nSlice=kalango-agentes-plataforma.slice\n' > "$C/usr/lib/systemd/user/kalango-fluxos.service.d/10-plataforma.conf"
   inventario "$FLUXOS" usr/share/doc/kalango/fluxos "$FLUXOS/target/release/kalango-fluxosd"
 fi
 # desligar e reiniciar sem esperar 90 s por um processo que não fecha (uma sessão de terminal com um shell

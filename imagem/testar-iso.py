@@ -161,8 +161,8 @@ def optional_apps(c, user):
         out, _ = c.run(f"{sysd} systemctl --user is-active kalango-fluxos.service; {sysd} systemctl --user show kalango-fluxos.service -p ControlGroup --value | tr / ' '; ps -eo cgroup:90,args | grep '[k]alango-fluxosd servir' | cut -c1-120")
         good &= check(out.splitlines()[0].strip() == "active", "Fluxos: o serviço subiu pela ativação do soquete", out)
         print("      cgroup do serviço: " + " | ".join(out.splitlines()[1:]))
-        good &= check("kalango-agentes-plataforma.slice/kalango-fluxos.service" in out.replace("\n", "") and "kalango-agentes.slice" in out,
-                      "Fluxos: o serviço roda na fatia da plataforma (dentro da dos agentes para a política, isenta da guarda do kernel)", out)
+        good &= check("kalango-agentes.slice/kalango-fluxos.service" in out.replace("\n", ""),
+                      "Fluxos: o serviço roda na fatia dos agentes (com a guarda do kernel ativa) e abre o próprio banco", out)
     else:
         print("      (o serviço dos agentes e fluxos não está nesta ISO)")
     return good
@@ -218,6 +218,25 @@ def agents_guard(c, user):
     good &= check(code == 0, "fora do slice dos agentes a pasta protegida abre", out)
     out, code = c.run(f"{sysd} systemd-run --user --slice=kalango-agentes.slice --wait --pipe --quiet cat /home/{user}/.ssh/guarda-teste 2>&1")
     good &= check(code != 0 and ("not permitted" in out or "negada" in out.lower() or "Operation" in out), "no slice dos agentes do gerenciador de usuário o kernel nega (a regra inviolável vale para o Fluxos)", out)
+    # ---- o que um agente (fatia dos agentes) não abre, além de ~/.ssh: a pasta do Mind. (A pasta dos Fluxos está fora da guarda
+    # do kernel de propósito: o serviço dos Fluxos roda nesta fatia e é o dono dela; ela segue protegida pela política e pelo
+    # Landlock. Que o serviço sobe com a guarda ativa é conferido por optional_apps.)
+    no = lambda o: "not permitted" in o or "negada" in o.lower() or "Operation" in o
+    in_slice = lambda sl, cmd: c.run(f"{sysd} systemd-run --user --slice={sl} --wait --pipe --quiet {cmd} 2>&1")
+    c.run("mkdir -p ~/.local/share/kalango/mind && echo x > ~/.local/share/kalango/mind/guarda-teste")
+    time.sleep(16)  # (a guarda aprende pastas novas a cada 15 s)
+    out, code = in_slice("kalango-agentes.slice", f"cat /home/{user}/.local/share/kalango/mind/guarda-teste")
+    good &= check(code != 0 and no(out), "um agente NÃO abre a pasta do Mind (eBPF)", out)
+    # ---- o portão do Mind: o código de confirmação em %t/kalango/mind-confirm é lido pela sessão da pessoa e negado a um agente
+    rt = f"/run/user/{uid.strip()}/kalango/mind-confirm"
+    c.run(f"mkdir -p {rt} && echo codigo-de-teste > {rt}/codigo")
+    time.sleep(3)  # (a guarda procura as pastas da área de execução a cada segundo)
+    out, code = c.run(f"cat {rt}/codigo")
+    good &= check(code == 0 and "codigo-de-teste" in out, "o Mind: a sessão da pessoa lê o código de confirmação (%t/kalango/mind-confirm)", out)
+    out, code = in_slice("kalango-agentes.slice", f"cat {rt}/codigo")
+    good &= check(code != 0 and no(out), "o Mind: um comando de agente NÃO lê o código de confirmação (eBPF)", out)
+    c.run(f"rm -rf {rt}")
+    c.run("rm -rf ~/.local/share/kalango/mind")
     c.run("rm -f ~/.ssh/guarda-teste")
     return good
 

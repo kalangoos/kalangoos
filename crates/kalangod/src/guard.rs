@@ -30,8 +30,18 @@ unsafe impl Pod for ChaveInode {}
 /// Quantos cgroups de agentes o programa eBPF guarda (`MAX_AGENTES` em guarda.bpf.c): o do sistema e um por gerenciador de
 /// usuário do systemd. Passar disso é caso de alerta, nunca de silêncio (ver [`plano_agentes`]).
 const MAX_AGENTES: usize = 4096;
-/// Quantas plataformas isentas (`MAX_ISENTOS` em guarda.bpf.c): uma por gerenciador de usuário.
-const MAX_ISENTOS: usize = 256;
+
+/// Protegidas dos agentes pela política do kalangod e pelo Landlock (`policy::KALANGO_PROTECTED`), mas NÃO pela guarda do kernel:
+/// o serviço dos Fluxos roda no cgroup dos agentes (a política do kalangod o reconhece por ele) e é o dono do banco dos fluxos e das
+/// aprovações; a guarda vê o cgroup, não quem é o serviço, e o impedia de abrir o próprio banco. Uma isenção por cgroup, por
+/// programa ou por pid pode ser contornada por quem roda como a mesma pessoa (escrever no `cgroup.procs` do serviço, copiar ou
+/// executar o programa com `LD_PRELOAD`); sem isenção não há o que contornar. O que fica de fora do kernel é só esta pasta.
+pub const FORA_DA_GUARDA_DO_KERNEL: &[&str] = &["~/.local/share/kalango/fluxos"];
+
+/// As pastas que a guarda do kernel protege: as da configuração menos [`FORA_DA_GUARDA_DO_KERNEL`].
+pub fn para_o_kernel(patterns: Vec<String>) -> Vec<String> {
+    patterns.into_iter().filter(|p| !FORA_DA_GUARDA_DO_KERNEL.contains(&p.as_str())).collect()
+}
 
 /// `false` quando há cgroups de agentes que a guarda não consegue cobrir (mapa cheio): `kernel.seguranca` mostra
 /// `guarda_ebpf_completa: false` e a linha do tempo recebe um alerta.
@@ -112,8 +122,6 @@ struct Guarda {
     conhecidas: std::collections::HashSet<(u64, u64)>,
     /// Os ids que estão em CG_AGENTES.
     agentes: std::collections::HashSet<u64>,
-    /// Os ids que estão em CG_ISENTOS (a plataforma dos agentes).
-    isentos: std::collections::HashSet<u64>,
 }
 
 impl Guarda {
@@ -130,22 +138,6 @@ impl Guarda {
         for id in &plano.remover {
             let _ = m.remove(id);
             self.agentes.remove(id);
-        }
-        Ok(plano.descartados)
-    }
-
-    /// Deixa o mapa CG_ISENTOS (a plataforma dos agentes de cada pessoa) com `desejado`. Se não couber, o que sobra fica
-    /// SEM a isenção (a guarda o trata como agente: falha fechada) e a conta volta a quem chama.
-    fn sincronizar_isentos(&mut self, desejado: &[u64]) -> Result<usize, String> {
-        let plano = plano_agentes(&self.isentos, desejado, MAX_ISENTOS);
-        let mut m: BpfHashMap<_, u64, u8> = BpfHashMap::try_from(self.bpf.map_mut("CG_ISENTOS").ok_or("mapa CG_ISENTOS")?).map_err(|e| e.to_string())?;
-        for id in &plano.inserir {
-            m.insert(id, 1, 0).map_err(|e| e.to_string())?;
-            self.isentos.insert(*id);
-        }
-        for id in &plano.remover {
-            let _ = m.remove(id);
-            self.isentos.remove(id);
         }
         Ok(plano.descartados)
     }
@@ -251,6 +243,7 @@ pub fn start(patterns: Vec<String>, timeline: Arc<Timeline>) -> Result<(), Strin
 }
 
 fn start_inner(patterns: Vec<String>, timeline: Arc<Timeline>) -> Result<(), String> {
+    let patterns = para_o_kernel(patterns);
     if !nix::unistd::geteuid().is_root() {
         return Err(kalango_i18n::tr("off: kalangod is not running as root").into());
     }
@@ -259,7 +252,7 @@ fn start_inner(patterns: Vec<String>, timeline: Arc<Timeline>) -> Result<(), Str
     }
     let (agentes, nivel) = limits::agents_cgroup_id().map_err(|e| format!("cgroup dos agentes: {e}"))?;
     let bpf = Ebpf::load(BYTES).map_err(|e| format!("carregar eBPF: {e}"))?;
-    let mut g = Guarda { bpf, conhecidas: Default::default(), agentes: Default::default(), isentos: Default::default() };
+    let mut g = Guarda { bpf, conhecidas: Default::default(), agentes: Default::default() };
     let btf = Btf::from_sys_fs().map_err(|e| kalango_i18n::trf("kernel BTF: {e}", &[("e", e.to_string())]))?;
     for (prog, hook) in [("guarda_abrir", "file_open"), ("guarda_executar", "bprm_check_security")] {
         let p: &mut Lsm = g.bpf.program_mut(prog).ok_or(format!("programa {prog} ausente"))?.try_into().map_err(|e| format!("{prog}: {e}"))?;
@@ -272,8 +265,6 @@ fn start_inner(patterns: Vec<String>, timeline: Arc<Timeline>) -> Result<(), Str
     let mut usuarios = limits::user_agents_cgroup_ids();
     let descartados = g.sincronizar_agentes(&desejados(agentes, &usuarios))?;
     avisar_cobertura(descartados, usuarios.len() + 1, &timeline);
-    let mut plataformas = limits::user_platform_cgroup_ids();
-    let _ = g.sincronizar_isentos(&plataformas.iter().map(|(id, _)| *id).collect::<Vec<_>>())?;
     ATIVA.store(true, Ordering::SeqCst);
     let msg = format!("ativa: cgroup dos agentes {agentes} (nível {nivel}), {n} pastas protegidas no kernel");
     eprintln!("kalangod: {}", kalango_i18n::trf("eBPF guard {msg}", &[("msg", msg.to_string())]));
@@ -288,10 +279,6 @@ fn start_inner(patterns: Vec<String>, timeline: Arc<Timeline>) -> Result<(), Str
             unsafe { libc::poll(&mut pfd, 1, 1000) };
             // (um gerenciador de usuário novo, e o cgroup dos agentes dele, entram na guarda em até 1 s)
             let atual = limits::user_agents_cgroup_ids();
-            let plat = limits::user_platform_cgroup_ids();
-            if plat != plataformas && g.sincronizar_isentos(&plat.iter().map(|(id, _)| *id).collect::<Vec<_>>()).is_ok() {
-                plataformas = plat;
-            }
             if atual != usuarios {
                 if let Ok(d) = g.sincronizar_agentes(&desejados(cg, &atual)) {
                     avisar_cobertura(d, atual.len() + 1, &timeline);
@@ -330,8 +317,27 @@ fn start_inner(patterns: Vec<String>, timeline: Arc<Timeline>) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{expand_for, para_o_kernel, plano_agentes, FORA_DA_GUARDA_DO_KERNEL, MAX_AGENTES};
     use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    /// The Fluxos service lives in the agents' cgroup and owns its folder: the kernel guard (which sees cgroups, not who is
+    /// who) left it without its own database. That folder alone is out of the kernel guard, and stays protected from the agents
+    /// by the policy and Landlock; everything else, the Mind's folders and ~/.ssh included, stays in the kernel guard.
+    #[test]
+    fn only_the_fluxos_folder_is_left_out_of_the_kernel_guard_and_it_stays_protected_by_policy() {
+        let tudo: Vec<String> = ["~/.ssh", "~/.local/share/kalango/fluxos", "~/.local/share/kalango/mind", "%t/kalango/mind-confirm", "/etc/shadow"].iter().map(|x| x.to_string()).collect();
+        let ficam = para_o_kernel(tudo.clone());
+        assert_eq!(ficam.len(), tudo.len() - 1);
+        assert!(!ficam.iter().any(|p| FORA_DA_GUARDA_DO_KERNEL.contains(&p.as_str())));
+        for p in ["~/.ssh", "~/.local/share/kalango/mind", "%t/kalango/mind-confirm", "/etc/shadow"] {
+            assert!(ficam.iter().any(|x| x == p), "{p} must stay in the kernel guard");
+        }
+        for p in FORA_DA_GUARDA_DO_KERNEL {
+            assert!(crate::policy::KALANGO_PROTECTED.contains(p), "{p} stays protected for agents by the policy and Landlock");
+        }
+        assert_eq!(FORA_DA_GUARDA_DO_KERNEL.len(), 1);
+    }
 
     /// The kernel guard is told every user's confirmation-code folder, whether it exists yet or not (the probe looks
     /// again every second), and the person's home folders as before.
@@ -347,7 +353,6 @@ mod tests {
         assert_eq!(got.len(), 7);
     }
 
-
     /// The kernel's verifier once refused the whole guard ("infinite loop detected") because the search through the agents'
     /// cgroups was a `for` whose counter lived on the stack. The search has no loop: one constant ancestor level per step
     /// and one lookup in the hash of agents' cgroups. (The real proof is the VM test, `agents_guard` in
@@ -361,7 +366,6 @@ mod tests {
         for n in 1..=8 {
             assert!(body.contains(&format!("NIVEL({n})")), "ancestor level {n} not tested");
         }
-        assert!(src.contains("CG_ISENTOS") && src.contains(&format!("#define MAX_ISENTOS {MAX_ISENTOS}")), "the platform exemption map");
         assert!(src.contains("CG_AGENTES") && !src.contains("MAX_USUARIOS") && !src.contains("CG_USUARIOS"), "the per-user array is gone");
         assert!(src.contains(&format!("#define MAX_AGENTES {MAX_AGENTES}")), "the map size the program declares is the one kalangod plans for");
     }
