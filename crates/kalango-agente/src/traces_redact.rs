@@ -692,6 +692,8 @@ impl Redactor {
                 || (shaped_only
                     && !lifetime_or_namespace(name)
                     && (!(literal_secret(value) || hex_key(value)) || (time_key(name) && timestamp(value))))
+                // (a namespace is checked for a literal and a key in hex inside `describing_value`; a lifetime must be a
+                // duration, which `literal_secret` would cut: `1500ms`)
                 || (shaped_only && lifetime_or_namespace(name) && describing_value(name, value))
             {
                 i = ve.max(i + 1);
@@ -1585,7 +1587,9 @@ fn quoted_prose(q: &str) -> bool {
 fn describing_value(key: &str, t: &str) -> bool {
     match key_words(key).last().map(String::as_str) {
         Some("lifetime") => return duration(t),
-        Some("namespace") => return dns_name(t),
+        // (a DNS name that is not a key: no secret literal, no run that mixes letters and digits; a key in hex is such a
+        // run, so these are also the checks every other name gets, `literal_secret` and `hex_key`)
+        Some("namespace") => return dns_name(t) && !literal_secret(t) && !mixes_letters_and_digits(t),
         _ => {}
     }
     (!credential_shaped(&t.replace('_', "")) && !literal_secret(t) && !t.bytes().any(|c| c.is_ascii_digit())) || (time_key(key) && timestamp(t))
@@ -1595,6 +1599,12 @@ fn describing_value(key: &str, t: &str) -> bool {
 /// (`password_require_symbol`): a word like `true` after it is the password.
 fn names_the_password(name: &str) -> bool {
     key_words(name).last().is_some_and(|w| password_name(w))
+}
+
+/// Whether a label of a name mixes letters and digits in a run of six or more (`ab12cd34ef`); `team-2`, `eu-west-1`
+/// do not.
+fn mixes_letters_and_digits(t: &str) -> bool {
+    t.split(['.', '-']).any(|l| l.len() >= 6 && l.bytes().any(|c| c.is_ascii_digit()) && l.bytes().any(|c| c.is_ascii_alphabetic()))
 }
 
 /// A key whose last word is `lifetime` or `namespace`.
@@ -5203,6 +5213,43 @@ mod tests {
             "secret_namespace: production",
             "{\"access_token_lifetime\": \"PT15M\"}",
             "{\"token_endpoint_auth_method\": \"client_secret_basic\"}",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// The permissions of a lifetime and a namespace come on top of the other checks: a namespace that is a key in hex,
+    /// a secret literal or a mix of letters and digits, or a lifetime that is no duration, goes; a duration stays.
+    #[test]
+    fn a_lifetime_or_a_namespace_is_still_checked() {
+        let hex = concat!("a1b2c3d4e5f6", "a7b8c9d0e1f2");
+        let mixed = concat!("Zq8kLm2", "pQ7xV");
+        for (t, secret) in [
+            (format!("api_key_namespace: {hex}"), hex.to_string()),
+            (format!("token_namespace: {mixed}"), mixed.to_string()),
+            (format!("secret_lifetime: {}", &mixed[..11]), mixed[..11].to_string()),
+            (format!("token_namespace: {}", concat!("ab12", "cd34ef")), concat!("ab12", "cd34ef").to_string()),
+            (format!("token_namespace: {}", concat!("zq8-km2", "-pq7")), concat!("zq8-km2", "-pq7").to_string()),
+        ] {
+            assert_gone(&t, &secret);
+        }
+        let r = Redactor::default();
+        for (k, v) in [
+            ("api_key_namespace", hex),
+            ("token_namespace", concat!("ab12", "cd34ef")),
+            ("token_namespace", concat!("zq8-km2", "-pq7")),
+            ("secret_lifetime", &mixed[..11]),
+            ("secret_lifetime", concat!("zq8", "km2pq7")),
+        ] {
+            assert_eq!(r.redact_value(&json!({ k: v }), &mut Stats::default())[k], REDACTED, "{k}: {v}");
+        }
+        for ok in [
+            "access_token_lifetime = \"15m\"",
+            "secret_namespace: production",
+            "{\"secret_namespace\": \"team-payments\"}",
+            "token_lifetime: 1500ms",
+            "refresh_token_lifetime = \"90min\"",
+            "{\"token_lifetime\": \"3600sec\"}",
         ] {
             assert_eq!(red(ok), ok, "{ok}");
         }
