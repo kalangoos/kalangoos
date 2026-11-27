@@ -697,8 +697,17 @@ pub const SISTEMA_ESCRITA: &[&str] = &["/tmp", "/var/tmp", "/dev/null", "/dev/ze
 
 /// The system folders a command or a connector reads, as listed (for what the person is shown). The grants themselves
 /// only come from `agent_landlock`.
+#[cfg(test)]
 pub fn system_read_roots() -> Vec<std::path::PathBuf> {
     SISTEMA_LEITURA.iter().map(Into::into).collect()
+}
+
+/// The kernel rules of a command (`task_run`). The protected folders are worked out here, from the configuration and the
+/// caller's home, and cannot be passed in. (No shared /tmp, /var/tmp nor /dev/shm: the command has its own TMPDIR, and
+/// nothing it leaves is picked up by the person's programs.)
+pub fn command_landlock(cfg: &crate::policy::Config, home: &std::path::Path, reads: crate::startup::Carved, writes: crate::startup::Carved, pinned: Vec<crate::limits::Fixa>) -> Landlock {
+    agent_landlock(&crate::allowlist::protected(cfg, home), reads.write.into_iter().chain(reads.read).chain(writes.read).collect(), reads.list.into_iter().chain(writes.list).collect(),
+        SISTEMA_ESCRITA.iter().filter(|p| !p.ends_with("tmp") && !p.ends_with("shm")).map(Into::into).collect(), None, pinned, vec![])
 }
 
 /// THE assembly of the kernel rules (Landlock) of a command (`task_run`) and of a connector (`conector::spawn`), the only
@@ -833,10 +842,7 @@ fn task_run(c: &Ctx, a: &Value) -> Result<Out, String> {
         }
         f
     }).collect();
-    // (no shared /tmp, /var/tmp nor /dev/shm: the command has its own TMPDIR, and nothing it leaves is picked up by the
-    // person's programs)
-    let landlock = agent_landlock(&protected, reads.write.into_iter().chain(reads.read).chain(writes.read).collect(), reads.list.into_iter().chain(writes.list).collect(),
-        SISTEMA_ESCRITA.iter().filter(|p| !p.ends_with("tmp") && !p.ends_with("shm")).map(Into::into).collect(), None, fixas, vec![]);
+    let landlock = command_landlock(c.cfg, home, reads, writes, fixas);
     let lim = c.cfg.limites.narrowed(a);
     // with the changes let through, what the command changes in them still goes to the timeline, with undo
     let before = auto.then(|| crate::startup::snapshot(c.peer, c.cfg, &write_roots));

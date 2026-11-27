@@ -1416,6 +1416,28 @@ fn host_test_unavailable(why: &str) -> bool {
     true
 }
 
+/// `KALANGOD_REQUIRE_HOST_TESTS` itself, with no host needed: the same test binary runs a host test where the host is
+/// missing (no `systemd-run` on the `PATH`). With `=1` it fails and says why; without it, it skips with a visible
+/// `SKIPPED` line. Falls if the variable stops being honoured.
+#[test]
+fn the_require_host_tests_variable_turns_a_skip_into_a_failure() {
+    let run = |require: Option<&str>| {
+        let mut c = Command::new(std::env::current_exe().unwrap());
+        c.args(["--ignored", "--exact", "a_command_cannot_ask_the_user_manager_to_start_a_unit", "--nocapture", "--test-threads=1"]).env("PATH", "/nonexistent").env_remove("KALANGOD_REQUIRE_HOST_TESTS");
+        if let Some(v) = require {
+            c.env("KALANGOD_REQUIRE_HOST_TESTS", v);
+        }
+        let o = c.output().unwrap();
+        (o.status.success(), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+    };
+    let (ok, out) = run(Some("1"));
+    assert!(!ok && out.contains("KALANGOD_REQUIRE_HOST_TESTS=1 and the host cannot run this test"), "required: {out}");
+    let (ok, out) = run(None);
+    assert!(ok && out.contains("SKIPPED"), "not required: {out}");
+    let (ok, out) = run(Some("0"));
+    assert!(ok && out.contains("SKIPPED"), "=0: {out}");
+}
+
 /// Where the user's delegated cgroup folder is (`.../user@UID.service/app.slice`), if this session has one.
 fn app_slice_dir() -> Option<PathBuf> {
     let cg = std::fs::read_to_string("/proc/self/cgroup").ok()?.lines().find_map(|l| l.strip_prefix("0::").map(str::to_string))?;
