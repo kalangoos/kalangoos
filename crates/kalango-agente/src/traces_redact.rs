@@ -1237,16 +1237,42 @@ const GHA_FUNCTIONS: &[&str] =
 /// known functions (`format('{0}', secrets.X)`), operators, numbers, `true`/`false`/`null`, and strings that do not
 /// look like a credential. A pair (`password=X`), a bare word or a credential-shaped string is not one.
 fn gha_expression(c: &str) -> bool {
+    gha_expression_after(c, false)
+}
+
+/// [`gha_expression`] for a block after a name (`strict`: a password's or a PIN's name): a quoted string is an operand
+/// of a comparison (`github.event_name == 'push'`) or an argument of a function (`format('{0}', …)`), never the whole
+/// expression nor a fallback (`secrets.X || 'x'`); after a password's name, not even an operand that looks like a
+/// credential, a number or a phrase.
+fn gha_expression_after(c: &str, strict: bool) -> bool {
     let b = c.as_bytes();
     let mut i = 0;
     let mut any = false;
+    // (how many of the open brackets belong to a call of a known function)
+    let mut calls: Vec<bool> = Vec::new();
+    let mut call_next = false;
     while i < b.len() {
         let ch = b[i];
-        if ch.is_ascii_whitespace() || matches!(ch, b'(' | b')' | b',' | b'[' | b']' | b'*') {
+        if ch == b'(' {
+            calls.push(call_next);
+            call_next = false;
+            i += 1;
+        } else if ch == b')' {
+            calls.pop();
+            i += 1;
+        } else if ch.is_ascii_whitespace() || matches!(ch, b',' | b'[' | b']' | b'*') {
             i += 1;
         } else if ch == b'\'' {
             let Some(e) = c[i + 1..].find('\'').map(|e| i + 1 + e) else { return false };
-            if literal_secret(&c[i + 1..e]) {
+            let lit = &c[i + 1..e];
+            let before = c[..i].trim_end();
+            let after = c[e + 1..].trim_start();
+            let compared = ["==", "!=", "<=", ">=", "<", ">"].iter().any(|op| before.ends_with(op) || after.starts_with(op));
+            let argument = calls.last() == Some(&true) && (before.ends_with('(') || before.ends_with(','));
+            if !(compared || argument) || literal_secret(lit) {
+                return false;
+            }
+            if strict && (credential_shaped(lit) || lit.trim().contains(' ') || (!lit.is_empty() && lit.bytes().all(|c| c.is_ascii_digit()))) {
                 return false;
             }
             i = e + 1;
@@ -1275,6 +1301,7 @@ fn gha_expression(c: &str) -> bool {
             let path = &c[st..i];
             let head = path.split('.').next().unwrap_or("").to_ascii_lowercase();
             let call = b[i..].iter().find(|c| !c.is_ascii_whitespace()) == Some(&b'(');
+            call_next = call && GHA_FUNCTIONS.contains(&head.as_str());
             if !(GHA_CONTEXTS.contains(&head.as_str())
                 || (call && GHA_FUNCTIONS.contains(&head.as_str()))
                 || matches!(path, "true" | "false" | "null"))
@@ -1298,7 +1325,7 @@ fn gha_expressions(s: &str) -> Vec<(usize, usize)> {
         let w = &w[..w.find('\n').unwrap_or(w.len())];
         match w.find("}}") {
             // (only an expression is a unit; one that holds a pair or a credential is text the detectors read)
-            Some(e) if gha_expression(&w[..e]) => {
+            Some(e) if gha_expression_after(&w[..e], after_password_name(s, p)) => {
                 spans.push((p, p + 3 + e + 2));
                 from = p + 3 + e + 2;
             }
@@ -1306,6 +1333,25 @@ fn gha_expressions(s: &str) -> Vec<(usize, usize)> {
         }
     }
     spans
+}
+
+/// Whether the `${{` at `p` is the value of a password's or a PIN's name on its line (`password: ${{ … }}`,
+/// `PIN=${{ … }}`), read 64 bytes back.
+fn after_password_name(s: &str, p: usize) -> bool {
+    let before = window_back(s, p, 64);
+    let line = before.rsplit('\n').next().unwrap_or("").trim_end();
+    let Some(head) = line.strip_suffix([':', '=']).map(str::trim_end) else { return false };
+    let name = head.rsplit(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))).next().unwrap_or("");
+    password_label(name) || matches!(suffix_key(name), Some("pin" | "pwd" | "pass" | "pw"))
+}
+
+/// At most `n` bytes of `s` before `at` (cut on a character).
+fn window_back(s: &str, at: usize, n: usize) -> &str {
+    let mut from = at.saturating_sub(n);
+    while !s.is_char_boundary(from) {
+        from += 1;
+    }
+    &s[from..at]
 }
 
 /// The text with each span written as `*` (the same number of bytes: offsets do not move).
@@ -2083,9 +2129,10 @@ fn value_is_literal(value: &str, rest: &str) -> bool {
         ahead -= 1;
     }
     let line = format!("{value}{}", rest[..ahead].split('\n').next().unwrap_or(""));
-    // (an expression of GitHub Actions cut by the end of the line: `${{ secrets.X`)
-    if value.starts_with("${{") && !line.contains("}}") {
-        return false;
+    // (an expression of GitHub Actions cut by the end of the line, `${{ secrets.X`, is a reference; a closed one that is
+    // still in the text was not masked as one: it holds a literal, and is one)
+    if value.starts_with("${{") {
+        return line.contains("}}");
     }
     // a structure that opens here and goes on (`auth: { user: …`, `tokens: [`)
     // (or a remark in parentheses on its line, several words: "Senha: (deixe em branco)")
@@ -4715,7 +4762,8 @@ mod tests {
         for t in [format!("run: echo ${{{{ password={pw} }}}}"), format!("TOKEN: ${{{{ '{pw}' }}}}"), format!("password: ${{{{ {pw} }}}}")] {
             assert_gone(&t, &pw);
         }
-        assert_gone("TOKEN: ${{ secrets.A = 'b' }}", "secrets.A");
+        assert_gone("TOKEN: ${{ secrets.A = secrets.B }}", "secrets.A");
+        assert_gone(&format!("token: ${{{{ github.actor == '{pw}' }}}}"), &pw);
         let r = Redactor::default();
         let v = json!({ "password": format!("${{{{ '{pw}' }}}}") });
         assert_eq!(r.redact_value(&v, &mut Stats::default())["password"], REDACTED);
@@ -4773,6 +4821,32 @@ mod tests {
             "\"settings.token.hint\": \"O token expira em 24 horas\"",
             "placeholder_token = \"Cole o token aqui\"",
             "token_help = \"Paste the token here.\"",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// A quoted string inside `${{ … }}` is an operand of a comparison, never the whole expression nor a fallback
+    /// (`|| 'x'`); after a password's name, not even an operand that looks like a credential, a number or a phrase.
+    #[test]
+    fn a_string_in_an_expression_is_only_compared() {
+        let pw = weak_pw();
+        for (t, secret) in [
+            (format!("password: ${{{{ '{pw}' }}}}"), pw.clone()),
+            (format!("password: ${{{{ secrets.X || '{}' }}}}", concat!("hun", "ter")), concat!("hun", "ter").to_string()),
+            (format!("token: ${{{{ secrets.X || '{pw}' }}}}"), pw.clone()),
+            (format!("PIN: ${{{{ '{}' }}}}", concat!("4829", "13")), concat!("4829", "13").to_string()),
+            (format!("password: ${{{{ github.actor == '{}' }}}}", concat!("4829", "13")), concat!("4829", "13").to_string()),
+        ] {
+            assert_gone(&t, &secret);
+        }
+        for ok in [
+            "TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+            "os: ${{ matrix.os }}",
+            "if: ${{ github.event_name == 'push' }}",
+            "if: ${{ matrix.os == 'ubuntu-latest' && github.ref != 'refs/heads/main' }}",
+            "password: ${{ format('{0}', secrets.X) }}",
+            "password: ${{ secrets.DB_PASSWORD }}",
         ] {
             assert_eq!(red(ok), ok, "{ok}");
         }
