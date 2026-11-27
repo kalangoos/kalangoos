@@ -218,6 +218,28 @@ install -m 644 LICENSE "$C/usr/share/doc/kalango/LICENSE"
 [ -f NOTICE ] && install -m 644 NOTICE "$C/usr/share/doc/kalango/NOTICE"
 KOS_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo desconhecido)
 NIRI_COMMIT=$(git -C "$DEPS/src/niri" rev-parse HEAD 2>/dev/null || echo desconhecido)
+# O que a oferta promete do niri (o commit + sessao/niri/*.patch) tem de ser exatamente o que foi compilado: a árvore do niri
+# (arquivos novos inclusos, com um índice temporário) tem de ser igual à do commit com os patches aplicados em ordem.
+niri_confere() {
+  # o niri tem imagens no git-lfs que a compilação não usa e o clone não baixa: o lfs fica desligado nas duas árvores
+  local GIT_CONFIG_COUNT=4 GIT_CONFIG_KEY_0=filter.lfs.smudge GIT_CONFIG_VALUE_0=cat GIT_CONFIG_KEY_1=filter.lfs.clean GIT_CONFIG_VALUE_1=cat \
+        GIT_CONFIG_KEY_2=filter.lfs.process GIT_CONFIG_VALUE_2= GIT_CONFIG_KEY_3=filter.lfs.required GIT_CONFIG_VALUE_3=false
+  export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1 GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2 GIT_CONFIG_KEY_3 GIT_CONFIG_VALUE_3
+  local t; t=$(mktemp -d) || return 1
+  [ "$NIRI_COMMIT" != desconhecido ] || { rm -rf "$t"; return 1; }
+  git clone -q --shared "$DEPS/src/niri" "$t/limpo" 2>/dev/null && git -C "$t/limpo" checkout -q "$NIRI_COMMIT" || { rm -rf "$t"; return 1; }
+  for p in sessao/niri/*.patch; do git -C "$t/limpo" apply "$PWD/$p" || { rm -rf "$t"; return 1; }; done
+  local a b
+  a=$(GIT_INDEX_FILE="$t/i1" git -C "$t/limpo" add -A -- . ':!.codegraph' >/dev/null 2>&1 && GIT_INDEX_FILE="$t/i1" git -C "$t/limpo" diff --cached "$NIRI_COMMIT" -- . ':!.codegraph' | sha256sum)
+  b=$(GIT_INDEX_FILE="$t/i2" git -C "$DEPS/src/niri" add -A -- . ':!.codegraph' >/dev/null 2>&1 && GIT_INDEX_FILE="$t/i2" git -C "$DEPS/src/niri" diff --cached "$NIRI_COMMIT" -- . ':!.codegraph' | sha256sum)
+  rm -rf "$t"; [ -n "$a" ] && [ "$a" = "$b" ]
+}
+if ! niri_confere; then
+  if [ "${KALANGO_IMAGEM_PUBLICAVEL:-0}" = 1 ]; then
+    echo "o niri compilado não é o commit $NIRI_COMMIT com os patches de sessao/niri: a oferta de fonte da GPL ficaria falsa (KALANGO_IMAGEM_PUBLICAVEL=1: recusado)" >&2; exit 1
+  fi
+  echo "AVISO: o niri compilado não bate com o commit $NIRI_COMMIT + sessao/niri/*.patch: ISO só para uso local, nunca para publicar" >&2
+fi
 cat > "$C/usr/share/doc/kalango/FONTE.txt" <<FONTE
 KalangoOS: código-fonte e oferta escrita (GPLv3, seção 6)
 
@@ -225,8 +247,8 @@ Esta imagem leva software livre sob a GPL-3.0-or-later (LICENSE, nesta pasta) e 
 
 1. KalangoOS (shell, kalangod, agentes, instalador, tela de entrada, sessão): commit $KOS_COMMIT
    https://github.com/kalangoos/kalangoos  (a mesma versão da ISO está na página de releases, com o arquivo do fonte da marca).
-2. niri (compositor) com os patches do KalangoOS: commit $NIRI_COMMIT do niri; os patches estão em sessao/ e poc/ do
-   repositório acima. Niri original: https://github.com/YaLTeR/niri (GPL-3.0-or-later).
+2. niri (compositor) com os patches do KalangoOS: commit $NIRI_COMMIT do niri; os patches estão em sessao/niri/*.patch do
+   repositório acima (aplicados em ordem sobre esse commit). Niri original: https://github.com/YaLTeR/niri (GPL-3.0-or-later).
 3. Pacotes do Ubuntu: o código-fonte de cada um sai com "apt source <pacote>" (as fontes deb-src do Ubuntu).
 4. Kalango Remote, Kalango Audio, Kalango VirtualDesk: repositórios kalangoos/kalango-remote, kalango-audio e
    kalango-virtualdesk (o fonte do VirtualDesk também vai ao lado da ISO publicada, ver virtualdesk/FONTE.txt).

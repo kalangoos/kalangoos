@@ -156,6 +156,9 @@ O que fica aberto, de propósito e dito:
 - A sondagem da guarda eBPF a cada 1 s (e a pasta nascendo depois do `kalangod`) **só se prova com root e o LSM `bpf`**: nenhum
   teste de `cargo test` roda assim. Provado à mão no host (27/11/2026, `kalango-teste-guarda-host`): fora do cgroup dos agentes o
   arquivo protegido é lido; dentro de `kalango-agentes.slice` o kernel nega (`Operação não permitida`).
+- A guarda do kernel sobe no máximo 24 níveis de pasta (`MAX_DEPTH`): um arquivo mais fundo que isso dentro de uma pasta protegida
+  não é visto pela eBPF (hoje nenhuma pasta protegida é tão funda). Um hardlink ou um `rename` de um arquivo protegido para fora
+  da pasta também não passa pelos ganchos `file_open` e `bprm_check_security`: o que vale aí é só o Landlock.
 - As pastas protegidas fora de `%t` (como `~/.local/share/kalango/mind`) são procuradas de novo a cada 15 s; só as de `%t/...` a
   cada 1 s. A pasta dos Fluxos fica fora da guarda do kernel e segue protegida pela política e pelo Landlock (limite conhecido:
   Fluxos acessado como outro usuário é decisão do mantenedor; ver `docs/ISO-CONTEUDO.md`).
