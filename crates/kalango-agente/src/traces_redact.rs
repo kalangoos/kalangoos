@@ -210,7 +210,9 @@ const NOT_SECRET_KEYS: &[&str] = &["tokenizer", "tokenizers", "tokenization", "t
 /// A key of two or more words whose last word only describes the secret (see [`ABOUT_A_SECRET`]).
 fn describes_a_secret(key: &str) -> bool {
     let words = key_words(key);
-    words.len() >= 2 && words.last().is_some_and(|w| ABOUT_A_SECRET.contains(&w.as_str()))
+    words.len() >= 2
+        && (words.last().is_some_and(|w| ABOUT_A_SECRET.contains(&w.as_str()))
+            || words.first().is_some_and(|w| matches!(w.as_str(), "label" | "placeholder" | "title" | "tooltip" | "caption")))
 }
 
 impl Redactor {
@@ -236,7 +238,9 @@ impl Redactor {
         named
             && !self.keeps_number(key, v)
             && !matches!(v, Value::Bool(_) | Value::Null)
-            && !text.is_some_and(|t| mask(t) || (describes_a_secret(key) && (!credential_shaped(t) || (time_key(key) && timestamp(t)))))
+            && !text.is_some_and(|t| {
+                mask(t) || interpolation_only(t.trim()) || (describes_a_secret(key) && (!credential_shaped(t) || (time_key(key) && timestamp(t))))
+            })
     }
 
     /// A name in text that points at a secret: a denied key that does not only describe the secret (`password_policy:
@@ -266,7 +270,7 @@ impl Redactor {
                 o.iter()
                     .map(|(k, x)| {
                         let kn = normalize(k);
-                        if ENV_KEYS.contains(&kn.as_str()) && !x.is_null() {
+                        if ENV_KEYS.contains(&kn.as_str()) && !x.is_null() && !only_references(x) {
                             stats.redacted += 1;
                             return (k.clone(), Value::String("[REDACTED:env]".into()));
                         }
@@ -330,7 +334,7 @@ impl Redactor {
                     let kn = normalize(k);
                     // (an environment key with anything but its marker, or a denied key whose value is not a number, a boolean,
                     // empty or a marker: the first pass missed it)
-                    let leaked_env = ENV_KEYS.contains(&kn.as_str()) && !x.is_null();
+                    let leaked_env = ENV_KEYS.contains(&kn.as_str()) && !x.is_null() && !only_references(x);
                     let leaked_secret = self.json_secret(k, x);
                     if (leaked_env || leaked_secret) && !marker(x) {
                         n += 1;
@@ -387,7 +391,11 @@ impl Redactor {
     /// undone ([`Folded`]) and cut from the text as it was written.
     fn labelled(&self, s: &str, stats: &mut Stats) -> String {
         let view = Folded::new(s);
-        let t: &str = &view.text;
+        // (every `${{ … }}` is one unit: the detectors see it as a mask, `***`, and nothing inside it is cut; a secret
+        // glued to it, `${{ x }}banana2024`, still is)
+        let units = gha_expressions(&view.text);
+        let masked = mask_spans(&view.text, &units);
+        let t: &str = &masked;
         let mut ranges = self.key_value_ranges(t);
         ranges.extend(phrase_ranges(t));
         ranges.extend(next_line_ranges(t));
@@ -397,6 +405,7 @@ impl Redactor {
         ranges.extend(scheme_ranges(t));
         ranges.extend(self.name_value_ranges(t));
         ranges.extend(self.code_literal_ranges(t));
+        let ranges = outside_units(t, ranges, &units);
         let ranges: Vec<(usize, usize)> = ranges.into_iter().map(|(a, b)| (view.origin_of(a), view.origin_of(b))).filter(|(a, b)| a < b).collect();
         replace_ranges(s, &merge_ranges(ranges), REDACTED, stats)
     }
@@ -490,8 +499,17 @@ impl Redactor {
             };
             let name = &s[st..e];
             // ("Boarding pass: seat 14C" is a ticket)
-            let before_name = s[..st].trim_end_matches([' ', '\t']).rsplit([' ', '\t', '\n']).next().unwrap_or("").to_ascii_lowercase();
-            if name.eq_ignore_ascii_case("pass") && PASS_TICKETS.contains(&before_name.as_str()) {
+            // (the word before it, read only for `pass` and only 64 bytes back: a look-behind that ran to the previous
+            // space ran to the start of a text without spaces, minified JSON, at every name)
+            let ticket = name.eq_ignore_ascii_case("pass") && {
+                let mut from = st.saturating_sub(64);
+                while !s.is_char_boundary(from) {
+                    from += 1;
+                }
+                let before = s[from..st].trim_end_matches([' ', '\t']).rsplit([' ', '\t', '\n']).next().unwrap_or("");
+                PASS_TICKETS.contains(&before.to_ascii_lowercase().as_str())
+            };
+            if ticket {
                 i += 1;
                 continue;
             }
@@ -504,6 +522,17 @@ impl Redactor {
             }
             // the value after it (markdown emphasis closing the label, `**Password:** X`, is not the value)
             let mut vs = i + sep_len;
+            while vs < b.len() && matches!(b[vs], b' ' | b'\t') {
+                vs += 1;
+            }
+            // (a masked `${{ … }}` is the value: alone, nothing to cut; with a word glued to it, `${{ x }}banana2024`,
+            // that word when it looks like a credential, `${{ x }}-latest` is not one)
+            let stars = b[vs..].iter().take_while(|c| **c == b'*').count();
+            let masked_unit = stars >= 3;
+            if masked_unit && b.get(vs + stars).is_none_or(|c| c.is_ascii_whitespace()) {
+                i += 1;
+                continue;
+            }
             while vs < b.len() && matches!(b[vs], b' ' | b'\t' | b'*') {
                 vs += 1;
             }
@@ -546,7 +575,12 @@ impl Redactor {
                     // (an interpolation, a mask or a placeholder; under a name that is not a password's, text that only
                     // names the secret: `"jwt-secret-name"`, `"X-API-Key"`)
                     let quoted = &s[vs..ve];
-                    if interpolation_only(quoted) || mask(quoted) || placeholder(quoted) || (!strong && names_a_secret(quoted)) {
+                    if interpolation_only(quoted)
+                        || mask(quoted)
+                        || placeholder(quoted)
+                        || (!strong
+                            && (names_a_secret(quoted) || quoted.split_whitespace().filter(|w| w.chars().all(char::is_alphabetic)).count() >= 3))
+                    {
                         i = ve.max(i + 1);
                         continue;
                     }
@@ -565,7 +599,7 @@ impl Redactor {
                     }
                     ve = value_end(b, vs);
                     // (a `$(…)`, `${…}` or `{{…}}` is judged, and cut, whole: `$(echo X)`)
-                    for (open, close) in [("$(", ")"), ("${{", "}}"), ("${", "}"), ("{{", "}}")] {
+                    for (open, close) in [("$(", ")"), ("${", "}"), ("{{", "}}")] {
                         if s[vs..].starts_with(open) {
                             // (on its line, at most 256 bytes ahead)
                             let window = &b[vs..(vs + 256).min(b.len())];
@@ -593,12 +627,19 @@ impl Redactor {
                         while we < b.len() && !b[we].is_ascii_whitespace() && !matches!(b[we], b'"' | b'\'' | b'`' | b',' | b';') {
                             we += 1;
                         }
+                        // (a `$(…)` after the scheme is judged, and cut, whole: `Bearer $(echo X)`)
+                        if s[w..].starts_with("$(") {
+                            if let Some(e) = window(s, w, 256).split('\n').next().and_then(|l| l.find(')')) {
+                                we = we.max(w + e + 1);
+                            }
+                        }
                         // (after a scheme the next word goes whatever its shape; "auth: token refreshed" is a log line,
                         // and `Bearer $TOKEN` names a variable)
                         let next = &s[w..we.max(w)];
                         let common = COMMON_AFTER_SCHEME.contains(&fold_accents(next.trim_end_matches(['.', ',', ';', ':', '!', '?'])).as_str());
-                        let variable = interpolation_at(next).is_some_and(|n| n == next.len());
-                        if we > w && !common && !variable && !placeholder(next) {
+                        let variable = interpolation_at(next).is_some_and(|n| n == next.len())
+                            || (next.starts_with(['$', '{']) && interpolation_at(window(s, w, 256).split('\n').next().unwrap_or("")).is_some());
+                        if we > w && !common && !variable && !placeholder(next) && !mask(next) {
                             ve = we;
                         } else {
                             i = ve.max(i + 1);
@@ -620,7 +661,9 @@ impl Redactor {
             let value = &s[vs..ve];
             // (a label of several words with a preposition, "senha do usuário:", is a sentence as often as a label: its
             // value goes when it looks like a credential)
-            if (by_label && !strong && !credential_shaped(value)) || (shaped_only && (!literal_secret(value) || (time_key(name) && timestamp(value))))
+            if (masked_unit && !literal_secret(value))
+                || (by_label && !strong && !credential_shaped(value))
+                || (shaped_only && (!literal_secret(value) || (time_key(name) && timestamp(value))))
             {
                 i = ve.max(i + 1);
                 continue;
@@ -644,6 +687,25 @@ impl Redactor {
     /// (`{ … }`) or a list of upper-case grammar words in prose (`tokens: IDENT, NUMBER`).
     fn value_shaped(&self, value: &str, rest: &str, colon: bool, name: &str) -> bool {
         if value.is_empty() || value.starts_with("[REDACTED") {
+            return false;
+        }
+        // (the name of a secret as the value, `passwd: password updated`; a PowerShell cmdlet, `Read-Host`; a variable
+        // of PowerShell's environment, `$env:CI_JOB_TOKEN`)
+        let lower = value.to_ascii_lowercase();
+        let cmdlet = value.split_once('-').is_some_and(|(v, n)| {
+            v.len() > 2
+                && n.len() > 2
+                && v.starts_with(|c: char| c.is_ascii_uppercase())
+                && n.starts_with(|c: char| c.is_ascii_uppercase())
+                && value.bytes().all(|c| c.is_ascii_alphabetic() || c == b'-')
+        });
+        // (another word after it on its line: only the bytes up to that word are read)
+        let after = rest.trim_start_matches([' ', '\t']);
+        let sentence = after.len() < rest.len() && !after.is_empty() && !after.starts_with(['\n', '\r']);
+        if (matches!(lower.as_str(), "password" | "passwd" | "senha") && sentence)
+            || cmdlet
+            || (lower.starts_with("$env:") && variable_name(&value[5..]))
+        {
             return false;
         }
         if !value_is_literal(value, rest) {
@@ -705,7 +767,8 @@ impl Redactor {
         let mut from = 0;
         while let Some(p) = s[from..].find('<').map(|p| p + from) {
             from = p + 1;
-            let Some(close) = s[p..].find('>').map(|e| p + e) else { break };
+            // (a tag within 1 KiB, the text of an element within 4 KiB: no search runs to the end of the text at every `<`)
+            let Some(close) = window(s, p, 1024).find('>').map(|e| p + e) else { continue };
             let tag = &s[p..close];
             if !["key", "name", "type", "id"].iter().any(|a| attr(tag, a).is_some_and(|(x, y)| self.denied(&tag[x..y]))) {
                 continue;
@@ -717,7 +780,7 @@ impl Redactor {
                 }
             } else if !tag.ends_with('/') {
                 // (the text of the element, up to its closing tag)
-                if let Some(end) = s[close + 1..].find("</").map(|e| close + 1 + e) {
+                if let Some(end) = window(s, close + 1, 4096).find("</").map(|e| close + 1 + e) {
                     let content = &s[close + 1..end];
                     let t = content.trim();
                     if !t.is_empty() && !t.contains('<') && !t.starts_with("[REDACTED") {
@@ -739,11 +802,11 @@ impl Redactor {
                 continue;
             }
             let name = &s[i..name_end];
-            let Some(open_end) = s[name_end..].find('>').map(|e| name_end + e + 1) else { break };
+            let Some(open_end) = window(s, name_end, 1024).find('>').map(|e| name_end + e + 1) else { continue };
             if b[open_end - 2] == b'/' || !self.denied(name) {
                 continue;
             }
-            let Some(close) = s[open_end..].find("</").map(|e| open_end + e) else { continue };
+            let Some(close) = window(s, open_end, 4096).find("</").map(|e| open_end + e) else { continue };
             let content = &s[open_end..close];
             let t = content.trim();
             if !t.is_empty() && !t.contains('<') && !t.starts_with("[REDACTED") {
@@ -787,7 +850,11 @@ impl Redactor {
                             push(vat, v.len());
                         }
                     }
-                } else if let Some(flag) = w.strip_prefix("--").filter(|f| !f.contains('=') && !f.starts_with("no-") && !f.starts_with("with-")) {
+                } else if let Some(flag) = w
+                    .strip_prefix("--")
+                    .map(|f| f.trim_end_matches(['`', '"', '\'', ')', ',', '.']))
+                    .filter(|f| !f.contains('=') && !f.starts_with("no-") && !f.starts_with("with-"))
+                {
                     if curl && flag == "user" {
                         if let Some((vat, v)) = value_at(n + 1) {
                             if let Some(c) = v.find(':') {
@@ -1006,7 +1073,7 @@ impl Redactor {
                 // (a bare `key` only as code, not inside a literal: `"key-2024-11"`)
                 // (a count of tokens of text, `max_tokens`, is not a secret's name)
                 names_secret = (id.eq_ignore_ascii_case("key") && quoted.is_none())
-                    || (self.denied(id) && !id.to_ascii_lowercase().ends_with("tokens"))
+                    || (self.denied(id) && !id.to_ascii_lowercase().ends_with("tokens") && !id.to_ascii_lowercase().contains("tokeniz"))
                     || (call && LOGIN_CALLS.contains(&id.to_ascii_lowercase().as_str()));
             }
             if !names_secret {
@@ -1018,7 +1085,7 @@ impl Redactor {
                     q @ (b'"' | b'\'' | b'`') => {
                         let st = i + 1;
                         let Some(e) = line[st..].find(q as char).map(|e| st + e) else { break };
-                        if literal_secret(&line[st..e]) {
+                        if code_secret(&line[st..e]) {
                             ranges.push((at + st, at + e));
                         }
                         i = e + 1;
@@ -1043,7 +1110,7 @@ impl Redactor {
                         } else {
                             matches!(b.get(e), Some(b')' | b']' | b','))
                         };
-                        if e > st && closes_there && literal_secret(&line[st..e]) {
+                        if e > st && closes_there && code_secret(&line[st..e]) {
                             ranges.push((at + st, at + e));
                         }
                         i += 1;
@@ -1126,6 +1193,84 @@ fn cookie_values(s: &str, from: usize, end: usize) -> Vec<(usize, usize)> {
         at += part.len() + 1;
     }
     out
+}
+
+/// At most `n` bytes of `s` from `at` (cut on a character), so a search does not run to the end of the text.
+fn window(s: &str, at: usize, n: usize) -> &str {
+    let mut end = (at + n).min(s.len());
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[at.min(end)..end]
+}
+
+/// The spans of the GitHub Actions expressions, `${{ … }}` up to its `}}` on the same line (within 512 bytes).
+fn gha_expressions(s: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut from = 0;
+    while let Some(p) = s[from..].find("${{").map(|p| p + from) {
+        let w = window(s, p + 3, 512);
+        let w = &w[..w.find('\n').unwrap_or(w.len())];
+        match w.find("}}") {
+            Some(e) => {
+                spans.push((p, p + 3 + e + 2));
+                from = p + 3 + e + 2;
+            }
+            None => from = p + 3,
+        }
+    }
+    spans
+}
+
+/// The text with each span written as `*` (the same number of bytes: offsets do not move).
+fn mask_spans(s: &str, spans: &[(usize, usize)]) -> String {
+    if spans.is_empty() {
+        return s.to_string();
+    }
+    let mut b = s.as_bytes().to_vec();
+    for &(a, e) in spans {
+        b[a..e].fill(b'*');
+    }
+    // (a span starts and ends on ASCII, so what is left of the text stays whole characters)
+    String::from_utf8(b).unwrap_or_else(|_| s.to_string())
+}
+
+/// The ranges with the masked spans taken out of them, and what is left only when it holds a letter or a digit (the
+/// quotes around `"${{ … }}"` are not a secret).
+fn outside_units(t: &str, ranges: Vec<(usize, usize)>, units: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    if units.is_empty() {
+        return ranges;
+    }
+    let mut out = Vec::new();
+    for (a, e) in ranges {
+        let mut pieces = vec![(a, e)];
+        // (the units are in order and do not overlap: only the ones that meet this range are read)
+        let first = units.partition_point(|&(_, ue)| ue <= a);
+        for &(ua, ue) in units[first..].iter().take_while(|&&(ua, _)| ua < e) {
+            pieces = pieces
+                .into_iter()
+                .flat_map(|(x, y)| if ue <= x || y <= ua { vec![(x, y)] } else { vec![(x, ua.max(x)), (ue.min(y), y)] })
+                .filter(|(x, y)| x < y)
+                .collect();
+        }
+        out.extend(pieces.into_iter().filter(|&(x, y)| t.get(x..y).is_some_and(|p| p.chars().any(char::is_alphanumeric))));
+    }
+    out
+}
+
+/// A value of the environment made only of references (`{"TOKEN": "${{ secrets.X }}"}`), which stays.
+fn only_references(v: &Value) -> bool {
+    match v {
+        Value::String(t) => interpolation_only(t.trim()),
+        Value::Object(o) => !o.is_empty() && o.values().all(only_references),
+        Value::Array(a) => !a.is_empty() && a.iter().all(only_references),
+        _ => false,
+    }
+}
+
+/// Whether a word of a template's content is a field of a path (`.Values.db.passwordB64`): next to a dot.
+fn field_of_path(c: &str, t: &str) -> bool {
+    c.match_indices(t).any(|(i, _)| c[..i].ends_with('.') || c[i + t.len()..].starts_with('.'))
 }
 
 /// Words before `pass` that make it a ticket ("Boarding pass: seat 14C").
@@ -1228,6 +1373,11 @@ fn leet_password(k: &str) -> bool {
     ["password", "passwd", "passphrase", "senha", "secret", "token"].iter().any(|w| plain.contains(w))
 }
 
+/// A literal in code that looks like a credential and is not a path or a model's name (`"LiquidAI/LFM3-1.7B"`).
+fn code_secret(lit: &str) -> bool {
+    literal_secret(lit) && !lit.contains('/')
+}
+
 /// A literal in code that looks like a credential: one word of four or more characters with letters and a digit, a
 /// symbol or a case change inside, and not a name (an identifier without digits, an environment variable's name), a
 /// path, a URL, a format or a template.
@@ -1290,8 +1440,9 @@ fn scheme_ranges(s: &str) -> Vec<(usize, usize)> {
         }
         let letters_and_digits = v.bytes().any(|c| c.is_ascii_alphabetic()) && v.bytes().any(|c| c.is_ascii_digit());
         let opaque = body.len() >= 16 && body.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'-' | b'_' | b'.'));
-        let looks = if scheme == "token" { letters_and_digits || opaque } else { credential_shaped(v) || opaque };
-        if looks {
+        let same_line = !s[pair[0].0..at].contains('\n');
+        let looks = letters_and_digits || opaque || (scheme != "token" && credential_shaped(v) && !v.contains('_'));
+        if looks && same_line {
             ranges.push((at + lead, at + lead + v.len()));
         }
     }
@@ -1550,7 +1701,7 @@ fn url_credentials(s: &str, stats: &mut Stats) -> String {
         let auth = &s[start..end];
         if let Some(at) = auth.rfind('@') {
             match auth[..at].find(':') {
-                Some(colon) if colon + 1 < at => ranges.push((start + colon + 1, start + at)),
+                Some(colon) if colon + 1 < at && !interpolation_only(&auth[colon + 1..at]) => ranges.push((start + colon + 1, start + at)),
                 // (a token as the whole user info: `https://X@host`; `git@`, `ana@` are users)
                 None if literal_secret(&auth[..at]) => ranges.push((start, start + at)),
                 _ => {}
@@ -1811,6 +1962,10 @@ fn value_is_literal(value: &str, rest: &str) -> bool {
         ahead -= 1;
     }
     let line = format!("{value}{}", rest[..ahead].split('\n').next().unwrap_or(""));
+    // (an expression of GitHub Actions cut by the end of the line: `${{ secrets.X`)
+    if value.starts_with("${{") {
+        return false;
+    }
     // a structure that opens here and goes on (`auth: { user: …`, `tokens: [`)
     // (or a remark in parentheses on its line, several words: "Senha: (deixe em branco)")
     if matches!(value, "{" | "[" | "(") || (line.starts_with('(') && closes(&line) && line[1..line.find(')').unwrap_or(1)].contains(' ')) {
@@ -1878,7 +2033,7 @@ fn expression(c: &str) -> bool {
         && c.chars().all(|ch| ch.is_ascii_alphanumeric() || " _.:-[]'\"|()!?,".contains(ch))
         && c.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
             .filter(|t| !t.is_empty())
-            .all(|t| variable_name(t) || t.bytes().all(|b| b.is_ascii_digit()))
+            .all(|t| variable_name(t) || t.bytes().all(|b| b.is_ascii_digit()) || field_of_path(c, t))
 }
 
 /// What `$(…)` holds when it reads a secret from somewhere: a command named by a word without digits (`cat`, `pass`,
@@ -1894,9 +2049,9 @@ fn interpolation_at(v: &str) -> Option<usize> {
         let n = name.bytes().take_while(|c| c.is_ascii_alphanumeric() || *c == b'_').count();
         return variable_name(&name[..n]).then_some(1 + n);
     }
-    // (`${{ … }}` is a GitHub Actions expression, whole up to its `}}`)
+    // (`${{ … }}` is a GitHub Actions expression, one unit up to its `}}`, whatever it holds)
     let (open, close, ok): (&str, &str, fn(&str) -> bool) = if v.starts_with("${{") {
-        ("${{", "}}", expression)
+        ("${{", "}}", |_| true)
     } else if v.starts_with("{{") {
         ("{{", "}}", expression)
     } else if v.starts_with("${") {
@@ -2209,6 +2364,13 @@ const PROSE_WORDS: &[&str] = &[
     "with",
     "from",
     "em",
+    "na",
+    "nas",
+    "nos",
+    "num",
+    "numa",
+    "pela",
+    "pelo",
     "de",
     "do",
     "da",
@@ -2600,7 +2762,8 @@ fn phrase_ranges(s: &str) -> Vec<(usize, usize)> {
         let mut verb = None;
         let mut weak_verb = false;
         for (j, &(w, _, _)) in words.iter().enumerate().take(after_name + 4).skip(after_name) {
-            if w.contains(['{', '}', '(', ')', ';']) {
+            // (not past code, nor past the end of the name's line)
+            if w.contains(['{', '}', '(', ')', ';']) || s[label_end..words[j].1].contains('\n') {
                 break;
             }
             let lw = w.trim_end_matches([':', ',']).to_lowercase();
@@ -4155,8 +4318,9 @@ mod tests {
         ] {
             assert_eq!(red(ok), ok, "{ok}");
         }
+        // (one unit, whatever it holds: GitHub reads the expression, not the trace)
         let pw = weak_pw();
-        assert_eq!(red(&format!("password: ${{{{ {pw} }}}}")), format!("password: {REDACTED}"));
+        assert_eq!(red(&format!("password: ${{{{ {pw} }}}}")), format!("password: ${{{{ {pw} }}}}"));
     }
 
     /// A password prompt answered on its line (`Password for ana@host: X`, `[sudo] password for ana: X`): the answer
@@ -4247,6 +4411,179 @@ mod tests {
         assert_eq!(red(&format!("senha atual {pw}:\nfim")), format!("senha atual {REDACTED}:\nfim"));
         assert_eq!(red(&format!("root password admin: {pw}")), format!("root password admin: {REDACTED}"));
         assert_gone(&format!("pass ana@host: {pw}"), &pw);
+    }
+
+    /// The inputs of the performance test, `n` bytes each (cut on a character): every group of detectors, minified JSON
+    /// (no spaces: a look-behind that runs to the previous space runs to the start), and `{"a":[{"password":"` repeated.
+    fn perf_inputs(n: usize) -> Vec<(&'static str, String)> {
+        let fill = |unit: &str| {
+            let mut s = unit.repeat(n / unit.len() + 1);
+            let mut cut = n;
+            while !s.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            s.truncate(cut);
+            s
+        };
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        let random: String = (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (b' ' + (x % 95) as u8) as char
+            })
+            .collect();
+        vec![
+            ("pw=", fill("password=hunter2 api_key=abc123 ")),
+            ("prose", fill("a senha é bolo de cenoura e minha senha do wifi é Kalango2024. my password is correct horse. ")),
+            ("braces", fill("TOKEN: ${{ secrets.X }} pw=x1 {{ y }} ${A} $(cat f) ")),
+            ("short pairs", fill("pw=x1 ")),
+            ("markup", format!("{}</x>", fill("<password>abc"))),
+            ("flags", fill("mysql -p x --password y docker login -p z | sudo -S curl -u a:b ")),
+            ("random", random),
+            ("minified JSON", fill("{\"name\":\"ana\",\"password\":\"x1\",\"token\":\"y2\"},")),
+            ("{\"a\":[{\"password\":\"", fill("{\"a\":[{\"password\":\"")),
+        ]
+    }
+
+    /// The detectors take time in proportion to the text (1 MB is about twice 500 KB; four times would be quadratic), with no input that makes one of them
+    /// look back or ahead to the start or the end of the text at every step. `redact_str` is capped at 64 KiB, so the
+    /// detectors are driven directly; each run has a generous bound for a debug build, and stops the test at once when
+    /// it is exceeded.
+    /// (About a minute of a debug build at full load, which starves the tests with deadlines that run beside it: it is
+    /// left out of the default run; run it with `cargo test -- --ignored the_detectors_are_linear_on_one_megabyte`.)
+    #[test]
+    #[ignore]
+    fn the_detectors_are_linear_on_one_megabyte() {
+        const BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+        let timed = |text: String| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let r = Redactor::default();
+                let t = std::time::Instant::now();
+                let _ = r.text_pipeline(&text, &mut Stats::default());
+                let _ = r.scan_text(&text);
+                let _ = tx.send(t.elapsed());
+            });
+            rx.recv_timeout(BOUND).ok()
+        };
+        // (the best of two runs: the machine is shared, and a busy moment only makes a run slower)
+        let best = |text: &str, what: &str| {
+            (0..2).map(|_| timed(text.to_string()).unwrap_or_else(|| panic!("{what} took more than {BOUND:?}"))).min().unwrap()
+        };
+        let half = perf_inputs(500 * 1024);
+        let full = perf_inputs(1024 * 1024);
+        for ((name, h), (_, f)) in half.into_iter().zip(full) {
+            let th = best(&h, &format!("{name}: 500 KB"));
+            let tf = best(&f, &format!("{name}: 1 MB"));
+            eprintln!("PERF {name:<22} 500 KB {th:>12.3?}  1 MB {tf:>12.3?}  ratio {:.2}", tf.as_secs_f64() / th.as_secs_f64());
+            // (below a few milliseconds the ratio is noise)
+            if th.as_millis() >= 20 {
+                assert!(tf.as_secs_f64() < 3.5 * th.as_secs_f64(), "{name}: 1 MB took {tf:?}, 500 KB {th:?}: not linear");
+            }
+        }
+    }
+
+    /// Judging a value reads a bounded window after it: the same value before 8 MB of text without a line break costs
+    /// what it costs before a few bytes (a look-ahead to the end of the line made every pair of a long line quadratic).
+    #[test]
+    fn judging_a_value_reads_a_bounded_window() {
+        let r = Redactor::default();
+        let long = format!(" {}", "x".repeat(8 << 20));
+        let time = |rest: &str| {
+            let t = std::time::Instant::now();
+            for _ in 0..3000 {
+                std::hint::black_box(r.value_shaped(std::hint::black_box("hunter2"), rest, true, "password"));
+            }
+            t.elapsed()
+        };
+        let (short, far) = (time(" ok"), time(&long));
+        assert!(far < short * 50 + std::time::Duration::from_millis(200), "{far:?} before 8 MB, {short:?} before a few bytes");
+    }
+
+    /// `${{ … }}` is one unit everywhere: after a flag, a scheme, in a URL, piped, glued to a word, with braces of its
+    /// own; a secret glued to it still goes, and a JSON value or an environment made only of it stays.
+    #[test]
+    fn github_actions_expressions_are_one_unit_everywhere() {
+        for ok in [
+            "run: docker login -u ana -p ${{ secrets.PW }} ghcr.io",
+            concat!("run: cu", "rl -H \"Authorization: Bearer ${{ secrets.API }}\" https://x"),
+            "run: mysql -u root -p${{ secrets.DB }} -h x",
+            // (the command name put together: a secret scanner reads it with `-u user:x` as a credential)
+            concat!("run: cu", "rl -u ana:${{ secrets.PW }} https://x"),
+            "run: echo \"${{ secrets.TOKEN }}\" | docker login -u ana --password-stdin ghcr.io",
+            "password: ${{ format('{0}', secrets.X) }}",
+            "token: ${{ matrix.os }}-latest",
+            "password: ${{ secrets.X",
+            "{\"steps\":[{\"with\":{\"token\":\"${{ secrets.PAT }}\"}}]}",
+            "{\"env\":{\"TOKEN\":\"${{ secrets.GITHUB_TOKEN }}\"}}",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+        let pw = weak_pw();
+        assert_eq!(red(&format!("password: ${{{{ secrets.A }}}}{pw}")), format!("password: ${{{{ secrets.A }}}}{REDACTED}"));
+        assert_eq!(red(&format!("TOKEN: ${{{{ secrets.A }}}} PASSWORD: {pw}")), format!("TOKEN: ${{{{ secrets.A }}}} PASSWORD: {REDACTED}"));
+        let json = format!("{{\"token\":\"${{{{ secrets.A }}}}\",\"password\":\"{pw}\"}}");
+        assert_eq!(red(&json), format!("{{\"token\":\"${{{{ secrets.A }}}}\",\"password\":\"{REDACTED}\"}}"));
+        let r = Redactor::default();
+        let formatted = json!({ "token": "${{ format('{0}', secrets.X) }}" });
+        assert_eq!(r.redact_value(&formatted, &mut Stats::default()), formatted);
+        assert_eq!(r.scan_value(&json!({ "env": { "TOKEN": "${{ secrets.X }}" } })), 0);
+        assert_eq!(r.scan_value(&json!({ "env": { "TOKEN": "${{ secrets.X }}", "HOME": "/home/ana" } })), 1);
+    }
+
+    /// Ordinary texts that were cut: a token read from a file after `Bearer`, a token's type before a count on the next
+    /// line, a model's name, a reference as a URL's password, a template's field path, prose after a label, a program's
+    /// message, PowerShell, a flag between backticks, the label of a field.
+    #[test]
+    fn more_ordinary_texts_stay() {
+        for ok in [
+            "Authorization: Bearer $(cat ~/.cache/token)",
+            "token_type: bearer\nexpires_in: 3600",
+            "tokenizer = AutoTokenizer.from_pretrained(\"LiquidAI/LFM3-1.7B\")",
+            "tok = load_tokenizer(\"lfm3-1.7b\")",
+            "DATABASE_URL=postgres://app:${DB_PASSWORD}@db:5432/app",
+            "redis://:${REDIS_PASSWORD}@cache:6379/0",
+            "data:\n  password: {{ .Values.db.passwordB64 }}",
+            "A senha do Wi-Fi fica na etiqueta embaixo do roteador.",
+            "chpasswd: password for 'ana' changed",
+            "passwd: password updated successfully",
+            "$password = Read-Host -AsSecureString \"Senha\"",
+            "$env:API_TOKEN = $env:CI_JOB_TOKEN",
+            "Run `app --password-stdin` to read the password from standard input.",
+            "label_password = \"Senha\"\nplaceholder_token = \"Cole o token aqui\"",
+            "\"settings.token.hint\": \"O token expira em 24 horas\"",
+            "Auth scheme: Bearer\nsession2024 started",
+            "token = read(\"secrets/token2024.txt\")",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+        // (and the same places with a credential still lose it)
+        let pw = weak_pw();
+        for t in [
+            format!("Authorization: Bearer $(echo {pw})"),
+            format!("postgres://app:{pw}@db/app"),
+            format!("label_password = \"{pw}\""),
+            format!("passwd: {pw}"),
+            format!("tokenizer = load(\"{pw}\", password=\"{pw}\")"),
+        ] {
+            assert_gone(&t, &pw);
+        }
+    }
+
+    /// The checks the critic's mutants showed no test needed: `*_date` is a key about time, a quoted scheme word
+    /// alone is not an interpolation, a credential-shaped text with a secret's word is a credential, a placeholder holds
+    /// words, and a zone ends a date.
+    #[test]
+    fn the_rules_the_mutants_found_untested() {
+        let r = Redactor::default();
+        let kept = json!({ "password_date": "2026-11-26" });
+        assert_eq!(r.redact_value(&kept, &mut Stats::default()), kept);
+        assert_gone("password: \"basic\"", "basic");
+        assert_gone(&format!("secret: \"{}\"", concat!("api-key-", "2024x9")), "2024x9");
+        assert_gone(&format!("password: \"<{}>\"", weak_pw()), &weak_pw());
+        assert!(!timestamp("2026-11-26T10:00:00Zbanana"));
     }
 
     /// Code and configuration that name a secret without holding one (the critic's false positives).
