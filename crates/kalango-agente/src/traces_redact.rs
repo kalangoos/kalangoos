@@ -241,6 +241,9 @@ impl Redactor {
             && !self.keeps_number(key, v)
             && !matches!(v, Value::Bool(_) | Value::Null)
             && !text.is_some_and(|t| mask(t) || json_reference(t.trim(), key) || (describes_a_secret(key) && describing_value(key, t)))
+            // (an object or an array under a name that describes a secret, `password_policy: {min_length: 12}`, is
+            // read inside, where a secret still goes)
+            && !(describes_a_secret(key) && matches!(v, Value::Object(_) | Value::Array(_)))
     }
 
     /// A name in text that points at a secret: a denied key that does not only describe the secret (`password_policy:
@@ -500,17 +503,7 @@ impl Redactor {
             };
             let name = &s[st..e];
             // ("Boarding pass: seat 14C" is a ticket)
-            // (the word before it, read only for `pass` and only 64 bytes back: a look-behind that ran to the previous
-            // space ran to the start of a text without spaces, minified JSON, at every name)
-            let ticket = name.eq_ignore_ascii_case("pass") && {
-                let mut from = st.saturating_sub(64);
-                while !s.is_char_boundary(from) {
-                    from += 1;
-                }
-                let before = s[from..st].trim_end_matches([' ', '\t']).rsplit([' ', '\t', '\n']).next().unwrap_or("");
-                PASS_TICKETS.contains(&before.to_ascii_lowercase().as_str())
-            };
-            if ticket {
+            if name.eq_ignore_ascii_case("pass") && pass_ticket(s, st) {
                 i += 1;
                 continue;
             }
@@ -1517,6 +1510,18 @@ fn field_of_path(c: &str, t: &str) -> bool {
 }
 
 /// Words before `pass` that make it a ticket ("Boarding pass: seat 14C").
+/// Whether the word before `s[st..]` makes a `pass` a ticket ("Boarding pass"). Only 64 bytes back are read: a
+/// look-behind that ran to the previous space ran to the start of a text without spaces (JSON, a query string, a
+/// cookie) at every `pass`.
+fn pass_ticket(s: &str, st: usize) -> bool {
+    let mut from = st.saturating_sub(64);
+    while !s.is_char_boundary(from) {
+        from += 1;
+    }
+    let before = s[from..st].trim_end_matches([' ', '\t']).rsplit([' ', '\t', '\n']).next().unwrap_or("");
+    PASS_TICKETS.contains(&before.to_ascii_lowercase().as_str())
+}
+
 const PASS_TICKETS: &[&str] = &["boarding", "bus", "day", "season", "ski", "backstage", "press", "hall", "transit", "museum"];
 
 /// A date in a real layout: `YYYY-MM-DD`, optionally followed by `[T ]HH:MM`, `:SS`, a fraction and a zone (`Z` or
@@ -1581,15 +1586,14 @@ fn quoted_prose(q: &str) -> bool {
 }
 
 /// Whether a value under a key that describes a secret is a description, not the secret: a lifetime only as a
-/// duration (`15m`, `3600`, `1h`), a namespace only as a DNS name (`production`), a date under a key about time, and
+/// duration (`15m`, `3600`, `1h30m`), a namespace only as a plain name (`production`, `my_app`), a date under a key
+/// about time, and
 /// otherwise a value that is not credential-shaped (beyond the `_` of a name, `client_secret_basic`), not a secret
 /// literal and has no digit.
 fn describing_value(key: &str, t: &str) -> bool {
     match key_words(key).last().map(String::as_str) {
         Some("lifetime") => return duration(t),
-        // (a DNS name that is not a key: no secret literal, no run that mixes letters and digits; a key in hex is such a
-        // run, so these are also the checks every other name gets, `literal_secret` and `hex_key`)
-        Some("namespace") => return dns_name(t) && !literal_secret(t) && !mixes_letters_and_digits(t),
+        Some("namespace") => return plain_name(t),
         _ => {}
     }
     (!credential_shaped(&t.replace('_', "")) && !literal_secret(t) && !t.bytes().any(|c| c.is_ascii_digit())) || (time_key(key) && timestamp(t))
@@ -1601,40 +1605,54 @@ fn names_the_password(name: &str) -> bool {
     key_words(name).last().is_some_and(|w| password_name(w))
 }
 
-/// Whether a label of a name mixes letters and digits in a run of six or more (`ab12cd34ef`); `team-2`, `eu-west-1`
-/// do not.
-fn mixes_letters_and_digits(t: &str) -> bool {
-    t.split(['.', '-']).any(|l| l.len() >= 6 && l.bytes().any(|c| c.is_ascii_digit()) && l.bytes().any(|c| c.is_ascii_alphabetic()))
+/// A plain name, as a namespace is written (`production`, `my_app`, `MyApp`, `eu-west-1`): it starts with a letter,
+/// and each of its parts between `.`, `-` and `_` is only letters or only digits and is not a secret's word
+/// (`Prod_Secret`). A part that mixes letters and digits (`ns-4f9a2`, a key in hex) is not plain.
+fn plain_name(t: &str) -> bool {
+    t.starts_with(|c: char| c.is_ascii_alphabetic())
+        && t.split(['.', '-', '_']).all(|p| {
+            (p.bytes().all(|c| c.is_ascii_alphabetic()) || p.bytes().all(|c| c.is_ascii_digit()))
+                && !SECRET_WORDS.contains(&p.to_ascii_lowercase().as_str())
+        })
 }
+
+/// Words that name a secret, as a part of a plain name.
+const SECRET_WORDS: &[&str] = &["secret", "password", "passwd", "pass", "pwd", "token", "key", "senha", "credential"];
 
 /// A key whose last word is `lifetime` or `namespace`.
 fn lifetime_or_namespace(key: &str) -> bool {
     matches!(key_words(key).last().map(String::as_str), Some("lifetime" | "namespace"))
 }
 
-/// A duration: a number with an optional unit (`15m`, `3600`, `1h`, `30d`, `500ms`) or ISO 8601 (`PT15M`).
+/// A duration: a number with an optional unit (`15m`, `3600`, `1h`, `30d`, `500ms`, `7days`), numbers with units in
+/// a row (`1h30m`, `168h0m0s`), or ISO 8601 (`PT15M`).
 fn duration(t: &str) -> bool {
     let t = t.trim();
-    let digits = t.bytes().take_while(u8::is_ascii_digit).count();
     let iso = t
         .strip_prefix("PT")
         .or_else(|| t.strip_prefix('P'))
         .is_some_and(|r| !r.is_empty() && r.bytes().all(|c| c.is_ascii_digit() || matches!(c, b'H' | b'M' | b'S' | b'D' | b'W' | b'Y' | b'T')));
-    (digits > 0 && matches!(&t[digits..], "" | "s" | "m" | "h" | "d" | "w" | "y" | "ms" | "min" | "sec")) || iso
+    if iso || (!t.is_empty() && t.bytes().all(|c| c.is_ascii_digit())) {
+        return true;
+    }
+    // (each part a number and a unit)
+    let mut rest = t;
+    while !rest.is_empty() {
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let unit = rest[digits..].bytes().take_while(u8::is_ascii_alphabetic).count();
+        if digits == 0 || !DURATION_UNITS.contains(&&rest[digits..digits + unit]) {
+            return false;
+        }
+        rest = &rest[digits + unit..];
+    }
+    !t.is_empty()
 }
 
-/// A DNS name: labels of lower-case letters, digits and `-`, not starting or ending with `-`, separated by dots.
-fn dns_name(t: &str) -> bool {
-    !t.is_empty()
-        && t.len() <= 253
-        && t.split('.').all(|l| {
-            !l.is_empty()
-                && l.len() <= 63
-                && !l.starts_with('-')
-                && !l.ends_with('-')
-                && l.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
-        })
-}
+/// The units of a [`duration`].
+const DURATION_UNITS: &[&str] = &[
+    "ns", "us", "ms", "s", "m", "h", "d", "w", "y", "sec", "secs", "min", "mins", "hr", "hrs", "second", "seconds", "minute", "minutes", "hour",
+    "hours", "day", "days", "week", "weeks", "year", "years",
+];
 
 /// A shell variable, `$VAR` or `${VAR}` with an environment-style name (`$PASSWORD`, `${DB_PASS}`) and nothing else.
 fn shell_variable(t: &str) -> bool {
@@ -4798,6 +4816,12 @@ mod tests {
             ("random", random),
             ("minified JSON", fill("{\"name\":\"ana\",\"password\":\"x1\",\"token\":\"y2\"},")),
             ("{\"a\":[{\"password\":\"", fill("{\"a\":[{\"password\":\"")),
+            // (`pass` after a quote, an `&` or a `;` with a short value: the value ends before the next name, and the
+            // look-behind of every name could run to the start)
+            ("{\"pass\":\"x\"},", fill("{\"pass\":\"x\"},")),
+            ("\"pass\":1,", fill("\"pass\":1,")),
+            ("&pass=a&", fill("&pass=a&")),
+            (";pass=a;", fill(";pass=a;")),
         ]
     }
 
@@ -4836,6 +4860,8 @@ mod tests {
             if th.as_millis() >= 20 {
                 assert!(tf.as_secs_f64() < 3.5 * th.as_secs_f64(), "{name}: 1 MB took {tf:?}, 500 KB {th:?}: not linear");
             }
+            // (a release build: 1 MB of any input in under three seconds)
+            assert!(cfg!(debug_assertions) || tf < std::time::Duration::from_secs(3), "{name}: 1 MB took {tf:?}");
         }
     }
 
@@ -5252,6 +5278,101 @@ mod tests {
             "{\"token_lifetime\": \"3600sec\"}",
         ] {
             assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// The look-behind of a `pass` name reads a bounded window: after 8 MB of text without a space it costs what it
+    /// costs after a few bytes (a look-behind to the previous space made every `pass` of JSON without spaces, of a
+    /// query string or of a cookie quadratic).
+    #[test]
+    fn the_pass_look_behind_reads_a_bounded_window() {
+        let long = "x".repeat(8 << 20);
+        let time = |s: &str| {
+            let t = std::time::Instant::now();
+            for _ in 0..200 {
+                std::hint::black_box(pass_ticket(std::hint::black_box(s), s.len()));
+            }
+            t.elapsed()
+        };
+        let (short, far) = (time("x"), time(&long));
+        assert!(far < short * 50 + std::time::Duration::from_millis(200), "{far:?} after 8 MB, {short:?} after a few bytes");
+        let ticket = format!("{} Boarding ", "x".repeat(100));
+        assert!(pass_ticket(&ticket, ticket.len()) && pass_ticket("Boarding", 8) && !pass_ticket(&long, long.len()));
+    }
+
+    /// The rules the critic's mutants found untested: a shell variable is a whole name (`$PASSWORD-literal` is a word
+    /// glued to one), a literal shaped like a credential in an expression after a password's name is not a reference,
+    /// and sixteen hex letters with no digit (`deadbeefdeadbeef`) are a placeholder, not a key.
+    #[test]
+    fn the_round_seven_rules_are_tested() {
+        for (t, secret) in [
+            (concat!("cu", "rl -u ana:$PASSWORD-literal https://x"), "$PASSWORD-literal"),
+            (concat!("cu", "rl -u ana:$A.b https://x"), "$A.b"),
+            ("password: ${{ github.ref == 'HunterTwo' }}", "HunterTwo"),
+            ("pin: ${{ github.ref == 'HunterTwo' }}", "HunterTwo"),
+            // (only a `pass` is a ticket: "season password: X" is a password)
+            (concat!("season password: bana", "na2024"), concat!("bana", "na2024")),
+        ] {
+            assert_gone(t, secret);
+        }
+        for ok in ["key: deadbeefdeadbeef", "signing key: fadedcafebeadbad", concat!("cu", "rl -u ana:$PASSWORD https://x")] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// A policy is an object, not a secret: under a name that describes a secret, an object or an array is read inside
+    /// (its secrets still go), in a value and in text; a name of a container of secrets, `secrets`, still loses it whole.
+    #[test]
+    fn a_policy_object_is_read_inside() {
+        let r = Redactor::default();
+        let pw = weak_pw();
+        for ok in [json!({"password_policy": {"min_length": 12}}), json!({"token_policy": ["read", "write"]})] {
+            assert_eq!(r.redact_value(&ok, &mut Stats::default()), ok, "{ok}");
+            assert_eq!(r.scan_value(&ok), 0, "{ok}");
+            assert_eq!(red(&ok.to_string()), ok.to_string(), "{ok}");
+        }
+        let inside = json!({"password_policy": {"min_length": 12, "password": pw}});
+        assert_eq!(r.redact_value(&inside, &mut Stats::default()), json!({"password_policy": {"min_length": 12, "password": REDACTED}}));
+        assert_gone(&inside.to_string(), &pw);
+        assert_eq!(r.redact_value(&json!({"secrets": {"db": "x"}}), &mut Stats::default()), json!({"secrets": REDACTED}));
+    }
+
+    /// A lifetime written in parts (`1h30m`, `168h0m0s`) or in a word (`7days`) is a duration; a namespace of plain
+    /// words (`my_app`, `MyApp`, `eu-west-1`) is a name. Letters and digits mixed in one part are not.
+    #[test]
+    fn compound_durations_and_plain_namespaces_stay() {
+        for ok in [
+            "token_lifetime: 1h30m",
+            "token_lifetime: 168h0m0s",
+            "token_lifetime: 7days",
+            "secret_namespace: my_app",
+            "secret_namespace: MyApp",
+            "secret_namespace: eu-west-1",
+            "{\"secret_namespace\": \"team-2\"}",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+        for (t, secret) in [
+            ("token_lifetime: 1h30x", "1h30x"),
+            ("token_lifetime: 7dayz", "7dayz"),
+            ("secret_namespace: ns-4f9a2", "ns-4f9a2"),
+            ("secret_namespace: Prod-Secret", "Prod-Secret"),
+        ] {
+            assert_gone(t, secret);
+        }
+        let r = Redactor::default();
+        // (a namespace starts with a letter: a number is not a name; a lifetime is numbers with units, not a unit alone)
+        for (k, v) in [
+            ("secret_namespace", "Prod_Secret"),
+            ("token_lifetime", "1h30x"),
+            ("api_key_namespace", "ns-4f9a2"),
+            ("secret_namespace", "48291375"),
+            ("token_lifetime", "ms"),
+        ] {
+            assert_eq!(r.redact_value(&json!({ k: v }), &mut Stats::default())[k], REDACTED, "{k}: {v}");
+        }
+        for (k, v) in [("secret_namespace", "my_app"), ("token_lifetime", "168h0m0s"), ("token_lifetime", "3600")] {
+            assert_eq!(r.redact_value(&json!({ k: v }), &mut Stats::default())[k], v, "{k}: {v}");
         }
     }
 
