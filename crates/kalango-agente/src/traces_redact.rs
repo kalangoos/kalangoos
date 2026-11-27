@@ -578,8 +578,7 @@ impl Redactor {
                     if interpolation_only(quoted)
                         || mask(quoted)
                         || placeholder(quoted)
-                        || (!strong
-                            && (names_a_secret(quoted) || quoted.split_whitespace().filter(|w| w.chars().all(char::is_alphabetic)).count() >= 3))
+                        || (!strong && (names_a_secret(quoted) || quoted_prose(quoted)))
                     {
                         i = ve.max(i + 1);
                         continue;
@@ -599,7 +598,7 @@ impl Redactor {
                     }
                     ve = value_end(b, vs);
                     // (a `$(…)`, `${…}` or `{{…}}` is judged, and cut, whole: `$(echo X)`)
-                    for (open, close) in [("$(", ")"), ("${", "}"), ("{{", "}}")] {
+                    for (open, close) in [("$(", ")"), ("${{", "}}"), ("${", "}"), ("{{", "}}")] {
                         if s[vs..].starts_with(open) {
                             // (on its line, at most 256 bytes ahead)
                             let window = &b[vs..(vs + 256).min(b.len())];
@@ -692,13 +691,18 @@ impl Redactor {
         // (the name of a secret as the value, `passwd: password updated`; a PowerShell cmdlet, `Read-Host`; a variable
         // of PowerShell's environment, `$env:CI_JOB_TOKEN`)
         let lower = value.to_ascii_lowercase();
-        let cmdlet = value.split_once('-').is_some_and(|(v, n)| {
+        let verb_noun = value.split_once('-').is_some_and(|(v, n)| {
             v.len() > 2
                 && n.len() > 2
                 && v.starts_with(|c: char| c.is_ascii_uppercase())
                 && n.starts_with(|c: char| c.is_ascii_uppercase())
                 && value.bytes().all(|c| c.is_ascii_alphabetic() || c == b'-')
         });
+        // (a known cmdlet; or another verb-noun given a parameter, `Get-Thing -Name x`, under a name that is not a
+        // password's: `password: Hunter-Two` is a password)
+        let parameter = rest.trim_start_matches([' ', '\t']).starts_with('-')
+            && rest.trim_start_matches([' ', '\t']).as_bytes().get(1).is_some_and(u8::is_ascii_alphabetic);
+        let cmdlet = verb_noun && (KNOWN_CMDLETS.contains(&lower.as_str()) || (parameter && !password_label(name)));
         // (another word after it on its line: only the bytes up to that word are read)
         let after = rest.trim_start_matches([' ', '\t']);
         let sentence = after.len() < rest.len() && !after.is_empty() && !after.starts_with(['\n', '\r']);
@@ -1195,6 +1199,26 @@ fn cookie_values(s: &str, from: usize, end: usize) -> Vec<(usize, usize)> {
     out
 }
 
+/// PowerShell cmdlets that read or build a secret instead of holding one (`$password = Read-Host -AsSecureString`).
+const KNOWN_CMDLETS: &[&str] = &[
+    "read-host",
+    "get-content",
+    "get-credential",
+    "convertto-securestring",
+    "convertfrom-securestring",
+    "get-secret",
+    "get-storedcredential",
+    "get-azkeyvaultsecret",
+    "get-item",
+    "get-itemproperty",
+    "get-childitem",
+    "import-clixml",
+    "get-variable",
+    "invoke-restmethod",
+    "invoke-webrequest",
+    "new-object",
+];
+
 /// At most `n` bytes of `s` from `at` (cut on a character), so a search does not run to the end of the text.
 fn window(s: &str, at: usize, n: usize) -> &str {
     let mut end = (at + n).min(s.len());
@@ -1202,6 +1226,67 @@ fn window(s: &str, at: usize, n: usize) -> &str {
         end -= 1;
     }
     &s[at.min(end)..end]
+}
+
+/// The contexts and functions of GitHub Actions expressions.
+const GHA_CONTEXTS: &[&str] = &["github", "env", "vars", "secrets", "matrix", "steps", "needs", "inputs", "job", "jobs", "runner", "strategy"];
+const GHA_FUNCTIONS: &[&str] =
+    &["format", "contains", "startswith", "endswith", "join", "tojson", "fromjson", "hashfiles", "success", "always", "cancelled", "failure"];
+
+/// Whether the content of `${{ … }}` is an expression: names of a context (`secrets.X`, `matrix.os`, `github.token`),
+/// known functions (`format('{0}', secrets.X)`), operators, numbers, `true`/`false`/`null`, and strings that do not
+/// look like a credential. A pair (`password=X`), a bare word or a credential-shaped string is not one.
+fn gha_expression(c: &str) -> bool {
+    let b = c.as_bytes();
+    let mut i = 0;
+    let mut any = false;
+    while i < b.len() {
+        let ch = b[i];
+        if ch.is_ascii_whitespace() || matches!(ch, b'(' | b')' | b',' | b'[' | b']' | b'*') {
+            i += 1;
+        } else if ch == b'\'' {
+            let Some(e) = c[i + 1..].find('\'').map(|e| i + 1 + e) else { return false };
+            if literal_secret(&c[i + 1..e]) {
+                return false;
+            }
+            i = e + 1;
+            any = true;
+        } else if matches!(ch, b'=' | b'!' | b'<' | b'>' | b'&' | b'|') {
+            // (`==`, `!=`, `<=`, `>=`, `&&`, `||`, `!`, `<`, `>`: an `=` alone makes a pair)
+            let op = b.get(i..i + 2).unwrap_or(&b[i..]);
+            if ch == b'=' && op != b"==" {
+                return false;
+            }
+            i += if matches!(op, b"==" | b"!=" | b"<=" | b">=" | b"&&" | b"||") { 2 } else { 1 };
+        } else if ch.is_ascii_digit() {
+            while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'.') {
+                i += 1;
+            }
+            // (a number glued to letters is a word, not a number)
+            if b.get(i).is_some_and(|c| c.is_ascii_alphabetic()) {
+                return false;
+            }
+            any = true;
+        } else if ch.is_ascii_alphabetic() || ch == b'_' {
+            let st = i;
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || matches!(b[i], b'_' | b'-' | b'.')) {
+                i += 1;
+            }
+            let path = &c[st..i];
+            let head = path.split('.').next().unwrap_or("").to_ascii_lowercase();
+            let call = b[i..].iter().find(|c| !c.is_ascii_whitespace()) == Some(&b'(');
+            if !(GHA_CONTEXTS.contains(&head.as_str())
+                || (call && GHA_FUNCTIONS.contains(&head.as_str()))
+                || matches!(path, "true" | "false" | "null"))
+            {
+                return false;
+            }
+            any = true;
+        } else {
+            return false;
+        }
+    }
+    any
 }
 
 /// The spans of the GitHub Actions expressions, `${{ … }}` up to its `}}` on the same line (within 512 bytes).
@@ -1212,11 +1297,12 @@ fn gha_expressions(s: &str) -> Vec<(usize, usize)> {
         let w = window(s, p + 3, 512);
         let w = &w[..w.find('\n').unwrap_or(w.len())];
         match w.find("}}") {
-            Some(e) => {
+            // (only an expression is a unit; one that holds a pair or a credential is text the detectors read)
+            Some(e) if gha_expression(&w[..e]) => {
                 spans.push((p, p + 3 + e + 2));
                 from = p + 3 + e + 2;
             }
-            None => from = p + 3,
+            _ => from = p + 3,
         }
     }
     spans
@@ -1325,6 +1411,18 @@ fn time_key(key: &str) -> bool {
     key_words(key).last().is_some_and(|w| matches!(w.as_str(), "at" | "date" | "time" | "timestamp" | "changed" | "updated" | "created" | "since"))
 }
 
+/// A quoted sentence, not a passphrase: three words of letters or more and a mark of prose, a short word of a language
+/// (`o`, `the`, `em`) or punctuation (`O token expira em 24 horas`, `Paste the token here.`); `correct horse battery
+/// staple` has none.
+fn quoted_prose(q: &str) -> bool {
+    let words: Vec<&str> = q.split_whitespace().collect();
+    let letters = words.iter().filter(|w| w.chars().all(char::is_alphabetic)).count();
+    let marked = words.iter().any(|w| PROSE_WORDS.contains(&fold_accents(w.trim_matches(|c: char| !c.is_alphabetic())).as_str()))
+        || q.trim_end().ends_with(['.', '!', '?', ':'])
+        || q.contains([',', ';']);
+    letters >= 3 && marked
+}
+
 /// A mask in place of a value (`***`, `...`, `xxxx`, `••••`): not a secret.
 fn mask(t: &str) -> bool {
     t.chars().count() >= 3 && t.chars().all(|c| matches!(c, '*' | 'x' | 'X' | '•' | '.' | '…'))
@@ -1375,7 +1473,30 @@ fn leet_password(k: &str) -> bool {
 
 /// A literal in code that looks like a credential and is not a path or a model's name (`"LiquidAI/LFM3-1.7B"`).
 fn code_secret(lit: &str) -> bool {
-    literal_secret(lit) && !lit.contains('/')
+    literal_secret(lit) && !path_or_model(lit)
+}
+
+/// A path (`config/v2/token.json`, `secrets/token2024.txt`: segments of a name, the last one a file with an
+/// extension) or a model's name (`LiquidAI/LFM3-1.7B`: an organization of letters and a
+/// name with a version). A run of base64 with `/` (`Zk9v…/QmF6…+MTIz…==`) is neither.
+fn path_or_model(lit: &str) -> bool {
+    if !lit.contains('/') {
+        return false;
+    }
+    let segments: Vec<&str> = lit.split('/').collect();
+    if !segments.iter().all(|p| p.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-' | b'~'))) {
+        return false;
+    }
+    let file = segments.last().is_some_and(|f| {
+        f.rsplit_once('.').is_some_and(|(n, ext)| !n.is_empty() && (1..=5).contains(&ext.len()) && ext.bytes().all(|c| c.is_ascii_alphabetic()))
+    });
+    let model = segments.len() == 2
+        && segments[0].len() >= 2
+        && segments[0].bytes().all(|c| c.is_ascii_alphabetic() || c == b'-')
+        && segments[1].bytes().any(|c| c.is_ascii_alphabetic())
+        && segments[1].contains(['-', '.']);
+    // (a path that starts with `/`, `./` or `~/` is never a literal secret: see `literal_secret`)
+    file || model
 }
 
 /// A literal in code that looks like a credential: one word of four or more characters with letters and a digit, a
@@ -1963,7 +2084,7 @@ fn value_is_literal(value: &str, rest: &str) -> bool {
     }
     let line = format!("{value}{}", rest[..ahead].split('\n').next().unwrap_or(""));
     // (an expression of GitHub Actions cut by the end of the line: `${{ secrets.X`)
-    if value.starts_with("${{") {
+    if value.starts_with("${{") && !line.contains("}}") {
         return false;
     }
     // a structure that opens here and goes on (`auth: { user: …`, `tokens: [`)
@@ -2051,7 +2172,7 @@ fn interpolation_at(v: &str) -> Option<usize> {
     }
     // (`${{ … }}` is a GitHub Actions expression, one unit up to its `}}`, whatever it holds)
     let (open, close, ok): (&str, &str, fn(&str) -> bool) = if v.starts_with("${{") {
-        ("${{", "}}", |_| true)
+        ("${{", "}}", gha_expression)
     } else if v.starts_with("{{") {
         ("{{", "}}", expression)
     } else if v.starts_with("${") {
@@ -4318,9 +4439,9 @@ mod tests {
         ] {
             assert_eq!(red(ok), ok, "{ok}");
         }
-        // (one unit, whatever it holds: GitHub reads the expression, not the trace)
+        // (a reference only with an expression inside: a bare credential is not one)
         let pw = weak_pw();
-        assert_eq!(red(&format!("password: ${{{{ {pw} }}}}")), format!("password: ${{{{ {pw} }}}}"));
+        assert_gone(&format!("password: ${{{{ {pw} }}}}"), &pw);
     }
 
     /// A password prompt answered on its line (`Password for ana@host: X`, `[sudo] password for ana: X`): the answer
@@ -4584,6 +4705,77 @@ mod tests {
         assert_gone(&format!("secret: \"{}\"", concat!("api-key-", "2024x9")), "2024x9");
         assert_gone(&format!("password: \"<{}>\"", weak_pw()), &weak_pw());
         assert!(!timestamp("2026-11-26T10:00:00Zbanana"));
+    }
+
+    /// `${{ … }}` is a reference only when it holds an expression (names, fields, strings and known functions): one that
+    /// holds a pair or a credential is text, and the detectors read it.
+    #[test]
+    fn an_expression_holding_a_secret_is_not_a_reference() {
+        let pw = weak_pw();
+        for t in [format!("run: echo ${{{{ password={pw} }}}}"), format!("TOKEN: ${{{{ '{pw}' }}}}"), format!("password: ${{{{ {pw} }}}}")] {
+            assert_gone(&t, &pw);
+        }
+        assert_gone("TOKEN: ${{ secrets.A = 'b' }}", "secrets.A");
+        let r = Redactor::default();
+        let v = json!({ "password": format!("${{{{ '{pw}' }}}}") });
+        assert_eq!(r.redact_value(&v, &mut Stats::default())["password"], REDACTED);
+        for ok in [
+            "TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+            "password: ${{ format('{0}', secrets.X) }}",
+            "if: ${{ github.event_name == 'push' && matrix.os != 'windows' }}",
+            "token: ${{ matrix.os }}-latest",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// A PowerShell cmdlet is code only when it is a known one or is given a parameter, and never under a password's
+    /// name: `password: Hunter-Two` is a password.
+    #[test]
+    fn a_cmdlet_is_code_only_when_it_is_one() {
+        for t in ["password: Hunter-Two", "password = Hunter-Two", "password: Hunter-Two -Force", "token = Blue-Sky"] {
+            assert_gone(t, "Two");
+        }
+        assert_gone("token = Blue-Sky", "Sky");
+        for ok in ["$password = Read-Host -AsSecureString \"Senha\"", "$token = Get-Content token.txt", "$cred = Get-Credential"] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// A literal with `/` in code is a path or a model's name only in those shapes; a base64-looking literal with `/`
+    /// is a credential.
+    #[test]
+    fn a_slash_does_not_make_a_literal_a_path() {
+        let b64 = concat!("Zk9vYmFy", "/QmF6cXV4", "+MTIzNDU2Nzg5MA==");
+        assert_gone(&format!("token = decode(\"{b64}\")"), "QmF6cXV4");
+        assert_gone(&format!("password = get_secret(\"{}\")", concat!("a1b2", "/c3d4")), "c3d4");
+        for ok in [
+            "tokenizer = AutoTokenizer.from_pretrained(\"LiquidAI/LFM3-1.7B\")",
+            "password = load_model(\"LiquidAI/LFM3-1.7B\")",
+            "token = read(\"secrets/token2024.txt\")",
+            "token = open(\"./config/v2/token.json\")",
+            "token = open(\"~/.config/kalango/token2\")",
+            "token = read(\"config/keys/token2024.json\")",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// A quoted sentence under a name that is not a password's is prose only with the marks of prose (a short word of
+    /// a language, or punctuation); a passphrase of plain words under any secret's name goes.
+    #[test]
+    fn a_quoted_passphrase_is_not_prose() {
+        let words = concat!("correct horse ", "battery staple");
+        for t in [format!("password=\"{words}\""), format!("secret = \"{words}\""), format!("api_key: \"{words}\"")] {
+            assert_gone(&t, "battery");
+        }
+        for ok in [
+            "\"settings.token.hint\": \"O token expira em 24 horas\"",
+            "placeholder_token = \"Cole o token aqui\"",
+            "token_help = \"Paste the token here.\"",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
     }
 
     /// Code and configuration that name a secret without holding one (the critic's false positives).
