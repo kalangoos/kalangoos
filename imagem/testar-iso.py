@@ -10,6 +10,7 @@
 Sai com 0 quando tudo confere; senão diz o que não conferiu (e o que o sistema registrou) e sai com 1.
 """
 import base64
+import os
 import re
 import socket
 import sys
@@ -76,6 +77,15 @@ class Console:
         return body.strip(), int(code.split()[0])
 
 
+def dns_works(c, where):
+    """The name server is set and a real name resolves (a system with a cable network but no DNS looks connected and
+    cannot reach the archive, the models or anything else by name)."""
+    ns, _ = c.run("grep -E '^nameserver' /etc/resolv.conf")
+    good = check("nameserver" in ns, f"{where}: /etc/resolv.conf tem um nameserver", ns)
+    host, _ = c.run("getent hosts archive.ubuntu.com", 60)
+    return good & check(any(ch.isdigit() for ch in host.split()[:1][0]) if host.split() else False, f"{where}: o nome archive.ubuntu.com resolve", host)
+
+
 def system_modes(c):
     """The system's folders are 755 and nothing under /usr, /etc or /boot is writable by a group or by everyone: a
     trusted program kalangod checks (the approval screen, the shell) is refused in a group-writable folder, and such a
@@ -106,6 +116,131 @@ def session_up(c, user, seconds=240):
     return out
 
 
+def optional_apps(c, user):
+    """VirtualDesk and the agents service (kalango-fluxosd) are optional in the ISO (imagem/construir.sh): when they are
+    in the installed system, check that they start; when they are not, say so and move on."""
+    good = True
+    have, _ = c.run("for f in /usr/bin/kalango-virtualdesk /usr/lib/kalango/kalango-fluxosd; do test -x $f && echo $f; done")
+    uid, _ = c.run(f"id -u {user}")
+    runtime = f"/run/user/{uid.strip()}"
+    # (the MCP helper that the dev tests use, sent in pieces: one console line holds about 4 kB)
+    helper = base64.b64encode(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "chamar-kalangod.py"), "rb").read()).decode()
+    c.run(": > /tmp/chamar.b64")
+    for i in range(0, len(helper), 800):
+        c.run(f"printf %s {helper[i:i + 800]} >> /tmp/chamar.b64")
+    c.run("base64 -d /tmp/chamar.b64 > /tmp/chamar-kalangod.py")
+    call = f"KALANGOD=/usr/libexec/kalango/kalangod KALANGOD_SOCKET=/run/kalango/mcp.sock python3 /tmp/chamar-kalangod.py"
+    if "/usr/bin/kalango-virtualdesk" in have:
+        out, _ = c.run("ldd /usr/bin/kalango-virtualdesk | grep -c 'not found'; kalango-virtualdesk --version; "
+                       "ls /usr/share/applications/os.kalango.VirtualDesk.desktop /usr/share/icons/hicolor/256x256/apps/os.kalango.VirtualDesk.png; "
+                       "qemu-system-x86_64 --version | head -1; ls /usr/share/OVMF/ | head -3; command -v swtpm qemu-img")
+        good &= check(out.splitlines()[0].strip() == "0" and "kalango-virtualdesk 0." in out and "QEMU emulator" in out and "OVMF" in out and "swtpm" in out and "qemu-img" in out,
+                      "VirtualDesk: sem biblioteca faltando, atalho, ícone, QEMU, UEFI e TPM no sistema", out)
+        # (the program itself, on an empty library: no machines)
+        out, code = c.run("d=$(mktemp -d); env KALANGO_VIRTUALDESK_DIR=$d XDG_RUNTIME_DIR=$d kalango-virtualdesk ferramenta vm.listar '{}'; rm -rf $d")
+        good &= check(code == 0 and '"maquinas":[]' in out.replace(" ", ""), "VirtualDesk: abre e lista zero máquinas", out)
+        # (and through kalangod, as the agents reach it)
+        out, code = c.run(f"{call} vm.listar 2>&1", 90)
+        good &= check(code == 0 and "quinas" in out, "VirtualDesk: o kalangod chama vm.listar e a resposta vem", out)
+        # (the window, in the person's session: still there after a few seconds)
+        out, _ = c.run(f"export XDG_RUNTIME_DIR={runtime}; w=$(ls $XDG_RUNTIME_DIR | grep -m1 '^wayland-[0-9]*$'); "
+                       "(WAYLAND_DISPLAY=$w kalango-virtualdesk >/tmp/vd.log 2>&1 &); sleep 12; pgrep -u $(id -u) -x kalango-virtual >/dev/null && echo ABERTO; "
+                       "pkill -u $(id -u) -x kalango-virtual; tail -3 /tmp/vd.log", 60)
+        good &= check("ABERTO" in out, "VirtualDesk: a janela abre na sessão e fica de pé", out)
+    else:
+        print("      (VirtualDesk não está nesta ISO)")
+    if "/usr/lib/kalango/kalango-fluxosd" in have:
+        sysd = f"XDG_RUNTIME_DIR={runtime} DBUS_SESSION_BUS_ADDRESS=unix:path={runtime}/bus"
+        out, _ = c.run(f"{sysd} systemctl --user is-active kalango-fluxos.socket kalango-fluxos.service; ls {runtime}/kalango/")
+        good &= check(out.splitlines()[0].strip() == "active", "Fluxos: o soquete (ativação sob demanda) está ativo", out)
+        print("      antes de qualquer chamada, o serviço está: " + out.splitlines()[1].strip())
+        out, code = c.run(f"{call} agentes.listar 2>&1", 120)
+        good &= check(code == 0 and "error" not in out.lower()[:80], "Fluxos: o kalangod chama agentes.listar e o serviço responde", out[:600])
+        out, code = c.run(f"{call} modelos.listar 2>&1", 120)
+        print("      modelos.listar (código %d): %s" % (code, out[:400].replace("\n", " ")))
+        out, _ = c.run(f"{sysd} systemctl --user is-active kalango-fluxos.service; {sysd} systemctl --user show kalango-fluxos.service -p ControlGroup --value | tr / ' '; ps -eo cgroup:90,args | grep '[k]alango-fluxosd servir' | cut -c1-120")
+        good &= check(out.splitlines()[0].strip() == "active", "Fluxos: o serviço subiu pela ativação do soquete", out)
+        print("      cgroup do serviço: " + " | ".join(out.splitlines()[1:]))
+        good &= check("kalango-agentes.slice kalango-fluxos.service" in out or "kalango-agentes.slice/kalango-fluxos.service" in out.replace("\r", "").replace("\n", ""),
+                      "Fluxos: o serviço roda na fatia dos agentes (com a guarda do kernel ativa) e abre o próprio banco", out)
+    else:
+        print("      (o serviço dos agentes e fluxos não está nesta ISO)")
+    return good
+
+
+def embedded_models(c, user):
+    """A ISO with models (KALANGO_IMAGEM_MODELOS / KALANGO_IMAGEM_TODOS_MODELOS): the models and their licence notice are in
+    the installed system and nothing was downloaded again into the person's folder. Without models, says so and moves on."""
+    good = True
+    out, _ = c.run("ls /usr/share/kalango/modelos/*.gguf 2>/dev/null | wc -l")
+    if out.strip() == "0":
+        print("      (esta ISO não traz modelos de IA)")
+        return good
+    out, _ = c.run("ls -1 /usr/share/kalango/modelos/")
+    print("      modelos no sistema: " + out.replace("\n", " "))
+    notice, _ = c.run("head -c 1500 /usr/share/doc/kalango/modelos/LICENCAS.txt; echo; grep -c '^\\* ' /usr/share/doc/kalango/modelos/LICENCAS.txt")
+    good &= check("licença / licence" in notice, "o aviso de licenças dos modelos está em /usr/share/doc/kalango/modelos/LICENCAS.txt", notice)
+    # (the shell queues what the installer chose at the session's start: the carried models are installed, not downloaded)
+    time.sleep(45)
+    mine, _ = c.run(f"ls -a /home/{user}/.local/share/kalango/modelos 2>/dev/null | grep -c -E '\\.gguf|\\.part'")
+    good &= check(mine.strip() == "0", "os modelos da ISO não foram baixados de novo para a pasta da pessoa", mine)
+    uid, _ = c.run(f"id -u {user}")
+    log, _ = c.run(f"XDG_RUNTIME_DIR=/run/user/{uid.strip()} journalctl --user -u kalango-shell --no-pager 2>/dev/null | grep -i 'modelos' | tail -5")
+    print("      registro do shell sobre modelos: " + (log.replace("\n", " | ") or "(nada)"))
+    return good
+
+
+def agents_guard(c, user):
+    """The eBPF guard also covers the agents' cgroup under the person's own systemd manager (where kalango-fluxosd runs):
+    a process started in that slice cannot open a protected folder (~/.ssh), the same process outside it can."""
+    good = True
+    call = "KALANGOD=/usr/libexec/kalango/kalangod KALANGOD_SOCKET=/run/kalango/mcp.sock python3 /tmp/chamar-kalangod.py"
+    out, _ = c.run(f"{call} kernel.seguranca 2>&1", 90)
+    print("      kernel.seguranca: " + out.replace("\n", " ")[:300])
+    flat = re.sub(r"\s+", "", out)
+    if '"bpf_lsm_ativo":false' in flat:
+        print("      (o kernel desta VM não tem o LSM bpf ativo; sem verificação)")
+        return good
+    # (o LSM bpf está ativo: a guarda TEM de ter carregado. Uma recusa do verificador do kernel deixava a guarda desligada
+    # e o teste seguia adiante)
+    good &= check('"guarda_ebpf_ativa":true' in flat, "a guarda eBPF carregou no kernel (o verificador aceitou o programa)", out[:1500])
+    good &= check('"guarda_ebpf_completa":true' in flat, "a guarda cobre todos os cgroups de agentes (nenhum ficou de fora do mapa)", out[:1500])
+    uid, _ = c.run(f"id -u {user}")
+    sysd = f"XDG_RUNTIME_DIR=/run/user/{uid.strip()} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid.strip()}/bus"
+    # (o cgroup dos agentes da pessoa existe desde o início da sessão, e a guarda já o conhece: sem isso o primeiro processo de
+    # um agente rodava sem a guarda por até 1 s)
+    out, _ = c.run(f"{sysd} systemctl --user is-active kalango-agentes.slice")
+    good &= check(out.strip() == "active", "o cgroup dos agentes da pessoa já está ativo antes de qualquer agente", out)
+    time.sleep(3)
+    c.run("mkdir -p ~/.ssh && echo x > ~/.ssh/guarda-teste")
+    time.sleep(16)  # (the guard learns new protected folders every 15 s)
+    out, code = c.run("cat ~/.ssh/guarda-teste")
+    good &= check(code == 0, "fora do slice dos agentes a pasta protegida abre", out)
+    out, code = c.run(f"{sysd} systemd-run --user --slice=kalango-agentes.slice --wait --pipe --quiet cat /home/{user}/.ssh/guarda-teste 2>&1")
+    good &= check(code != 0 and ("not permitted" in out or "negada" in out.lower() or "Operation" in out), "no slice dos agentes do gerenciador de usuário o kernel nega (a regra inviolável vale para o Fluxos)", out)
+    # ---- o que um agente (fatia dos agentes) não abre, além de ~/.ssh: a pasta do Mind. (A pasta dos Fluxos está fora da guarda
+    # do kernel de propósito: o serviço dos Fluxos roda nesta fatia e é o dono dela; ela segue protegida pela política e pelo
+    # Landlock. Que o serviço sobe com a guarda ativa é conferido por optional_apps.)
+    no = lambda o: "not permitted" in o or "negada" in o.lower() or "Operation" in o
+    in_slice = lambda sl, cmd: c.run(f"{sysd} systemd-run --user --slice={sl} --wait --pipe --quiet {cmd} 2>&1")
+    c.run("mkdir -p ~/.local/share/kalango/mind && echo x > ~/.local/share/kalango/mind/guarda-teste")
+    time.sleep(16)  # (a guarda aprende pastas novas a cada 15 s)
+    out, code = in_slice("kalango-agentes.slice", f"cat /home/{user}/.local/share/kalango/mind/guarda-teste")
+    good &= check(code != 0 and no(out), "um agente NÃO abre a pasta do Mind (eBPF)", out)
+    # ---- o portão do Mind: o código de confirmação em %t/kalango/mind-confirm é lido pela sessão da pessoa e negado a um agente
+    rt = f"/run/user/{uid.strip()}/kalango/mind-confirm"
+    c.run(f"mkdir -p {rt} && echo codigo-de-teste > {rt}/codigo")
+    time.sleep(3)  # (a guarda procura as pastas da área de execução a cada segundo)
+    out, code = c.run(f"cat {rt}/codigo")
+    good &= check(code == 0 and "codigo-de-teste" in out, "o Mind: a sessão da pessoa lê o código de confirmação (%t/kalango/mind-confirm)", out)
+    out, code = in_slice("kalango-agentes.slice", f"cat {rt}/codigo")
+    good &= check(code != 0 and no(out), "o Mind: um comando de agente NÃO lê o código de confirmação (eBPF)", out)
+    c.run(f"rm -rf {rt}")
+    c.run("rm -rf ~/.local/share/kalango/mind")
+    c.run("rm -f ~/.ssh/guarda-teste")
+    return good
+
+
 def main():
     sock, mode = sys.argv[1], sys.argv[2]
     c = Console(sock)
@@ -125,6 +260,7 @@ def main():
         # (a placa com fio da VM ligada pelo NetworkManager: com a regra do Ubuntu sem netplan, ela ficava sem gerência)
         net, _ = c.run("nmcli -t -f TYPE,STATE device | grep ^ethernet")
         good &= check("ethernet:connected" in net, "a rede com fio conecta sozinha", net)
+        good &= dns_works(c, "ao vivo")
         good &= system_modes(c)
     elif mode == "instalar":
         plan = sys.argv[3]
@@ -193,12 +329,17 @@ def main():
         # (a fonte dos modelos de IA que o instalador gravou: a escolha padrão do plano, sem segredo)
         mod, _ = c.run("cat /etc/kalango/modelos.toml")
         good &= check('fonte = "padrao"' in mod and 'escolhidos = ["lfm3-1.7b", "lfm3-audio-2b", "lfm3-vl-2b"]' in mod, "a fonte dos modelos de IA (padrão, texto, voz e visão) ficou em /etc/kalango/modelos.toml", mod)
+        # (o aceite da licença dos modelos, que o instalador leva para a conta nova)
+        lic, _ = c.run(f"cat /home/{user}/.config/kalango/modelos-licencas.json")
+        good &= check(all(x in lic for x in ('"lfm3-1.7b"', '"lfm3-audio-2b"', '"lfm3-vl-2b"', '"lfm-open"', '"1.0"')),
+                      "o aceite da licença dos modelos foi gravado na conta (modelos-licencas.json)", lic)
         # (o teclado escolhido no instalador, pelo /etc/default/keyboard que o systemd-localed lê e o niri pergunta)
         kb, _ = c.run(f"XDG_RUNTIME_DIR=/run/user/$(id -u) NIRI_SOCKET=$(ls /run/user/$(id -u)/niri.*.sock | head -1) niri msg keyboard-layouts")
         good &= check("Portuguese (Brazil)" in kb, "o teclado do instalador (br) vale na sessão", kb)
         # (o gerenciador de pacotes e as fontes do Ubuntu: sem eles nada se instala nem se atualiza)
         apt, _ = c.run("command -v apt-get; grep -h '^Suites:' /etc/apt/sources.list.d/*.sources | tr '\\n' ' '; ls /usr/share/keyrings/ubuntu-archive-keyring.gpg")
         good &= check("/usr/bin/apt-get" in apt and "-security" in apt and "ubuntu-archive-keyring" in apt, "o apt e as fontes do Ubuntu (com as de segurança) estão lá", apt)
+        good &= dns_works(c, "instalado")
         # (os apps nativos de repositório próprio: o atalho no menu e nenhuma biblioteca faltando)
         apps, _ = c.run("ls /usr/share/applications/os.kalango.Remote.desktop /usr/share/applications/os.kalango.Audio.desktop; "
                         "LD_LIBRARY_PATH=/usr/lib/kalango/remote ldd /usr/lib/kalango/remote/kalango-remote /usr/lib/kalango/remote/kalango-remote-core /usr/bin/kalango-audio | grep -c 'not found'")
@@ -206,6 +347,9 @@ def main():
                       "o Kalango Remote e o Kalango Audio estão no sistema, sem biblioteca faltando", apps)
         # (a / do root e 755: senão o systemd-tmpfiles recusa caminhos e qualquer conta mexe na raiz)
         good &= system_modes(c)
+        good &= optional_apps(c, user)
+        good &= agents_guard(c, user)
+        good &= embedded_models(c, user)
         top, _ = c.run("stat -c '%U:%G %a' /")
         good &= check(top.strip() == "root:root 755", "a raiz / é do root, com 755", top)
         root, _ = c.run("findmnt -no FSTYPE,SOURCE /")

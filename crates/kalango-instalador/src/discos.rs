@@ -163,6 +163,8 @@ pub struct Plan {
     pub avatar: Option<String>,
     /// where the AI models come from, recorded in the installed system (the access token is not here)
     pub models: kalango_modelos::config::Config,
+    /// the licences the person accepted for the chosen models (the installed account's `modelos-licencas.json`)
+    pub licencas: Vec<kalango_modelos::licenca::Aceite>,
     /// the private server's access token (read from the engine's stdin, never written to the plan file)
     #[serde(skip)]
     pub models_token: String,

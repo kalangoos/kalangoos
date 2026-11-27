@@ -153,8 +153,15 @@ O que fica aberto, de propósito e dito:
 - **`%t` é `/run/user/UID` fixo** na política (`policy::runtime_dir`), nas ferramentas de arquivo, no Landlock de comandos e na
   guarda eBPF. Uma sessão com `XDG_RUNTIME_DIR` diferente disso fica fora de cobertura (só o conector soma o `XDG_RUNTIME_DIR` do
   próprio processo). O logind faz `/run/user/UID` em toda sessão do KalangoOS.
-- A sondagem da guarda eBPF a cada 1 s (e a pasta nascendo depois do `kalangod`) **só se prova na VM**: nenhum teste daqui roda
-  como root com o LSM `bpf`.
+- A sondagem da guarda eBPF a cada 1 s (e a pasta nascendo depois do `kalangod`) **só se prova com root e o LSM `bpf`**: nenhum
+  teste de `cargo test` roda assim. Provado à mão no host (27/11/2026, `kalango-teste-guarda-host`): fora do cgroup dos agentes o
+  arquivo protegido é lido; dentro de `kalango-agentes.slice` o kernel nega (`Operação não permitida`).
+- A guarda do kernel sobe no máximo 24 níveis de pasta (`MAX_DEPTH`): um arquivo mais fundo que isso dentro de uma pasta protegida
+  não é visto pela eBPF (hoje nenhuma pasta protegida é tão funda). Um hardlink ou um `rename` de um arquivo protegido para fora
+  da pasta também não passa pelos ganchos `file_open` e `bprm_check_security`: o que vale aí é só o Landlock.
+- As pastas protegidas fora de `%t` (como `~/.local/share/kalango/mind`) são procuradas de novo a cada 15 s; só as de `%t/...` a
+  cada 1 s. A pasta dos Fluxos fica fora da guarda do kernel e segue protegida pela política e pelo Landlock (limite conhecido:
+  Fluxos acessado como outro usuário é decisão do mantenedor; ver `docs/ISO-CONTEUDO.md`).
 - A janela entre a pasta ser criada e a guarda eBPF conhecê-la (até um segundo). O Landlock e as ferramentas de arquivo não
   têm essa janela (valem pelo lugar). Fecha de vez se o serviço criar a pasta ao iniciar a sessão.
 - Os nomes na pasta (ids das revisões, não códigos) ainda podem ser listados por um comando quando a guarda eBPF está
@@ -189,3 +196,12 @@ Testes (`crates/kalangod`): `agent_file_tools_cannot_reach_the_mind_confirmation
 - Correções de segurança publicadas fora do ciclo normal de versões.
 - Revisão externa do kalangod e do isolamento antes da versão 1.0.
 - Testes automáticos com páginas e arquivos maliciosos a cada versão (fase 4).
+
+## O `/dev/kvm` e os agentes
+
+O `70-uaccess.rules` do systemd dá o `/dev/kvm` a quem está na sessão ativa (sem grupo `kvm`), e o Kalango VirtualDesk
+conta com isso. Um agente que roda como o usuário da sessão (o `kalango-agente`, o serviço dos Fluxos, as tarefas do
+`kalangod`) abre o mesmo dispositivo: ele pode rodar uma máquina virtual, e dentro dela fazer o que quiser, fora das
+regras de arquivo e de rede dos agentes. O que limita isso é a camada de aprovação (as ferramentas de máquinas pedem
+aprovação e seguem a política de rede do VirtualDesk), não o kernel. Quem não quer isso pode tirar o `uaccess` do
+`/dev/kvm` com uma regra do udev própria.

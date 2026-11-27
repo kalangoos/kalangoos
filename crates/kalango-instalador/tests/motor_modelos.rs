@@ -22,13 +22,19 @@ fn base() -> serde_json::Value {
         "name": "Ana Lima", "user": "ana", "hostname": "kalango", "autologin": false, "fingerprint_later": false})
 }
 
+fn aceite(modelo: &str, versao: &str) -> serde_json::Value {
+    serde_json::json!({"modelo": modelo, "licenca": "lfm-open", "versao": versao, "data": "2026-11-24"})
+}
+
 fn written(out: &str, path: &str) -> Option<String> {
     out.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).find(|v| v["comando"].as_str() == Some(&format!("escrever /target{path}"))).map(|v| v["conteudo"].as_str().unwrap_or("").to_string())
 }
 
 #[test]
 fn the_default_choice_is_recorded_in_etc() {
-    let (out, _) = run(&base(), "senha-de-teste\n\n");
+    let mut plan = base();
+    plan["licencas"] = serde_json::json!([aceite("lfm3-1.7b", "1.0"), aceite("lfm3-audio-2b", "1.0"), aceite("lfm3-vl-2b", "1.0")]);
+    let (out, _) = run(&plan, "senha-de-teste\n\n");
     let t = written(&out, "/etc/kalango/modelos.toml").expect("the engine writes /etc/kalango/modelos.toml");
     assert!(t.contains("fonte = \"padrao\""), "{t}");
     assert!(t.contains("escolhidos = [\"lfm3-1.7b\", \"lfm3-audio-2b\", \"lfm3-vl-2b\"]"), "{t}");
@@ -40,6 +46,7 @@ fn the_default_choice_is_recorded_in_etc() {
 fn a_private_server_is_recorded_and_its_token_only_handed_off() {
     let mut plan = base();
     plan["models"] = serde_json::json!({"fonte": "servidor", "servidor": "https://modelos.example.org/kalango", "escolhidos": ["lfm3-1.7b"], "rede_local_confirmada": false});
+    plan["licencas"] = serde_json::json!([aceite("lfm3-1.7b", "1.0")]);
     let (out, file) = run(&plan, "senha-de-teste\ntok-0123456789-secret\n");
     let t = written(&out, "/etc/kalango/modelos.toml").unwrap();
     assert!(t.contains("fonte = \"servidor\"") && t.contains("servidor = \"https://modelos.example.org/kalango\"") && t.contains("escolhidos = [\"lfm3-1.7b\"]"), "{t}");
@@ -67,4 +74,28 @@ fn an_invalid_server_in_the_plan_does_not_get_recorded_as_valid() {
     let (out, _) = run(&plan, "senha\ntok\n");
     assert!(out.contains("\"erro\""), "{out}");
     assert!(written(&out, "/etc/kalango/modelos.toml").is_none());
+}
+
+#[test]
+fn the_engine_refuses_models_whose_licence_was_not_accepted_and_records_the_accepted_ones() {
+    // the default choice with no acceptance: nothing is installed
+    let (out, _) = run(&base(), "senha\n\n");
+    assert!(out.contains("a licença destes modelos") || out.contains("licence of these AI models"), "{out}");
+    assert!(out.contains("lfm3-1.7b") && !out.contains("\"fim\":true"), "{out}");
+    // a record for an older licence version does not count
+    let mut plan = base();
+    plan["licencas"] = serde_json::json!([aceite("lfm3-1.7b", "0.9"), aceite("lfm3-audio-2b", "1.0"), aceite("lfm3-vl-2b", "1.0")]);
+    let (out, _) = run(&plan, "senha\n\n");
+    assert!(!out.contains("\"fim\":true"), "{out}");
+    // accepted: the new account gets the record (only what matches the licence in force)
+    let mut plan = base();
+    plan["models"] = serde_json::json!({"fonte": "padrao", "escolhidos": ["lfm3-1.7b"]});
+    plan["licencas"] = serde_json::json!([aceite("lfm3-1.7b", "1.0"), aceite("lfm3-audio-2b", "0.9"), {"modelo": "outro", "licenca": "x", "versao": "1", "data": "d"}]);
+    let (out, _) = run(&plan, "senha\n\n");
+    assert!(out.contains("\"fim\":true"), "{out}");
+    let t = written(&out, "/home/ana/.config/kalango/modelos-licencas.json").expect("the account's acceptance file");
+    let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+    assert_eq!(v["aceites"].as_array().unwrap().len(), 1, "{t}");
+    assert_eq!(v["aceites"][0]["modelo"], "lfm3-1.7b");
+    assert_eq!(v["aceites"][0]["data"], "2026-11-24");
 }

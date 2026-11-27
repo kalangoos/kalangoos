@@ -1237,6 +1237,7 @@ dependencies = [
 name = "kalango-modelos"
 version = "0.1.2"
 dependencies = [
+ "kalango-i18n",
  "libc",
  "serde",
  "serde_json",

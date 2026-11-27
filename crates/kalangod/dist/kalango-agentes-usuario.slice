@@ -1,0 +1,16 @@
+[Unit]
+Description=KalangoOS · agentes da pessoa
+Documentation=https://kalangoos.com
+# O cgroup dos agentes sob o gerenciador de usuário (…/user@UID.service/kalango.slice/kalango-agentes.slice): onde roda o
+# kalango-fluxosd e o que `systemd-run --user --slice=kalango-agentes.slice` cria. A guarda eBPF do kernel só reconhece um
+# cgroup que o kalangod já registrou (varredura de 1 s): sem esta unidade o cgroup nascia junto do primeiro processo do
+# agente e esse processo rodava sem a guarda por até 1 s. Ativa desde o início da sessão e vazia, ele já está registrado
+# quando o primeiro agente nasce.
+
+[Slice]
+MemoryAccounting=yes
+CPUAccounting=yes
+TasksAccounting=yes
+
+[Install]
+WantedBy=default.target

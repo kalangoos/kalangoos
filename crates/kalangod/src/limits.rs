@@ -82,6 +82,37 @@ pub fn agents_cgroup_id() -> std::io::Result<(u64, u64)> {
     Ok((md.ino(), AGENTES.split('/').count() as u64))
 }
 
+/// Os cgroups dos agentes sob o gerenciador de usuário do systemd de cada pessoa
+/// (`user.slice/user-UID.slice/user@UID.service/kalango.slice/kalango-agentes.slice`): onde roda o `kalango-fluxosd` e o
+/// que `systemd-run --user` cria. Devolve (id, nível) de cada um, como [`agents_cgroup_id`]; `raiz` é o cgroupfs.
+pub fn user_agents_cgroup_ids_in(raiz: &Path) -> Vec<(u64, u64)> {
+    let mut v = Vec::new();
+    let nivel = 1 + 1 + 1 + AGENTES.split('/').count() as u64; // user.slice, user-N.slice, user@N.service + kalango.slice/…
+    let Ok(slices) = std::fs::read_dir(raiz.join("user.slice")) else { return v };
+    for sl in slices.flatten() {
+        let n = sl.file_name().to_string_lossy().into_owned();
+        if !(n.starts_with("user-") && n.ends_with(".slice")) {
+            continue;
+        }
+        let uid = &n["user-".len()..n.len() - ".slice".len()];
+        if uid.is_empty() || !uid.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let dir = sl.path().join(format!("user@{uid}.service")).join(AGENTES);
+        if let Ok(md) = std::fs::metadata(&dir) {
+            if md.is_dir() {
+                v.push((md.ino(), nivel));
+            }
+        }
+    }
+    v.sort();
+    v
+}
+
+pub fn user_agents_cgroup_ids() -> Vec<(u64, u64)> {
+    user_agents_cgroup_ids_in(Path::new(CGROOT))
+}
+
 /// O que o trampolim recebe (um argumento JSON).
 #[derive(Serialize, Deserialize, Default)]
 struct Plano {
@@ -609,6 +640,24 @@ pub fn seccomp_helper() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::{user_agents_cgroup_ids_in, AGENTES};
+
+    #[test]
+    fn the_per_user_agents_cgroups_are_found_with_their_level() {
+        let d = tempfile::tempdir().unwrap();
+        for uid in ["1000", "1001"] {
+            std::fs::create_dir_all(d.path().join(format!("user.slice/user-{uid}.slice/user@{uid}.service")).join(AGENTES)).unwrap();
+        }
+        // a person with no agents slice yet, and things that are not users
+        std::fs::create_dir_all(d.path().join("user.slice/user-1002.slice/user@1002.service")).unwrap();
+        std::fs::create_dir_all(d.path().join("user.slice/user-x.slice/user@x.service").join(AGENTES)).unwrap();
+        let v = user_agents_cgroup_ids_in(d.path());
+        assert_eq!(v.len(), 2, "{v:?}");
+        assert!(v.iter().all(|(id, nivel)| *id != 0 && *nivel == 5), "{v:?}");
+        assert_ne!(v[0].0, v[1].0);
+        assert!(user_agents_cgroup_ids_in(&d.path().join("nada")).is_empty());
+    }
+
     #[test]
     fn seccomp_do_auxiliar_bloqueia_exec_e_rede() {
         // o filtro vale só para a thread que o aplica (sem TSYNC): testa numa thread separada

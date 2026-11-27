@@ -1779,6 +1779,9 @@ window.boas-vindas { background: #16171B; border: 1px solid #26272F; border-radi
 .inst-texto { font-size: 13px; color: #E2E2E6; }
 .inst-texto-forte { font-size: 13px; font-weight: 600; color: #E2E2E6; }
 .inst-cartao { background: #1C1D23; border: 1px solid #26272F; border-radius: 6px; padding: 4px 12px; }
+.inst-recomendado { border-color: #5B5E9E; }
+.inst-licenca { background: #1C1D23; border: 1px solid #E5C98C; border-radius: 6px; padding: 12px; }
+.inst-opcao { border: 1px solid #26272F; border-radius: 4px; padding: 8px 12px; }
 .inst-linha { min-height: 42px; }
 button.inst-linha-botao { all: unset; border-radius: 4px; outline: 1.5px solid transparent; outline-offset: -1.5px; }
 button.inst-linha-botao:hover { background: alpha(#FFFFFF, 0.03); }
@@ -3596,6 +3599,9 @@ progressbar.mf-barra.ruim progress { background: @k_red; }
 .mf-aviso-detalhe { font-size: 12px; color: @k_muted; }
 .mf-dialogo { background: @k_surface; border: 1px solid @k_border; border-radius: 8px; }
 .mf-dialogo-corpo { padding: 24px; }
+.mf-licenca { background: @k_surface; border: 1px solid @k_gold; border-radius: 6px; padding: 12px; }
+.mf-licenca.ruim { border-color: @k_coral; }
+.mf-opcao { border: 1px solid @k_border; border-radius: 4px; padding: 8px 12px; }
 button.mf-fonte { background: @k_field; border: 1px solid @k_border; border-radius: 6px; box-shadow: none; padding: 12px 14px; }
 button.mf-fonte:checked { background: alpha(@k_accent, 0.10); border-color: @k_accent; }
 entry.mf-campo { background: @k_field; border: 1px solid @k_border; border-radius: 4px; box-shadow: none; min-height: 34px; padding: 0 10px; color: @k_text; }

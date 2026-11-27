@@ -572,6 +572,10 @@ impl Instalador {
             if let Ok(t) = std::env::var("KALANGO_INSTALADOR_MARCAR") {
                 i.modelos.depurar_marcar(&t.split(',').map(|x| x == "1").collect::<Vec<_>>());
             }
+            // (session tests and captures: the licence of the chosen models accepted, as the person's click would)
+            if std::env::var_os("KALANGO_INSTALADOR_ACEITAR").is_some() {
+                i.modelos.depurar_aceitar();
+            }
             if std::env::var_os("KALANGO_INSTALADOR_TESTAR").is_some() {
                 let w = Rc::downgrade(&i);
                 glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || if let Some(i) = w.upgrade() { i.modelos.depurar_testar() });
@@ -955,7 +959,7 @@ impl Instalador {
                 (if self.modo_apagar.is_active() { trf("Confirm: erase the {disk}", &[("disk", d)]) } else { trf("Confirm: install on the {disk}", &[("disk", d)]) }, true, true)
             }
             2 => (tr("Continue").to_string(), true, self.validar()),
-            3 => (tr("Continue").to_string(), true, self.modelos.pode_continuar()),
+            3 => ((if self.modelos.vai_baixar() { tr("Download and continue") } else { tr("Continue") }).to_string(), true, self.modelos.pode_continuar()),
             _ if self.terminou.get() => (tr("Restart now").to_string(), true, true),
             _ => (String::new(), false, false),
         };
@@ -1084,6 +1088,7 @@ impl Instalador {
             fingerprint_later: self.digital.is_active(),
             avatar: self.avatar.borrow().clone(),
             models: self.modelos.escolha().0,
+            licencas: self.modelos.aceites(),
             models_token: String::new(),
         }
     }

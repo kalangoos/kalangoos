@@ -89,9 +89,13 @@ Baixe os arquivos da [página de versões](https://github.com/kalangoos/kalangoo
      -drive if=pflash,format=raw,file=uefi-vars.fd \
      -drive file=kalangoos-0.1.0-amd64.iso,media=cdrom,readonly=on,if=none,id=cd -device ide-cd,drive=cd,bootindex=1 \
      -drive file=disco.qcow2,format=qcow2,if=none,id=disco -device virtio-blk-pci,drive=disco,bootindex=0 \
-     -device virtio-vga-gl,xres=1920,yres=1080 -display sdl,gl=on \
+     -device virtio-vga,xres=1920,yres=1080 -display sdl \
      -device virtio-keyboard-pci -device virtio-tablet-pci -nic user,model=virtio-net-pci
    ```
+
+   (Sem a aceleração 3D de propósito: com `-device virtio-vga-gl … -display sdl,gl=on` o virgl do QEMU derrubou a VM inteira com
+   o desenho do shell, no meio da instalação, deixando o disco pela metade. `imagem/rodar-iso.sh` já liga assim; `VM_GL=1` liga o 3D
+   de novo, por sua conta e risco.)
 
    (antes, `qemu-img create -f qcow2 disco.qcow2 40G` e `cp /usr/share/OVMF/OVMF_VARS_4M.fd uefi-vars.fd`). Depois da
    instalação, `imagem/rodar-iso.sh` sem argumento liga o disco instalado primeiro.

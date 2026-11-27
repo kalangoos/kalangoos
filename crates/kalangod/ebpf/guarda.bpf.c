@@ -16,6 +16,7 @@
 #define EPERM 1
 #define MAX_DEPTH 24
 #define NAME_LEN 64
+#define MAX_AGENTES 4096
 
 // Só os campos usados; CO-RE acha a posição real no kernel em execução.
 struct super_block { __u32 s_dev; } __attribute__((preserve_access_index));
@@ -40,20 +41,27 @@ struct evento {
     char nome[NAME_LEN];
 };
 
-// configuração escrita pelo kalangod: [0] = id do cgroup dos agentes, [1] = nível dele na hierarquia,
-// [2] = processo do kalangod que está descobrindo as chaves (dispositivo, inode) das pastas protegidas
+// configuração escrita pelo kalangod: [2] = processo do kalangod que está descobrindo as chaves (dispositivo, inode) das pastas protegidas
+// ([0] e [1], o cgroup dos agentes e o nível dele, saíram: os cgroups dos agentes estão em CG_AGENTES)
 struct { __uint(type, BPF_MAP_TYPE_ARRAY); __uint(max_entries, 3); __type(key, __u32); __type(value, __u64); } CONFIG SEC(".maps");
+// os cgroups dos agentes: o do sistema (/kalango.slice/kalango-agentes.slice) e o de cada gerenciador de usuário do systemd
+// (user.slice/user-UID.slice/user@UID.service/kalango.slice/kalango-agentes.slice), onde roda o kalango-fluxosd e o que
+// `systemd-run --user` cria. id do cgroup -> 1; o kalangod os registra e tira (varredura de 1 s). Sem limite por usuário.
+struct { __uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, MAX_AGENTES); __type(key, __u64); __type(value, __u8); } CG_AGENTES SEC(".maps");
 // pastas protegidas, por (dispositivo, inode)
 struct { __uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, 4096); __type(key, struct chave_inode); __type(value, __u8); } PROTEGIDAS SEC(".maps");
 struct { __uint(type, BPF_MAP_TYPE_RINGBUF); __uint(max_entries, 1 << 20); } EVENTOS SEC(".maps");
 
+// um nível dos ancestrais do processo: o cgroup dele nesse nível é um cgroup de agentes? (cada passo tem o nível constante:
+// sem laço, o verificador do kernel não recusa o programa — com o contador na pilha ele dizia "infinite loop detected" e a
+// guarda inteira ficava desligada). O cgroup dos agentes fica no nível 2 (sistema) ou 5 (gerenciador de usuário); os níveis
+// 1 a 8 cobrem os dois com folga. Um nível além da profundidade do processo devolve id 0, que não está no mapa.
+#define NIVEL(n) { __u64 cg = bpf_get_current_ancestor_cgroup_id(n); \
+    if (cg && bpf_map_lookup_elem(&CG_AGENTES, &cg)) return 1; }
+
 static __always_inline int eh_agente(void) {
-    __u32 k0 = 0, k1 = 1;
-    __u64 *id = bpf_map_lookup_elem(&CONFIG, &k0);
-    __u64 *nivel = bpf_map_lookup_elem(&CONFIG, &k1);
-    if (!id || !nivel || *id == 0)
-        return 0;
-    return bpf_get_current_ancestor_cgroup_id((int)*nivel) == *id;
+    NIVEL(1) NIVEL(2) NIVEL(3) NIVEL(4) NIVEL(5) NIVEL(6) NIVEL(7) NIVEL(8)
+    return 0;
 }
 
 static __always_inline void emitir(__u32 tipo, __u32 bloqueado, __u64 dev, __u64 ino, __u32 flags, const unsigned char *nome) {

@@ -9,6 +9,7 @@ use kalango_i18n::{tr, trf};
 use kalango_modelos::catalog::SLOTS;
 use kalango_modelos::config::{Config, SourceKind};
 use kalango_modelos::download::Control;
+use kalango_modelos::licenca::{self, textos, textos::Marca};
 use kalango_modelos::net::{Client, NetError};
 use kalango_modelos::probe::{probe_folder, probe_server};
 use kalango_modelos::urlpolicy::{parse_server, UrlError};
@@ -152,6 +153,11 @@ pub struct Modelos {
     total: gtk::Label,
     livre: gtk::Label,
     info: gtk::Label,
+    /// the licence to accept before the download (shown while a chosen model's licence asks for it)
+    lic: gtk::Box,
+    lic_aceito: gtk::CheckButton,
+    lic_dica: gtk::Label,
+    lic_pular: gtk::Button,
     ocupado: RefCell<u32>,
     /// told when the choice changes (the footer's "Continue")
     pub mudou: RefCell<Option<Box<dyn Fn()>>>,
@@ -165,8 +171,14 @@ const ORDEM: [SourceKind; 4] = [SourceKind::Padrao, SourceKind::Servidor, Source
 impl Modelos {
     pub fn new(janela: &gtk::ApplicationWindow, estreito: bool) -> Rc<Modelos> {
         let catalog = kalango_modelos::catalog::parse_catalog(&std::fs::read_to_string(catalog_path()).unwrap_or_default()).unwrap_or_default();
-        let st = State::new(catalog, 0, kalango_modelos::net::network_up());
+        let mut st = State::new(catalog, 0, kalango_modelos::net::network_up());
+        let st_tamanho_lfm = st.entry(0).map(|m| human(m.bytes())).unwrap_or_default();
+        // (an ISO that carries models: they are marked as in the system and not downloaded)
+        st.set_embedded(&[std::path::PathBuf::from("/usr/share/kalango/modelos")]);
         let pagina = caixa(Orientation::Vertical, 12, "inst-modelos-pagina");
+        // (the sources and the five models: still all there, under "Other sources and models"; the page opens on the
+        // recommended model and its licence, as in the design)
+        let outros = caixa(Orientation::Vertical, 12, "");
 
         // the four sources
         let grade = gtk::Grid::new();
@@ -216,7 +228,7 @@ impl Modelos {
             pinta(b);
             b.connect_toggled(pinta);
         }
-        pagina.append(&grade);
+        outros.append(&grade);
 
         // the area of each source
         let detalhe = gtk::Stack::new();
@@ -301,9 +313,9 @@ impl Modelos {
         let p3 = caixa(Orientation::Vertical, 10, "");
         p3.append(&banners[3].root);
         detalhe.add_named(&p3, Some("depois"));
-        pagina.append(&detalhe);
+        outros.append(&detalhe);
         let sem_espaco = Banner::new();
-        pagina.append(&sem_espaco.root);
+        outros.append(&sem_espaco.root);
 
         // the five models
         let lista = caixa(Orientation::Vertical, 0, "inst-cartao");
@@ -340,7 +352,7 @@ impl Modelos {
             lista.append(&r);
             linhas.push(Row { check, nome, modelo, sobre, chip, tamanho });
         }
-        pagina.append(&lista);
+        outros.append(&lista);
         let tot = caixa(Orientation::Horizontal, 8, "inst-totais");
         tot.append(&rotulo(tr("Total to download"), "inst-sub"));
         let total = rotulo("", "inst-forte");
@@ -351,14 +363,95 @@ impl Modelos {
         tot.append(&rotulo(tr("Free after installation"), "inst-sub"));
         let livre = rotulo("", "inst-forte");
         tot.append(&livre);
-        pagina.append(&tot);
+        outros.append(&tot);
         let il = caixa(Orientation::Horizontal, 8, "");
         il.append(&icone("dialog-information-symbolic", 14));
         let info = rotulo("", "inst-sub");
         info.set_wrap(true);
         info.set_hexpand(true);
         il.append(&info);
-        pagina.append(&il);
+        outros.append(&il);
+        // the licence of the chosen models (design "Licença do modelo"): the card with the summary, the required box and
+        // "Pular: baixar depois"; shown while a chosen model's licence asks for it
+        let l = &licenca::LFM;
+        let lic = caixa(Orientation::Vertical, 8, "");
+        lic.set_visible(false);
+        let cartao = caixa(Orientation::Vertical, 8, "inst-licenca");
+        let topo = caixa(Orientation::Vertical, 1, "");
+        topo.append(&rotulo(&textos::titulo(l), "inst-forte"));
+        topo.append(&rotulo(textos::subtitulo(), "inst-sub"));
+        cartao.append(&topo);
+        for (marca, texto) in textos::topicos(l) {
+            let g = match marca {
+                Marca::Ok => "object-select-symbolic",
+                Marca::Aviso => "dialog-warning-symbolic",
+                Marca::Info => "dialog-information-symbolic",
+            };
+            let linha = caixa(Orientation::Horizontal, 8, "");
+            linha.append(&icone(g, 13));
+            let t = rotulo(texto, "inst-sub");
+            t.set_wrap(true);
+            t.set_hexpand(true);
+            linha.append(&t);
+            cartao.append(&linha);
+        }
+        let ler_linha = caixa(Orientation::Horizontal, 10, "");
+        let ler = gtk::Button::with_label(textos::ler());
+        ler.add_css_class("flat");
+        ler_linha.append(&ler);
+        ler_linha.append(&rotulo(&textos::original(l), "inst-sub"));
+        cartao.append(&ler_linha);
+        lic.append(&cartao);
+        let janela2 = janela.clone();
+        ler.connect_clicked(move |_| folha_da_licenca(&janela2, &licenca::LFM));
+        let lic_aceito = gtk::CheckButton::new();
+        lic_aceito.set_valign(Align::Center);
+        let opcao = caixa(Orientation::Horizontal, 10, "inst-opcao");
+        opcao.append(&lic_aceito);
+        let tx = caixa(Orientation::Vertical, 1, "");
+        tx.append(&rotulo(&textos::aceito(l), "inst-texto"));
+        tx.append(&rotulo(&textos::aceito_detalhe(l), "inst-sub"));
+        opcao.append(&tx);
+        lic.append(&opcao);
+        let lic_pular = gtk::Button::new();
+        lic_pular.add_css_class("flat");
+        let pl = caixa(Orientation::Vertical, 1, "inst-opcao");
+        pl.append(&rotulo(textos::pular(), "inst-texto"));
+        let pd = rotulo(textos::pular_detalhe(), "inst-sub");
+        pd.set_wrap(true);
+        pl.append(&pd);
+        lic_pular.set_child(Some(&pl));
+        lic.append(&lic_pular);
+        let lic_dica = rotulo(tr("Tick \"I have read and accept\" to download"), "inst-sub");
+        lic_dica.set_halign(Align::Center);
+        lic.append(&lic_dica);
+        // the recommended model's card (LFM3 1.7B) and the page's line, above the licence
+        let topo_pagina = caixa(Orientation::Vertical, 12, "");
+        let sub = rotulo(tr("The LFM3 is downloaded after you accept its licence."), "inst-sub");
+        sub.set_wrap(true);
+        topo_pagina.append(&sub);
+        let recomendado = caixa(Orientation::Horizontal, 10, "inst-cartao");
+        recomendado.add_css_class("inst-recomendado");
+        recomendado.append(&icone("applications-science-symbolic", 20));
+        let rc = caixa(Orientation::Vertical, 2, "");
+        rc.set_hexpand(true);
+        let nome_linha = caixa(Orientation::Horizontal, 8, "");
+        nome_linha.append(&rotulo(MODELS[0], "inst-forte"));
+        nome_linha.append(&rotulo(tr("recommended"), "inst-chip"));
+        rc.append(&nome_linha);
+        let desc = rotulo(tr("Text and tools for the agents: understands requests, plans and uses apps."), "inst-sub");
+        desc.set_wrap(true);
+        rc.append(&desc);
+        rc.append(&rotulo(&format!("{} · {}", tr("runs on this machine"), licenca::LFM.nome), "inst-sub"));
+        recomendado.append(&rc);
+        let tamanho_rec = st_tamanho_lfm.clone();
+        recomendado.append(&rotulo(&tamanho_rec, "inst-forte"));
+        topo_pagina.append(&recomendado);
+        pagina.append(&topo_pagina);
+        pagina.append(&lic);
+        let mais = gtk::Expander::new(Some(tr("Other sources and models")));
+        mais.set_child(Some(&outros));
+        pagina.append(&mais);
 
         let rolagem = gtk::ScrolledWindow::new();
         rolagem.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
@@ -367,7 +460,7 @@ impl Modelos {
         rolagem.set_margin_bottom(10);
         rolagem.add_css_class("inst-rolagem");
         rolagem.set_child(Some(&pagina));
-        let m = Rc::new(Modelos { root: rolagem, st: RefCell::new(st), fontes, detalhe, endereco, token, lan, testar, testar_txt, dica, pasta, banners, sem_espaco, linhas, total, livre, info,
+        let m = Rc::new(Modelos { root: rolagem, st: RefCell::new(st), fontes, detalhe, endereco, token, lan, testar, testar_txt, dica, pasta, banners, sem_espaco, linhas, total, livre, info, lic, lic_aceito, lic_dica, lic_pular,
             ocupado: RefCell::new(0), mudou: RefCell::new(None), voltar_disco: RefCell::new(None), janela: janela.clone() });
         m.ligar(&escolher);
         m.desenhar();
@@ -406,6 +499,25 @@ impl Modelos {
                 }
             });
         }
+        let w = Rc::downgrade(self);
+        self.lic_aceito.connect_toggled(move |c| {
+            if let Some(m) = w.upgrade() {
+                if *m.ocupado.borrow() == 0 {
+                    m.st.borrow_mut().accepted = c.is_active();
+                    m.desenhar();
+                    m.avisar();
+                }
+            }
+        });
+        // "Pular: baixar depois": the same as the card "Download it later"
+        let w = Rc::downgrade(self);
+        self.lic_pular.connect_clicked(move |_| {
+            if let Some(m) = w.upgrade() {
+                if let Some(b) = m.fontes.get(3) {
+                    b.set_active(true);
+                }
+            }
+        });
         let w = Rc::downgrade(self);
         self.endereco.connect_changed(move |e| {
             if let Some(m) = w.upgrade() {
@@ -496,8 +608,19 @@ impl Modelos {
         self.desenhar();
     }
 
+    /// Does going on start a download (something chosen that the system does not already carry)?
+    pub fn vai_baixar(&self) -> bool {
+        let st = self.st.borrow();
+        st.source != SourceKind::Depois && st.total() > 0
+    }
+
     pub fn pode_continuar(&self) -> bool {
         self.st.borrow().can_continue()
+    }
+
+    /// The licences the person accepted for the chosen models (the installed account keeps them).
+    pub fn aceites(&self) -> Vec<kalango_modelos::licenca::Aceite> {
+        self.st.borrow().acceptances(&licenca::hoje())
     }
 
     /// What the installer records, and the token for the vault (None: no token).
@@ -511,6 +634,11 @@ impl Modelos {
     /// Session tests: a token typed into the field (shown masked).
     pub fn depurar_token(&self, t: &str) {
         self.token.set_text(t);
+    }
+
+    /// Session tests: accepts the licence of the chosen models.
+    pub fn depurar_aceitar(&self) {
+        self.lic_aceito.set_active(true);
     }
 
     /// Session tests: the ticks as a list.
@@ -654,6 +782,7 @@ impl Modelos {
             Chip::SumMismatch => tr("sum does not match"),
             Chip::WrongSize => tr("different size"),
             Chip::NoChecksum => tr("no sum in the catalog"),
+            Chip::InSystem => tr("already in the system"),
         }
     }
 
@@ -705,6 +834,13 @@ impl Modelos {
             r.chip.add_css_class(c.tone());
             r.tamanho.set_text(&st.entry(i).map(|m| human(m.bytes())).unwrap_or_default());
         }
+        // the licence to accept (while a chosen model's licence asks for it)
+        let ids = st.licence_ids();
+        self.lic.set_visible(!ids.is_empty());
+        self.lic_dica.set_visible(st.licence_pending());
+        if self.lic_aceito.is_active() != st.accepted {
+            self.lic_aceito.set_active(st.accepted);
+        }
         // the totals, and the disk
         self.total.set_text(&human(st.total()));
         let livre = st.free_after().max(0) as u64;
@@ -737,4 +873,40 @@ pub fn catalog_path() -> std::path::PathBuf {
         return std::path::PathBuf::from(p).join("modelos.json");
     }
     ["/usr/share/kalango/loja/modelos.json", "sessao/dist/share/kalango/loja/modelos.json"].iter().map(std::path::PathBuf::from).find(|p| p.is_file()).unwrap_or_default()
+}
+
+/// The sheet with the licence's full text, as it is (design "licença completa (folha)"): "Copiar texto" and "Fechar".
+fn folha_da_licenca(pai: &gtk::ApplicationWindow, l: &'static licenca::Licenca) {
+    let win = gtk::Window::builder().modal(true).transient_for(pai).title(l.nome).default_width(640).resizable(false).build();
+    let col = caixa(Orientation::Vertical, 10, "inst-cartao");
+    col.set_margin_top(12);
+    col.set_margin_bottom(12);
+    col.set_margin_start(12);
+    col.set_margin_end(12);
+    col.append(&rotulo(l.nome, "inst-forte"));
+    let sub = rotulo(&textos::folha_subtitulo(l), "inst-sub");
+    sub.set_wrap(true);
+    col.append(&sub);
+    col.append(&rotulo(l.url, "inst-sub"));
+    let texto = licenca::texto_completo(l).unwrap_or_else(|| textos::so_o_link(l));
+    let tv = gtk::TextView::new();
+    tv.set_editable(false);
+    tv.set_cursor_visible(false);
+    tv.set_wrap_mode(gtk::WrapMode::Word);
+    tv.set_monospace(true);
+    tv.buffer().set_text(&texto);
+    col.append(&gtk::ScrolledWindow::builder().min_content_height(300).max_content_height(400).vexpand(true).child(&tv).build());
+    let rodape = caixa(Orientation::Horizontal, 10, "");
+    rodape.set_halign(Align::End);
+    let copiar = gtk::Button::with_label(textos::copiar());
+    let fechar = gtk::Button::with_label(tr("Close"));
+    rodape.append(&copiar);
+    rodape.append(&fechar);
+    col.append(&rodape);
+    win.set_child(Some(&col));
+    let w = win.clone();
+    copiar.connect_clicked(move |_| w.clipboard().set_text(&texto));
+    let w = win.clone();
+    fechar.connect_clicked(move |_| w.close());
+    win.present();
 }

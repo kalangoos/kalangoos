@@ -26,6 +26,7 @@ mod agent_settings;
 mod app_store;
 mod app_store_data;
 mod modelos_fonte;
+mod modelos_licenca;
 mod apps;
 #[allow(dead_code)] // the screens of the agents center use it as they land
 mod fluxos;

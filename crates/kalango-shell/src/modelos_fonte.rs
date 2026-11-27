@@ -43,7 +43,12 @@ pub fn current_source() -> Source {
 
 /// The one background queue of the session (downloads go one at a time).
 pub fn queue() -> &'static Queue {
-    QUEUE.get_or_init(|| Queue::start(data::download_dir(), catalog(), current_source(), kalango_modelos::download::Options::default))
+    QUEUE.get_or_init(|| {
+        let q = Queue::start(data::download_dir(), catalog(), current_source(), kalango_modelos::download::Options::default);
+        // (an ISO that carries models: what is in /usr/share/kalango/modelos is installed, not downloaded again)
+        q.set_system_dirs(vec![std::path::PathBuf::from("/usr/share/kalango/modelos")]);
+        q
+    })
 }
 
 fn cancelled_file() -> std::path::PathBuf {
@@ -233,6 +238,7 @@ pub fn row_view(m: &ModelEntry, installed: bool, verified: bool, removable: bool
                 Failure::Server(c) => rv(tr("server error"), "coral", trf("The server answered with an error (HTTP {code}).", &[("code", c.to_string())]), "ruim", None, vec![Act::Retry]),
                 Failure::NotFound => rv(tr("missing on the server"), "ouro", tr("This model is not on the source.").to_string(), "aviso", None, vec![Act::ChangeSource]),
                 Failure::Other(e) => rv(tr("failed"), "coral", e.clone(), "ruim", None, vec![Act::Retry]),
+                Failure::LicenseNotAccepted => rv(kalango_modelos::licenca::textos::recusada(), "ouro", kalango_modelos::licenca::textos::recusada_detalhe().to_string(), "aviso", None, vec![Act::Download]),
             };
         }
         None => {}
@@ -289,7 +295,7 @@ fn kind_name(kind: &str) -> &'static str {
     }
 }
 
-fn kind_glyph(kind: &str) -> &'static str {
+pub(crate) fn kind_glyph(kind: &str) -> &'static str {
     match kind {
         "texto" => "cerebro",
         "voz" => "microfone",
@@ -299,7 +305,7 @@ fn kind_glyph(kind: &str) -> &'static str {
     }
 }
 
-fn source_name(c: &Config) -> &'static str {
+pub(crate) fn source_name(c: &Config) -> &'static str {
     match c.fonte {
         SourceKind::Padrao => tr("default source"),
         SourceKind::Servidor => tr("private server"),
@@ -308,15 +314,28 @@ fn source_name(c: &Config) -> &'static str {
     }
 }
 
+fn start_download(m: &ModelEntry) {
+    let q = queue();
+    set_cancelled(&m.id, false);
+    q.set_source(current_source());
+    q.enqueue(&m.id);
+    q.retry(&m.id);
+}
+
 /// Does what a row asks.
 pub fn act(a: Act, m: &ModelEntry, from: &gtk::Widget) {
     let q = queue();
     match a {
         Act::Download | Act::DownloadAgain | Act::Retry => {
-            set_cancelled(&m.id, false);
-            q.set_source(current_source());
-            q.enqueue(&m.id);
-            q.retry(&m.id);
+            // (a licence that needs acceptance: the dialog first; the queue refuses without it anyway)
+            if crate::modelos_licenca::precisa(m) {
+                crate::modelos_licenca::pedir(from, m, {
+                    let m = m.clone();
+                    move || start_download(&m)
+                });
+            } else {
+                start_download(m);
+            }
         }
         Act::Pause => q.pause(&m.id),
         Act::Resume => q.resume(&m.id),
@@ -829,6 +848,9 @@ impl SourceCard {
             n.set_size_request(190, -1);
             n.append(&rotulo(kind_name(kind), "mf-nome"));
             n.append(&rotulo(&m.nome, "mf-sub"));
+            if let Some(l) = crate::modelos_licenca::linha_aceite(&m) {
+                n.append(&l);
+            }
             r.append(&n);
             let cb = caixa(Orientation::Horizontal, 0, "");
             cb.set_hexpand(true);
@@ -1158,6 +1180,13 @@ mod tests {
         assert_eq!(v.actions, vec![Act::ChangeSource]);
         let v = view(false, false, None, true, None);
         assert_eq!((v.chip.1, v.actions), ("acento", vec![Act::Download]));
+    }
+
+    #[test]
+    fn a_licence_not_accepted_offers_the_download_which_asks_for_it() {
+        let v = view(false, false, Some(item(Phase::Failed(Failure::LicenseNotAccepted), 0)), true, None);
+        assert_eq!((v.chip.1, v.detail_tone, v.actions), ("ouro", "aviso", vec![Act::Download]));
+        assert!(v.detail.contains("licen") || v.detail.contains("licence"), "{}", v.detail);
     }
 
     #[test]

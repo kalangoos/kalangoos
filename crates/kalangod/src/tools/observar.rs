@@ -103,6 +103,8 @@ fn kernel_security(_: &Ctx, _: &Value) -> Result<Out, String> {
         "sistema_de_arquivos_raiz": crate::restore::root_fs(),
         "guarda_ebpf": crate::guard::status(),
         "guarda_ebpf_ativa": crate::guard::ATIVA.load(std::sync::atomic::Ordering::SeqCst),
+        // false: há cgroups de agentes sem a guarda (mais do que cabem no mapa); a linha do tempo tem o alerta
+        "guarda_ebpf_completa": crate::guard::COMPLETA.load(std::sync::atomic::Ordering::SeqCst),
         "pronto_para_kalango": landlock_abi() >= 3 && Path::new("/sys/kernel/btf/vmlinux").exists() && lsms.contains(&"bpf"),
     });
     let ok = v["pronto_para_kalango"].as_bool().unwrap_or(false);

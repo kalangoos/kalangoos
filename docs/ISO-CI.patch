@@ -1,0 +1,87 @@
+--- a/.github/workflows/release.yml	2026-11-26 08:39:21.236057132 -0300
++++ b/.github/workflows/release.yml	2026-11-26 08:39:21.263051684 -0300
+@@ -198,6 +198,54 @@
+           ref: ae5a1e712c3b8be1f029bd6494db33ff3f258dff
+           path: apps/kalango-audio
+           persist-credentials: false
++      # the two private repositories (kalangoos/kalango-virtualdesk and kalangoos/kalango-fluxos): a short-lived, read-only token
++      # of the GitHub App "KalangoOS Release Reader" (docs/ISO-CONTEUDO.md). Without the App's variable the steps are skipped
++      # and the ISO comes out as it always did. The token is never printed (the action masks it).
++      - name: Token de leitura dos repositórios privados
++        id: leitor
++        if: vars.KALANGO_RELEASE_APP_ID != ''
++        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
++        with:
++          app-id: ${{ vars.KALANGO_RELEASE_APP_ID }}
++          private-key: ${{ secrets.KALANGO_RELEASE_APP_KEY }}
++          owner: kalangoos
++          repositories: |
++            kalango-virtualdesk
++            kalango-fluxos
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++        if: steps.leitor.outputs.token != ''
++        with:
++          repository: kalangoos/kalango-virtualdesk
++          ref: 2cd6af1a1b44407451721ba8a333411b90e4cb37
++          path: apps/kalango-virtualdesk
++          token: ${{ steps.leitor.outputs.token }}
++          persist-credentials: false
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++        if: steps.leitor.outputs.token != ''
++        with:
++          repository: kalangoos/kalango-fluxos
++          ref: fdd7a88ae7823f84a07dc6d1ddb9ea0269bfb45f
++          path: apps/kalango-fluxos
++          token: ${{ steps.leitor.outputs.token }}
++          persist-credentials: false
++      - name: Kalango VirtualDesk e kalango-fluxosd
++        run: |
++          set -euo pipefail
++          if [ -d apps/kalango-virtualdesk ]; then
++            sudo apt-get -o Acquire::Retries=3 install -y -q --no-install-recommends libgtk-4-dev
++            (cd apps/kalango-virtualdesk && cargo build --release --locked --workspace)
++            # the VirtualDesk is GPL-3.0-or-later: whoever gets its binary in the ISO is entitled to the matching source.
++            # It leaves with the ISO, in the same release, at the very commit that was built (construir.sh refuses a
++            # publishable ISO with the VirtualDesk in it and no source file; the name carries the commit)
++            sha="$(git -C apps/kalango-virtualdesk rev-parse HEAD)"
++            mkdir -p fonte-gpl
++            git -C apps/kalango-virtualdesk archive --format=tar.gz --prefix="kalango-virtualdesk-$sha/" -o "$GITHUB_WORKSPACE/fonte-gpl/kalango-virtualdesk-$sha-src.tar.gz" HEAD
++            echo "KALANGO_VIRTUALDESK_FONTE=$GITHUB_WORKSPACE/fonte-gpl/kalango-virtualdesk-$sha-src.tar.gz" >> "$GITHUB_ENV"
++          fi
++          # (the toolchain is the one the repository pins in rust-toolchain.toml)
++          if [ -d apps/kalango-fluxos ]; then
++            (cd apps/kalango-fluxos && cargo build --release --locked -p kalango-fluxosd)
++          fi
+       - name: Kalango Remote e Kalango Audio
+         run: |
+           set -euo pipefail
+@@ -212,6 +260,12 @@
+         env:
+           KALANGO_REMOTE_DIR: ${{ github.workspace }}/apps/kalango-remote
+           KALANGO_AUDIO_DIR: ${{ github.workspace }}/apps/kalango-audio
++          # (absent folders: construir.sh leaves the app out and says so)
++          KALANGO_VIRTUALDESK_DIR: ${{ github.workspace }}/apps/kalango-virtualdesk
++          KALANGO_FLUXOS_DIR: ${{ github.workspace }}/apps/kalango-fluxos
++          # the ISO this workflow publishes: construir.sh turns every missing attribution into an error (dependency list,
++          # commit of each app, the GPL source of the VirtualDesk) and refuses any AI model (the models are only downloaded)
++          KALANGO_IMAGEM_PUBLICAVEL: "1"
+           KALANGO_IMAGEM_ISO: "1"
+           KALANGO_IMAGEM_TMP: /mnt/kalango/build
+           # no local model in the ISO the CI publishes (its licence is being reviewed): the agent gets it later
+@@ -235,7 +289,9 @@
+           set -euo pipefail
+           mkdir -p dist-iso
+           mv target/iso/kalangoos.iso "dist-iso/kalangoos-${VERSAO}-amd64.iso"
+-          (cd dist-iso && sha256sum ./*.iso > SHA256SUMS-iso.txt && cat SHA256SUMS-iso.txt)
++          # (the GPL source of the VirtualDesk, when the ISO has it, goes in the same release and in the sums)
++          if [ -n "${KALANGO_VIRTUALDESK_FONTE:-}" ]; then mv "$KALANGO_VIRTUALDESK_FONTE" dist-iso/; fi
++          (cd dist-iso && sha256sum ./*.iso ./*.tar.gz 2>/dev/null > SHA256SUMS-iso.txt || sha256sum ./*.iso > SHA256SUMS-iso.txt; cat SHA256SUMS-iso.txt)
+       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+         with:
+           name: release-iso
+@@ -285,4 +341,4 @@
+           case "$VERSAO" in 0.*|*-*) prerelease="--prerelease" ;; esac
+           gh release create "$TAG" dist/* --draft $prerelease --verify-tag \
+             --title "KalangoOS $VERSAO" \
+-            --notes "KalangoOS $VERSAO: a ISO para instalar (x86_64, UEFI; testada numa VM: sessão ao vivo, instalação e o primeiro boot do sistema instalado) e os binários. Em desenvolvimento: veja o README."
++            --notes "KalangoOS $VERSAO: a ISO para instalar (x86_64, UEFI; testada numa VM: sessão ao vivo, instalação e o primeiro boot do sistema instalado) e os binários. Quando a ISO traz o Kalango VirtualDesk (GPL-3.0-or-later), o código-fonte correspondente está nesta mesma versão, no arquivo kalango-virtualdesk-<commit>-src.tar.gz. Em desenvolvimento: veja o README."

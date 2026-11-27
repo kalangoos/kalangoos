@@ -3,6 +3,7 @@
 
 use kalango_modelos::catalog::{ModelEntry, DEFAULT_CHOSEN, SLOTS};
 use kalango_modelos::config::{Config, SourceKind};
+use kalango_modelos::licenca::{licenca_do_modelo, Aceite};
 use kalango_modelos::probe::{ModelState, Probe};
 use kalango_modelos::urlpolicy::{is_loopback_host, is_private_host, parse_server, UrlError};
 
@@ -45,13 +46,15 @@ pub enum Chip {
     SumMismatch,
     WrongSize,
     NoChecksum,
+    /// the ISO carries the model: it is already on this computer and will be in the installed system
+    InSystem,
 }
 
 impl Chip {
     /// good (green), warn (amber), bad (red), neutral (grey)
     pub fn tone(self) -> &'static str {
         match self {
-            Chip::OnServerOk | Chip::InFolderOk => "bom",
+            Chip::OnServerOk | Chip::InFolderOk | Chip::InSystem => "bom",
             Chip::AbsentOnServer | Chip::NotInFolder | Chip::NoChecksum => "aviso",
             Chip::SumMismatch | Chip::WrongSize => "ruim",
             _ => "neutro",
@@ -91,6 +94,10 @@ pub struct State {
     /// bytes available for the system and the models (the disk, or the part given to KalangoOS)
     pub capacity: u64,
     pub footprint: u64,
+    /// per row: the files are already in the system's own folder (an ISO that carries models), with the catalog's sizes
+    pub embedded: Vec<bool>,
+    /// the person ticked "I have read and accept the licence" (for the chosen models whose licence asks for it)
+    pub accepted: bool,
 }
 
 impl State {
@@ -98,7 +105,21 @@ impl State {
     pub fn new(catalog: Vec<ModelEntry>, capacity: u64, online: bool) -> State {
         let catalog: Vec<ModelEntry> = catalog.into_iter().filter(|m| SLOTS.iter().any(|(_, id)| *id == m.id)).collect();
         let ticked = SLOTS.iter().map(|(_, id)| DEFAULT_CHOSEN.contains(id)).collect();
-        State { catalog, source: SourceKind::Padrao, server: String::new(), lan_ok: false, folder: String::new(), ticked, test: Test::Idle, online, capacity, footprint: SYSTEM_FOOTPRINT }
+        State { catalog, source: SourceKind::Padrao, server: String::new(), lan_ok: false, folder: String::new(), ticked, test: Test::Idle, online, capacity, footprint: SYSTEM_FOOTPRINT, embedded: vec![false; SLOTS.len()], accepted: false }
+    }
+
+    /// Looks in `dirs` (the system's models folder) for the catalog's files: the models found are carried by the ISO.
+    /// They cost no download and no extra disk space beyond the system (they are part of it, so they are added to the
+    /// footprint, which was measured without them).
+    pub fn set_embedded(&mut self, dirs: &[std::path::PathBuf]) {
+        let here = |m: &ModelEntry| !m.arquivos.is_empty() && m.arquivos.iter().all(|f| dirs.iter().any(|d| std::fs::metadata(d.join(&f.nome)).is_ok_and(|md| md.len() == f.bytes)));
+        let embedded: Vec<bool> = (0..SLOTS.len()).map(|i| self.entry(i).is_some_and(here)).collect();
+        self.footprint = SYSTEM_FOOTPRINT + (0..SLOTS.len()).filter(|i| embedded[*i]).filter_map(|i| self.entry(i)).map(ModelEntry::bytes).sum::<u64>();
+        self.embedded = embedded;
+    }
+
+    pub fn is_embedded(&self, i: usize) -> bool {
+        self.embedded.get(i).copied().unwrap_or(false)
     }
 
     pub fn entry(&self, i: usize) -> Option<&ModelEntry> {
@@ -119,6 +140,10 @@ impl State {
         if self.source == SourceKind::Depois || self.entry(i).is_none() {
             return false;
         }
+        // (what the ISO already carries needs nothing from the source)
+        if self.is_embedded(i) {
+            return true;
+        }
         match self.source {
             SourceKind::Servidor | SourceKind::Pasta => self.probed(i).map(ModelState::usable).unwrap_or(true),
             _ => true,
@@ -131,6 +156,9 @@ impl State {
 
     pub fn chip(&self, i: usize) -> Chip {
         let (server, folder) = (self.source == SourceKind::Servidor, self.source == SourceKind::Pasta);
+        if self.is_embedded(i) && self.source != SourceKind::Depois {
+            return Chip::InSystem;
+        }
         match (&self.test, self.source) {
             (_, SourceKind::Depois) => Chip::None,
             (_, SourceKind::Padrao) => if self.online { Chip::None } else { Chip::NoNetwork },
@@ -168,7 +196,7 @@ impl State {
     }
 
     pub fn total(&self) -> u64 {
-        (0..self.ticked.len()).filter(|i| self.effective(*i)).filter_map(|i| self.entry(i)).map(ModelEntry::bytes).sum()
+        (0..self.ticked.len()).filter(|i| self.effective(*i) && !self.is_embedded(*i)).filter_map(|i| self.entry(i)).map(ModelEntry::bytes).sum()
     }
 
     /// Free bytes after the system and the models (negative: it does not fit).
@@ -200,7 +228,29 @@ impl State {
         !self.server.trim().is_empty() && self.server_error().is_none()
     }
 
+    /// The chosen models whose licence is not on the project's accepted list: it has to be accepted before the
+    /// installer goes on (and the installed system's download queue asks for the same record).
+    pub fn licence_ids(&self) -> Vec<String> {
+        self.chosen_ids().into_iter().filter(|id| licenca_do_modelo(id).is_some_and(|l| l.exige_aceite)).collect()
+    }
+
+    /// A licence to accept and not accepted yet.
+    pub fn licence_pending(&self) -> bool {
+        !self.accepted && !self.licence_ids().is_empty()
+    }
+
+    /// What the installer hands to the installed account: one record per chosen model that asked for it.
+    pub fn acceptances(&self, date: &str) -> Vec<Aceite> {
+        if !self.accepted {
+            return Vec::new();
+        }
+        self.licence_ids().iter().filter_map(|id| licenca_do_modelo(id).map(|l| Aceite { modelo: id.clone(), licenca: l.id.into(), versao: l.versao.into(), data: date.into() })).collect()
+    }
+
     pub fn can_continue(&self) -> bool {
+        if self.licence_pending() {
+            return false;
+        }
         match self.source {
             SourceKind::Padrao => self.enough_space(),
             SourceKind::Servidor => self.server_valid() && self.enough_space(),
@@ -279,12 +329,69 @@ mod tests {
 
     #[test]
     fn the_first_choice_is_text_voice_and_vision_from_the_public_source() {
-        let s = state();
+        let mut s = state();
         assert_eq!(s.source, SourceKind::Padrao);
         assert_eq!(s.chosen_ids(), ["lfm3-1.7b", "lfm3-audio-2b", "lfm3-vl-2b"]);
         assert!((3_700_000_000..4_000_000_000).contains(&s.total()), "{}", s.total());
+        s.accepted = true; // (the LFM licence is accepted in this test: the blocking is tested on its own)
         assert!(s.can_continue());
         assert_eq!(s.config(), Config::default());
+    }
+
+    #[test]
+    fn what_the_iso_carries_is_in_the_system_costs_no_download_and_no_extra_space() {
+        let d = tempfile::tempdir().unwrap();
+        // (sparse files with the catalog's names and sizes: text and voice are carried; vision has the wrong size)
+        let cat = catalog();
+        for id in ["lfm3-1.7b", "lfm3-audio-2b"] {
+            for f in &cat.iter().find(|m| m.id == id).unwrap().arquivos {
+                std::fs::File::create(d.path().join(&f.nome)).unwrap().set_len(f.bytes).unwrap();
+            }
+        }
+        let vl = &cat.iter().find(|m| m.id == "lfm3-vl-2b").unwrap().arquivos[0];
+        std::fs::File::create(d.path().join(&vl.nome)).unwrap().set_len(1000).unwrap();
+        let mut s = State::new(cat, 600_000_000_000, false);
+        let before = s.total();
+        s.set_embedded(&[d.path().to_path_buf()]);
+        assert_eq!((s.is_embedded(0), s.is_embedded(1), s.is_embedded(2)), (true, true, false));
+        // offline, with the public source: the carried ones say so (not "no network"); the other one still needs it
+        assert_eq!((s.chip(0), s.chip(1), s.chip(2)), (Chip::InSystem, Chip::InSystem, Chip::NoNetwork));
+        // only the vision model is left to download: the total drops and the system's footprint grows by what is carried
+        let vision = s.entry(2).unwrap().bytes();
+        assert_eq!(s.total(), vision);
+        assert!(s.total() < before);
+        assert!(s.footprint > SYSTEM_FOOTPRINT);
+        // a model that is carried can be ticked whatever the source says, and "later" ignores it
+        s.source = SourceKind::Servidor;
+        assert!(s.tickable(0));
+        s.source = SourceKind::Depois;
+        assert!(!s.tickable(0));
+        assert_eq!(s.chip(0), Chip::None);
+    }
+
+    #[test]
+    fn a_licence_that_asks_for_acceptance_blocks_continuing_until_accepted() {
+        let mut s = state();
+        // the first choice (text, voice, vision) is all LFM3: the LFM Open License
+        assert_eq!(s.licence_ids(), ["lfm3-1.7b", "lfm3-audio-2b", "lfm3-vl-2b"]);
+        assert!(s.licence_pending() && !s.can_continue());
+        assert!(s.acceptances("2026-11-24").is_empty(), "nothing is recorded before the acceptance");
+        s.accepted = true;
+        assert!(s.can_continue());
+        let a = s.acceptances("2026-11-24");
+        assert_eq!(a.len(), 3);
+        assert!(a.iter().all(|r| r.licenca == "lfm-open" && r.versao == "1.0" && r.data == "2026-11-24"));
+        // unticking every model that needs it frees the step (nothing to accept for nothing to download)
+        s.accepted = false;
+        for i in 0..s.ticked.len() {
+            s.ticked[i] = false;
+        }
+        assert!(!s.licence_pending() && s.can_continue());
+        // "later" asks for nothing either
+        s.ticked[0] = true;
+        assert!(!s.can_continue());
+        s.source = SourceKind::Depois;
+        assert!(s.licence_ids().is_empty() && s.can_continue());
     }
 
     #[test]
@@ -356,6 +463,7 @@ mod tests {
         assert!(!s.enough_space() && !s.can_continue());
         assert_eq!(s.missing(), need - 12_000_000_000);
         s.ticked = vec![true, false, false, false, false];
+        s.accepted = true; // (the LFM licence is accepted in this test: the blocking is tested on its own)
         assert!(s.can_continue());
     }
 
@@ -380,9 +488,10 @@ mod tests {
 
     #[test]
     fn offline_default_source_says_so_but_still_continues() {
-        let s = State::new(catalog(), 600_000_000_000, false);
+        let mut s = State::new(catalog(), 600_000_000_000, false);
         assert_eq!(s.notice(), Notice::PublicOffline);
         assert_eq!(s.chip(0), Chip::NoNetwork);
+        s.accepted = true; // (the LFM licence is accepted in this test: the blocking is tested on its own)
         assert!(s.can_continue());
     }
 
@@ -392,6 +501,7 @@ mod tests {
         s.source = SourceKind::Pasta;
         assert!(!s.can_continue());
         s.folder = "/media/pendrive/modelos".into();
+        s.accepted = true; // (the LFM licence is accepted in this test: the blocking is tested on its own)
         assert!(s.can_continue());
         s.set_test(Test::Done(probe(&[("lfm3-1.7b", ModelState::Verified), ("lfm3-audio-2b", ModelState::Verified), ("lfm3-vl-2b", ModelState::Verified), ("lfm3-omni-2b", ModelState::Absent), ("d1-2b", ModelState::Verified)])));
         assert_eq!(s.notice(), Notice::FolderOk { found: 4, of: 5, all_sums: true });

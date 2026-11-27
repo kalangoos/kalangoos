@@ -21,8 +21,10 @@ RES=${RES:-1920x1080}
 TELA=${VM_TELA:-sdl}
 if [ "$TELA" = none ]; then
   DISP=(-display none -device "virtio-vga,xres=${RES%x*},yres=${RES#*x}")
-else
+elif [ "${VM_GL:-0}" = 1 ]; then  # (o virgl derrubou a VM com o desenho do kalango-shell: padrão sem 3D; ver imagem/rodar-iso.sh)
   DISP=(-device "virtio-vga-gl,xres=${RES%x*},yres=${RES#*x},edid=on" -display "$TELA,gl=on")
+else
+  DISP=(-device "virtio-vga,xres=${RES%x*},yres=${RES#*x}" -display "$TELA")
 fi
 echo "VM: imagem $(du -h --apparent-size "$OUT/kalangoos.img" | cut -f1), ${RES}; console em $OUT/console.log"
 exec qemu-system-x86_64 -name "KalangoOS (imagem)" -enable-kvm -cpu host -machine q35 -m "${MEM:-8192}" -smp "${CPUS:-6}" \
