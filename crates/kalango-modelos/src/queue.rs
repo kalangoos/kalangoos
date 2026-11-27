@@ -22,6 +22,8 @@ pub enum Failure {
     /// the server answered with this HTTP error
     Server(u16),
     Other(String),
+    /// the model's licence needs the person's acceptance and there is none (or it is for an older licence version)
+    LicenseNotAccepted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,6 +54,11 @@ struct State {
     items: Vec<Item>,
     catalog: Vec<ModelEntry>,
     dest: PathBuf,
+    /// read-only folders that already hold models (the system's, `/usr/share/kalango/modelos`: an ISO that carries
+    /// models): a model whose files are all there, with the catalog's sizes, is installed and is never downloaded again
+    system: Vec<PathBuf>,
+    /// where the person's licence acceptances are kept (`licenca::aceites_path()`)
+    licences: PathBuf,
     source: Source,
     current: Option<String>,
     stop: bool,
@@ -91,7 +98,7 @@ impl Queue {
     /// Starts the worker. `opts` builds the engine's options for each model (tests make them quick).
     pub fn start(dest: PathBuf, catalog: Vec<ModelEntry>, source: Source, opts: impl Fn() -> Options + Send + Sync + 'static) -> Queue {
         let shared = Arc::new(Shared {
-            state: Mutex::new(State { items: Vec::new(), catalog, dest, source, current: None, stop: false }),
+            state: Mutex::new(State { items: Vec::new(), catalog, dest, system: Vec::new(), licences: crate::licenca::aceites_path(), source, current: None, stop: false }),
             cv: Condvar::new(),
             ctl: Control::default(),
             opts: Box::new(opts),
@@ -121,6 +128,16 @@ impl Queue {
         self.with(|s| s.source = source);
     }
 
+    /// Where the licence acceptances are read from (tests use their own folder).
+    pub fn set_licences_file(&self, path: PathBuf) {
+        self.with(|s| s.licences = path);
+    }
+
+    /// Folders of the system that may already hold models (the next `enqueue` looks there before queueing a download).
+    pub fn set_system_dirs(&self, dirs: Vec<PathBuf>) {
+        self.with(|s| s.system = dirs);
+    }
+
     /// Asks for a model: queued unless it is already installed or already in the queue.
     pub fn enqueue(&self, id: &str) {
         self.with(|s| {
@@ -132,6 +149,12 @@ impl Queue {
                 return;
             }
             let installed = !m.arquivos.is_empty() && m.arquivos.iter().all(|f| std::fs::metadata(s.dest.join(&f.nome)).is_ok_and(|md| md.len() == f.bytes));
+            // (carried by the system: nothing to download, and nothing of ours to verify or to delete)
+            let in_system = !installed && !m.arquivos.is_empty() && m.arquivos.iter().all(|f| s.system.iter().any(|d| std::fs::metadata(d.join(&f.nome)).is_ok_and(|md| md.len() == f.bytes)));
+            if in_system {
+                s.items.push(Item { id: id.to_string(), phase: Phase::Installed { verified: false }, done: m.bytes(), total: m.bytes(), bytes_per_s: 0.0 });
+                return;
+            }
             let verified = installed && m.arquivos.iter().all(|f| is_verified(&s.dest, f));
             // (an installed file never checked, whose catalog has the sums, is queued: the engine hashes it and records it)
             let phase = if verified { Phase::Installed { verified } } else if installed && !m.verifiable() { Phase::Installed { verified: false } } else { Phase::Queued };
@@ -226,6 +249,15 @@ fn worker(sh: Arc<Shared>) {
                     }
                 }
                 if let Some(i) = g.items.iter().find(|i| i.phase == Phase::Queued).map(|i| i.id.clone()) {
+                    // (the licence is checked here, where every download passes: whatever asked for it, a model whose
+                    // licence the person has not accepted is refused, and asking again after accepting queues it again)
+                    let on_disk = g.catalog.iter().find(|m| m.id == i).is_some_and(|m| !m.arquivos.is_empty() && m.arquivos.iter().all(|f| g.dest.join(&f.nome).is_file()));
+                    if !on_disk && crate::licenca::falta_aceite(&g.licences, &i) {
+                        if let Some(it) = g.items.iter_mut().find(|it| it.id == i) {
+                            it.phase = Phase::Failed(Failure::LicenseNotAccepted);
+                        }
+                        continue;
+                    }
                     if let Some(m) = g.catalog.iter().find(|m| m.id == i).cloned() {
                         break (i, m, g.dest.clone(), g.source.clone());
                     }

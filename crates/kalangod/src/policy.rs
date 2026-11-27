@@ -388,6 +388,21 @@ impl Config {
     }
 }
 
+/// O cgroup de um chamador está sob `prefix`? Um agente pode estar no cgroup do sistema
+/// (`/kalango.slice/kalango-agentes.slice/…`) ou sob o gerenciador de usuário do systemd
+/// (`/user.slice/user-UID.slice/user@UID.service/kalango.slice/kalango-agentes.slice/…`: o serviço `kalango-fluxosd` e as
+/// tarefas que `systemd-run --user` cria): os dois valem como o mesmo cgroup dos agentes.
+pub fn cgroup_matches(cgroup: &str, prefix: &str) -> bool {
+    if cgroup.starts_with(prefix) {
+        return true;
+    }
+    // (só o gerenciador do usuário do próprio systemd: /user.slice/user-N.slice/user@N.service + o caminho)
+    let Some(rest) = cgroup.strip_prefix("/user.slice/user-") else { return false };
+    let Some((uid, rest)) = rest.split_once(".slice/user@") else { return false };
+    let Some((uid2, tail)) = rest.split_once(".service") else { return false };
+    !uid.is_empty() && uid.chars().all(|c| c.is_ascii_digit()) && uid == uid2 && tail.starts_with(prefix)
+}
+
 /// Expande `~` para a casa do usuário.
 pub fn expand(p: &str, home: &Path) -> PathBuf {
     if p == "~" {
@@ -437,6 +452,20 @@ pub fn is_within(path: &Path, base: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_agents_cgroup_is_the_systems_or_the_user_managers() {
+        let p = "/kalango.slice/kalango-agentes.slice";
+        assert!(super::cgroup_matches("/kalango.slice/kalango-agentes.slice/t.scope", p));
+        assert!(super::cgroup_matches("/user.slice/user-1000.slice/user@1000.service/kalango.slice/kalango-agentes.slice/kalango-fluxos.service", p));
+        assert!(super::cgroup_matches("/user.slice/user-1000.slice/user@1000.service/kalango.slice/kalango-agentes.slice", p));
+        // not a person's own session, another user's manager under a different uid, nor a look-alike name
+        assert!(!super::cgroup_matches("/user.slice/user-1000.slice/session-3.scope", p));
+        assert!(!super::cgroup_matches("/user.slice/user-1000.slice/user@1001.service/kalango.slice/kalango-agentes.slice/x", p));
+        assert!(!super::cgroup_matches("/user.slice/user-1000.slice/user@1000.service/app.slice/kalango.slice/kalango-agentes.slice/x", p));
+        assert!(!super::cgroup_matches("/system.slice/kalango.slice/kalango-agentes.slice/x", p));
+        assert!(!super::cgroup_matches("/user.slice/user-.slice/user@.service/kalango.slice/kalango-agentes.slice", p));
+    }
+
     use super::*;
 
     /// The Mind's confirmation codes are in the protected list (the kernel guard, Landlock and the file tools all start from

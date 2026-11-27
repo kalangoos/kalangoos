@@ -1,0 +1,7 @@
+# Pacotes do Ubuntu de que o Kalango VirtualDesk precisa para rodar máquinas (só entram na imagem quando ele entra):
+# o QEMU roda as máquinas, o qemu-utils cria os discos, o OVMF é o UEFI e o swtpm é o TPM do Windows 11.
+# Tamanho e licenças: docs/ISO-CONTEUDO.md, seção 2.5. Estão na raiz de pacotes (etapa 1 do construir.sh).
+qemu-system-x86
+qemu-utils
+ovmf
+swtpm

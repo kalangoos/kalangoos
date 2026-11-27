@@ -50,7 +50,10 @@ cat > "$D/plano.json" <<PLANO
 {"disk": "/dev/vda", "disk_title": "Disco virtual", "mode": "Erase", "size": 0, "encrypt": false,
  "locale": "pt_BR.UTF-8", "keyboard": "br", "name": "Ana Teste", "user": "ana", "hostname": "teste-kalango",
  "autologin": true, "fingerprint_later": false, "avatar": null,
- "models": {"fonte": "padrao", "escolhidos": ["lfm3-1.7b", "lfm3-audio-2b", "lfm3-vl-2b"], "rede_local_confirmada": false}}
+ "models": {"fonte": "padrao", "escolhidos": ["lfm3-1.7b", "lfm3-audio-2b", "lfm3-vl-2b"], "rede_local_confirmada": false},
+ "licencas": [{"modelo": "lfm3-1.7b", "licenca": "lfm-open", "versao": "1.0", "data": "2026-11-24"},
+              {"modelo": "lfm3-audio-2b", "licenca": "lfm-open", "versao": "1.0", "data": "2026-11-24"},
+              {"modelo": "lfm3-vl-2b", "licenca": "lfm-open", "versao": "1.0", "data": "2026-11-24"}]}
 PLANO
 python3 -I imagem/testar-iso.py "$D/serial.sock" instalar "$D/plano.json" "$SENHA"
 esperar_desligar

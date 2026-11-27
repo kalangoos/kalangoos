@@ -245,6 +245,8 @@ fn finish(c: &Ctx, p: &Plan, esp: &str, boot: Option<&str>, root: &str) -> Resul
     write_file(c, &format!("/home/{}/.config/kalango/primeiro-uso.json", p.user), &format!("{{\"feito\": false, \"impressao_digital\": {}}}\n", p.fingerprint_later))?;
     // the private models server's access token, for the first session to move into the vault
     stage_models_token(c, p)?;
+    // the licences accepted in the models step, for the account's download queue (it refuses the others)
+    record_licences(c, p)?;
     // the model copied before the account existed, the face, the first use's file: all the person's
     c.chroot(&["chown", "-R", &format!("{0}:{0}", p.user), &format!("/home/{}", p.user)], None)?;
     if p.autologin {
@@ -285,6 +287,28 @@ fn finish(c: &Ctx, p: &Plan, esp: &str, boot: Option<&str>, root: &str) -> Resul
 /// `/etc/kalango/modelos.toml`: the source and the chosen models (no secret in it).
 fn record_models_source(c: &Ctx, p: &Plan) -> Result<(), String> {
     write_file(c, kalango_modelos::config::SYSTEM_PATH, &p.models.to_toml())
+}
+
+/// The chosen models whose licence needs an acceptance the plan does not carry (with "later" nothing is chosen).
+fn unaccepted_models(p: &Plan) -> Vec<String> {
+    if p.models.fonte == kalango_modelos::config::SourceKind::Depois {
+        return Vec::new();
+    }
+    let a = kalango_modelos::licenca::Aceites { lista: p.licencas.clone() };
+    p.models.escolhidos.iter().filter(|id| !a.aceito(id)).cloned().collect()
+}
+
+/// `~/.config/kalango/modelos-licencas.json` of the new account: only the records that match the licence and version in
+/// force (anything else in the plan is dropped, not trusted).
+fn record_licences(c: &Ctx, p: &Plan) -> Result<(), String> {
+    let valid: Vec<kalango_modelos::licenca::Aceite> = p.licencas.iter()
+        .filter(|a| kalango_modelos::licenca::licenca_do_modelo(&a.modelo).is_some_and(|l| l.exige_aceite && l.id == a.licenca && l.versao == a.versao))
+        .cloned().collect();
+    if valid.is_empty() {
+        return Ok(());
+    }
+    let text = serde_json::to_string_pretty(&json!({ "aceites": valid })).map_err(|e| e.to_string())?;
+    write_file(c, &format!("/home/{}/.config/kalango/modelos-licencas.json", p.user), &(text + "\n"))
 }
 
 /// The token of a private server: a hand-off file in the new user's own folder (0600, the folder 0700), which the first
@@ -344,6 +368,12 @@ pub fn run(plan_path: &str) -> i32 {
     // (before anything touches a disk: a source the system would reject is refused here)
     if let Err(e) = p.models.validate() {
         say(json!({"erro": trf("the AI models' source is not valid ({why})", &[("why", format!("{e:?}"))])}));
+        return 2;
+    }
+    // (the licence of what will be downloaded must have been accepted: the same record the installed system asks for)
+    let sem_aceite = unaccepted_models(&p);
+    if !sem_aceite.is_empty() {
+        say(json!({"erro": trf("the licence of these AI models was not accepted: {models}", &[("models", sem_aceite.join(", "))])}));
         return 2;
     }
     let root = std::fs::read_to_string("/proc/self/status").unwrap_or_default().lines().any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(1) == Some("0"));

@@ -8,6 +8,7 @@
 //! - [`sums`]: `SHA256SUMS` files;
 //! - [`net`]: HTTP with the redirect and token rules;
 //! - [`probe`]: "test the connection": what a server or a folder has, and whether its sums match the catalog;
+//! - [`licenca`]: each model's licence and the person's acceptance of it (the queue refuses a download without it);
 //! - [`download`]: the download engine (resume, streaming SHA-256, verify before keeping);
 //! - [`queue`]: the downloads running in the background, for the Central de Apps;
 //! - [`vault`]: the access token (system vault, with a first-boot hand-off from the installer).
@@ -15,6 +16,7 @@
 pub mod catalog;
 pub mod config;
 pub mod download;
+pub mod licenca;
 pub mod net;
 pub mod probe;
 pub mod queue;

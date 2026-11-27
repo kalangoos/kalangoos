@@ -7,9 +7,13 @@
 #   imagem/rodar-iso.sh novo             apaga o disco virtual antes (uma instalação do zero)
 #   imagem/rodar-iso.sh instalado        só o disco virtual, sem a ISO
 #   RES=1920x1080 MEM=8192 CPUS=6 DISCO=40G (opcionais) · VM_TELA=none: sem janela
+#   VM_GL=1         liga a aceleração 3D (virgl) da janela: mais rápida, mas o virgl do QEMU derrubou a VM inteira com o
+#                   desenho do kalango-shell ("vrend_check_no_error: context error reported 4 kalango-shell.b Unknown 1282",
+#                   "Illegal command buffer"); por isso o padrão é a GPU virtio-vga SEM 3D (o niri desenha por software)
 #   KALANGO_ISO=arquivo   outra ISO (padrão: target/iso/kalangoos.iso)
 #   VM_DIR=pasta    o disco, o firmware e os sockets desta VM (padrão: target/iso; o teste usa a sua, para rodar ao
 #                   lado de uma VM aberta)
+#   $VM_DIR/qmp.sock   o QMP (mouse e teclado por fora: imagem/vm-tela.py), além de monitor.sock (screendump)
 #   socat - UNIX-CONNECT:target/iso/serial.sock    o console serial (a conta ao vivo "kalango" não tem senha)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -32,8 +36,10 @@ RES=${RES:-1920x1080}
 TELA=${VM_TELA:-sdl}
 if [ "$TELA" = none ]; then
   DISP=(-display none -device "virtio-vga,xres=${RES%x*},yres=${RES#*x}")
-else
+elif [ "${VM_GL:-0}" = 1 ]; then
   DISP=(-device "virtio-vga-gl,xres=${RES%x*},yres=${RES#*x},edid=on" -display "$TELA,gl=on")
+else
+  DISP=(-device "virtio-vga,xres=${RES%x*},yres=${RES#*x}" -display "$TELA")
 fi
 CD=()
 [ "$MODO" = iso ] && CD=(-drive "file=$ISO,media=cdrom,readonly=on,if=none,id=cd" -device "ide-cd,drive=cd,bootindex=1")
@@ -48,4 +54,5 @@ exec qemu-system-x86_64 -name "KalangoOS (ISO)" "${KVM[@]}" -machine q35 -m "${M
   -device virtio-keyboard-pci -device virtio-tablet-pci \
   -nic user,model=virtio-net-pci \
   -chardev socket,id=serial0,path="$OUT/serial.sock",server=on,wait=off,logfile="$OUT/console.log" -serial chardev:serial0 \
-  -monitor unix:"$OUT/monitor.sock",server,nowait
+  -monitor unix:"$OUT/monitor.sock",server,nowait \
+  -qmp unix:"$OUT/qmp.sock",server,nowait

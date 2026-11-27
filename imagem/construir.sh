@@ -60,6 +60,28 @@ PAC=$(grep -v '^\s*#' imagem/pacotes.txt | tr -s ' \n' ',' | sed 's/^,//; s/,$//
 # casper.conf do KalangoOS — a conta ao vivo e o nome do computador)
 [ "$ISO" = 1 ] && PAC="$PAC,casper"
 
+# (os dois repositórios privados, OPCIONAIS — o que eles trazem está mais abaixo — e a decisão de que entram; os pacotes do
+# VirtualDesk precisam estar na raiz de pacotes, que é a etapa 1: por isso a decisão vem antes dela)
+VDESK=${KALANGO_VIRTUALDESK_DIR:-$ROOT/../kalango-virtualdesk}
+FLUXOS=${KALANGO_FLUXOS_DIR:-$ROOT/../kalango-fluxos}
+quer() {  # quer NOME-DA-VARIÁVEL BINÁRIO TEXTO → 0 se deve entrar; 1 se não; sai com erro se foi exigido e falta
+  local modo=${!1:-auto}
+  [ "${KALANGO_IMAGEM_SEM_APPS:-0}" = 1 ] && modo=0
+  case "$modo" in
+    0) return 1 ;;
+    1) [ -x "$2" ] || { echo "falta $2 ($3): compile o repositório (cargo build --release) ou ponha $1=0" >&2; exit 1; }; return 0 ;;
+    *) [ -x "$2" ] && return 0; echo "sem $3 nesta ISO: não achei $2 (compile-o, ou aponte a pasta; $1=1 exige)" >&2; return 1 ;;
+  esac
+}
+vd_quer_pacotes() {  # 0 se a raiz de pacotes leva o que o VirtualDesk precisa (sem exigir o binário: a CI monta a raiz em paralelo)
+  local modo=${KALANGO_IMAGEM_VIRTUALDESK:-auto}
+  [ "${KALANGO_IMAGEM_SEM_APPS:-0}" = 1 ] && return 1
+  case "$modo" in 0) return 1 ;; 1) return 0 ;; *) [ -x "$VDESK/target/release/kalango-virtualdesk" ] ;; esac
+}
+if vd_quer_pacotes; then
+  PAC="$PAC,$(grep -v '^\s*#' imagem/pacotes-virtualdesk.txt | tr -s ' \n' ',' | sed 's/^,//; s/,$//')"
+fi
+
 # (o que o mmdebstrap grava e o que deixa de fora: nas duas etapas, e a chave do cache da CI muda com este arquivo)
 DPKGOPTS=(
   --dpkgopt='path-exclude=/usr/share/doc/*' --dpkgopt='path-include=/usr/share/doc/*/copyright'
@@ -125,6 +147,10 @@ sed -i 's#ExecStart=[^ ]*kalango-shell#ExecStart=/usr/bin/kalango-shell#; s#Exec
   "$C/usr/lib/systemd/user/kalango-shell.service" "$C/usr/lib/systemd/user/kalango-aprovacao.service"
 ln -s ../kalango-shell.service "$C/usr/lib/systemd/user/graphical-session.target.wants/kalango-shell.service"
 ln -s ../kalango-aprovacao.service "$C/usr/lib/systemd/user/graphical-session.target.wants/kalango-aprovacao.service"
+# (o cgroup dos agentes de cada pessoa existe desde o início da sessão: a guarda eBPF o registra antes do primeiro agente)
+install -m 644 crates/kalangod/dist/kalango-agentes-usuario.slice "$C/usr/lib/systemd/user/kalango-agentes.slice"
+d usr/lib/systemd/user/default.target.wants
+ln -s ../kalango-agentes.slice "$C/usr/lib/systemd/user/default.target.wants/kalango-agentes.slice"
 cat > "$C/usr/lib/environment.d/90-kalango.conf" <<'ENV'
 KALANGO_MOD_TAP=/usr/libexec/kalango/kalango-shell super tocar
 KALANGO_MOD_HOLD=/usr/libexec/kalango/kalango-shell super segurar
@@ -163,11 +189,28 @@ MODELOS=${KALANGO_MODELOS:-$HOME/.local/share/kalango/modelos}
 d usr/share/kalango/modelos
 # (KALANGO_IMAGEM_TODOS_MODELOS=1, só para uma ISO de teste local: leva todos os .gguf da pasta — texto, voz, visão, Omni,
 # d1 e os mmproj —, uns 8 GB a mais. A ISO publicada pela CI fica sem modelo nenhum: KALANGO_MODELOS=/nenhum; sem essa variável, só o de texto)
-if [ "${KALANGO_IMAGEM_TODOS_MODELOS:-0}" = 1 ]; then
+# (KALANGO_IMAGEM_MODELOS="a.gguf b.gguf": exatamente estes arquivos da pasta — o jeito fino; e um arquivo que falta é
+# erro, não silêncio. KALANGO_IMAGEM_TODOS_MODELOS=1 leva todos. Sem nenhuma das duas, só o de texto.
+# O aviso de licenças vai junto (/usr/share/doc/kalango/modelos/LICENCAS.txt): imagem/licencas-modelos.py confere cada
+# arquivo contra o catálogo e se recusa a gerar a ISO de um modelo cuja licença o mantenedor ainda não decidiu.)
+# (a ISO publicável NUNCA leva modelo: o LFM3 só é baixado, depois do aceite da licença; embutir é só para ISO local)
+if [ "${KALANGO_IMAGEM_PUBLICAVEL:-0}" = 1 ]; then
+  [ "${KALANGO_IMAGEM_TODOS_MODELOS:-0}" != 1 ] && [ -z "${KALANGO_IMAGEM_MODELOS:-}" ] || { echo "KALANGO_IMAGEM_PUBLICAVEL=1: uma ISO publicável não leva modelos de IA" >&2; exit 1; }
+elif [ "${KALANGO_IMAGEM_TODOS_MODELOS:-0}" = 1 ]; then
   for f in "$MODELOS"/*.gguf; do [ -f "$f" ] && cp "$f" "$C/usr/share/kalango/modelos/"; done
+elif [ -n "${KALANGO_IMAGEM_MODELOS:-}" ]; then
+  for f in $KALANGO_IMAGEM_MODELOS; do
+    [ -f "$MODELOS/$f" ] || { echo "KALANGO_IMAGEM_MODELOS: falta $MODELOS/$f" >&2; exit 1; }
+    cp "$MODELOS/$f" "$C/usr/share/kalango/modelos/"
+  done
 else
   [ -f "$MODELOS/LFM3-1.7B-Q4_K_M.gguf" ] && cp "$MODELOS/LFM3-1.7B-Q4_K_M.gguf" "$C/usr/share/kalango/modelos/"
 fi
+APROVACAO=$(python3 -I imagem/licencas-modelos.py sessao/dist/share/kalango/loja/modelos.json imagem/licencas-modelos.json \
+  "$C/usr/share/kalango/modelos" "$C/usr/share/doc/kalango/modelos/LICENCAS.txt") || exit 1
+case "$APROVACAO" in
+  NAO-APROVADO*) echo "AVISO: esta imagem leva modelos de IA dentro (${APROVACAO#NAO-APROVADO }): só para uso local, nunca para publicar (docs/ISO-CONTEUDO.md)." >&2 ;;
+esac
 # ---- os apps nativos que têm repositório próprio (kalangoos/kalango-remote e kalangoos/kalango-audio), compilados ao
 # lado deste repositório (KALANGO_REMOTE_DIR / KALANGO_AUDIO_DIR mudam onde); KALANGO_IMAGEM_SEM_APPS=1 monta sem eles
 REMOTO=${KALANGO_REMOTE_DIR:-$ROOT/../kalango-remote}
@@ -221,6 +264,90 @@ DESK
     d usr/share/icons/hicolor/${s}x${s}/apps
     install -m 644 "$AUDIO/assets/icons/hicolor/${s}x${s}/apps/os.kalango.Audio.png" "$C/usr/share/icons/hicolor/${s}x${s}/apps/"
   done
+fi
+# ---- os dois repositórios privados (kalangoos/kalango-virtualdesk e kalangoos/kalango-fluxos), OPCIONAIS: entram só
+# quando os binários compilados estão ao lado (KALANGO_VIRTUALDESK_DIR / KALANGO_FLUXOS_DIR mudam onde). Sem eles a
+# ISO sai como sempre (é o caso da CI de hoje). KALANGO_IMAGEM_VIRTUALDESK / KALANGO_IMAGEM_FLUXOS: auto (padrão: entra
+# se estiver compilado), 1 (exige: falha se faltar) ou 0 (nunca). KALANGO_IMAGEM_SEM_APPS=1 também tira os dois.
+# O que cada um traz (licenças e tamanho: docs/ISO-CONTEUDO.md, seção 2):
+#   VirtualDesk (GPL-3.0-or-later): /usr/bin/kalango-virtualdesk, o atalho, os ícones e as dependências de execução
+#     (QEMU, UEFI, TPM: pacotes do Ubuntu, abaixo) mais uma regra do udev que libera o /dev/kvm à pessoa da sessão;
+#   Fluxos (Apache-2.0): /usr/lib/kalango/kalango-fluxosd e as unidades de usuário do systemd. O serviço é por ativação
+#     de soquete (kalango-fluxos.socket): nada roda até alguém falar com ele, e ele sai sozinho depois de 10 min ocioso.
+# KALANGO_IMAGEM_PUBLICAVEL=1 (posto pela CI que publica): a ISO tem de poder ser publicada, e então tudo o que falta
+# para isso é erro em vez de aviso: lista de dependências, procedência dos apps, código-fonte da GPL, nenhum modelo.
+PUBLICAVEL=${KALANGO_IMAGEM_PUBLICAVEL:-0}
+aviso_ou_erro() {  # aviso_ou_erro TEXTO: aviso; na ISO publicável, erro
+  echo "$1" >&2
+  [ "$PUBLICAVEL" != 1 ] || { echo "(KALANGO_IMAGEM_PUBLICAVEL=1: recusado)" >&2; exit 1; }
+}
+# (o que cada app que entra compilado deixa na imagem, para quem recebe a ISO e para quem a confere: o texto da licença
+# dele, a lista das crates de que foi feito com a licença de cada uma, e o commit de que o binário veio)
+inventario() {  # inventario PASTA-DO-APP DESTINO-NA-CAMADA BINÁRIO
+  d "$2"
+  # (só as crates do alvo do binário: sem --filter-platform, o cargo pede metadados de todas as plataformas, que numa
+  # máquina nova não estão baixados e o --offline falha)
+  if ! (cd "$1" && cargo metadata --format-version 1 --locked --offline --filter-platform x86_64-unknown-linux-gnu 2>/dev/null) | python3 -I -c '
+import json, sys
+for p in sorted(json.load(sys.stdin)["packages"], key=lambda p: (p["name"], p["version"])):
+    print(p["name"], p["version"], p.get("license") or "(sem licença declarada)")' > "$C/$2/DEPENDENCIAS.txt"; then
+    echo "(a lista de dependências não pôde ser gerada nesta construção: cargo metadata falhou)" > "$C/$2/DEPENDENCIAS.txt"
+    aviso_ou_erro "$1: sem a lista de dependências (cargo metadata --locked --offline --filter-platform x86_64-unknown-linux-gnu falhou)"
+  fi
+  for f in LICENSE NOTICE; do [ -f "$1/$f" ] && install -m 644 "$1/$f" "$C/$2/$f"; done
+  # (a procedência: o binário vem de qual commit, e a árvore e o binário estão em dia com ele?)
+  local commit; commit=$(git -C "$1" rev-parse HEAD 2>/dev/null || echo desconhecido)
+  echo "$commit" > "$C/$2/COMMIT"
+  echo "$(basename "$1"): commit $commit" >&2
+  if [ "$commit" = desconhecido ]; then
+    aviso_ou_erro "$1: não é um repositório git: não sei de que commit é o binário"
+  else
+    [ -z "$(git -C "$1" status --porcelain --untracked-files=no 2>/dev/null)" ] || aviso_ou_erro "$1: a árvore tem mudanças não commitadas: o binário pode não ser o do commit $commit"
+    [ "$(stat -c %Y "$3")" -ge "$(git -C "$1" log -1 --format=%ct)" ] || aviso_ou_erro "$3 é mais antigo que o commit $commit: compile de novo"
+  fi
+  return 0
+}
+if quer KALANGO_IMAGEM_VIRTUALDESK "$VDESK/target/release/kalango-virtualdesk" "o Kalango VirtualDesk"; then
+  install -m 755 "$VDESK/target/release/kalango-virtualdesk" "$C/usr/bin/kalango-virtualdesk"
+  sed "s|^Exec=.*|Exec=kalango-virtualdesk|" "$VDESK/dist/os.kalango.VirtualDesk.desktop" > "$C/usr/share/applications/os.kalango.VirtualDesk.desktop"
+  for s in 64 128 256 512; do
+    d usr/share/icons/hicolor/${s}x${s}/apps
+    install -m 644 "$VDESK/assets/icons/hicolor/${s}x${s}/apps/os.kalango.VirtualDesk.png" "$C/usr/share/icons/hicolor/${s}x${s}/apps/"
+  done
+  # (QEMU para rodar, qemu-utils para os discos, ovmf para o UEFI, swtpm para o TPM: tamanho em docs/ISO-CONTEUDO.md.
+  # O /dev/kvm já é da pessoa da sessão pelo 70-uaccess.rules do systemd: nenhuma regra nossa)
+  # (os pacotes do VirtualDesk vêm da raiz de pacotes: com a raiz pronta de outra rodada, confira que o QEMU está nela)
+  if [ -n "$BASE" ] && [ -f "$BASE" ] && ! tar -tf "$BASE" | grep -q -E '(^|/)usr/bin/qemu-system-x86_64$'; then
+    echo "a raiz de pacotes $BASE não tem o QEMU do VirtualDesk: refaça a etapa 1 (imagem/construir.sh base, com o VirtualDesk à vista)" >&2; exit 1
+  fi
+  inventario "$VDESK" usr/share/doc/kalango/virtualdesk "$VDESK/target/release/kalango-virtualdesk"
+  # (a GPL-3.0: quem recebe o binário tem direito ao código-fonte correspondente. Uma ISO publicável só leva o VirtualDesk
+  # se o tar.gz do fonte desse commit sai junto, ao lado dela: KALANGO_VIRTUALDESK_FONTE=caminho do arquivo)
+  FONTE=${KALANGO_VIRTUALDESK_FONTE:-}
+  VD_COMMIT=$(cat "$C/usr/share/doc/kalango/virtualdesk/COMMIT")
+  if [ -n "$FONTE" ]; then
+    [ -f "$FONTE" ] || { echo "KALANGO_VIRTUALDESK_FONTE: não existe $FONTE" >&2; exit 1; }
+    case "$(basename "$FONTE")" in *"$VD_COMMIT"*) ;; *) echo "KALANGO_VIRTUALDESK_FONTE: o nome de $FONTE não tem o commit $VD_COMMIT do binário" >&2; exit 1 ;; esac
+    printf 'O Kalango VirtualDesk (/usr/bin/kalango-virtualdesk) é software livre sob a GPL-3.0-or-later (LICENSE, nesta pasta).\nO código-fonte correspondente deste binário (commit %s) é distribuído junto desta ISO, no arquivo\n%s\n(GPLv3, seção 6). Fonte: https://github.com/kalangoos/kalango-virtualdesk\n' "$VD_COMMIT" "$(basename "$FONTE")" > "$C/usr/share/doc/kalango/virtualdesk/FONTE.txt"
+  elif [ "$PUBLICAVEL" = 1 ]; then
+    echo "o VirtualDesk (GPL-3.0-or-later) só entra numa ISO publicável com o código-fonte do commit $VD_COMMIT ao lado (KALANGO_VIRTUALDESK_FONTE=...tar.gz)" >&2; exit 1
+  else
+    echo "AVISO: ISO local com o VirtualDesk (GPL-3.0-or-later) sem o código-fonte junto: não a publique (KALANGO_VIRTUALDESK_FONTE)" >&2
+  fi
+fi
+if quer KALANGO_IMAGEM_FLUXOS "$FLUXOS/target/release/kalango-fluxosd" "o serviço dos agentes e fluxos (kalango-fluxosd)"; then
+  d usr/lib/kalango; d usr/lib/systemd/user/sockets.target.wants
+  install -m 755 "$FLUXOS/target/release/kalango-fluxosd" "$C/usr/lib/kalango/kalango-fluxosd"
+  install -m 644 "$FLUXOS/dist/systemd/kalango-fluxos.service" "$FLUXOS/dist/systemd/kalango-fluxos.socket" "$C/usr/lib/systemd/user/"
+  # (ativação por soquete: o systemd só abre o soquete; o serviço sobe na primeira conexão, do shell ou do kalangod)
+  ln -s ../kalango-fluxos.socket "$C/usr/lib/systemd/user/sockets.target.wants/kalango-fluxos.socket"
+  # (o serviço roda na fatia da plataforma: dentro da dos agentes para a política do kalangod, isenta da guarda do kernel,
+  # porque ele é o dono das pastas que a guarda protege dos agentes. Ver crates/kalangod/dist/kalango-agentes-plataforma-usuario.slice)
+  install -m 644 crates/kalangod/dist/kalango-agentes-plataforma-usuario.slice "$C/usr/lib/systemd/user/kalango-agentes-plataforma.slice"
+  ln -s ../kalango-agentes-plataforma.slice "$C/usr/lib/systemd/user/default.target.wants/kalango-agentes-plataforma.slice"
+  d usr/lib/systemd/user/kalango-fluxos.service.d
+  printf '[Service]\nSlice=kalango-agentes-plataforma.slice\n' > "$C/usr/lib/systemd/user/kalango-fluxos.service.d/10-plataforma.conf"
+  inventario "$FLUXOS" usr/share/doc/kalango/fluxos "$FLUXOS/target/release/kalango-fluxosd"
 fi
 # desligar e reiniciar sem esperar 90 s por um processo que não fecha (uma sessão de terminal com um shell
 # interativo segurou um desligamento por 94 s): 15 s para cada serviço e sessão parar, no sistema e nas contas
@@ -417,17 +544,17 @@ if [ -s "$W/donos.txt" ]; then echo "arquivos do sistema com dono errado: $(head
 
 # ---- toda biblioteca que os nossos programas carregam está na imagem (uma que falte derruba a sessão: o niri sem a
 # libseat, na primeira imagem)
+. imagem/bibliotecas-chamadas.sh
 tar -tf "$OUT/kalangoos.tar" | grep -oE '[^/]+\.so(\.[0-9]+)*$' | sort -u > "$W/sonames.txt"
 # (as bibliotecas do llama.cpp vão na pasta dele: contam como presentes)
 ls "$C/usr/lib/kalango/llama" "$C/usr/lib/kalango" "$C/usr/lib/kalango/remote" 2>/dev/null | grep -E '\.so' >> "$W/sonames.txt"; sort -u -o "$W/sonames.txt" "$W/sonames.txt"
 for b in "$C"/usr/libexec/kalango/*.bin "$C"/usr/libexec/kalango/kalangod "$C"/usr/libexec/kalango/kalango-agente \
          "$C"/usr/libexec/kalango/kalango-entrada "$C"/usr/libexec/kalango/kalango-instalador \
          "$C"/usr/lib/kalango/llama/llama-server "$C"/usr/lib/kalango/llama/*.so "$C"/usr/lib/kalango/moli \
-         "$C"/usr/lib/kalango/remote/kalango-remote "$C"/usr/lib/kalango/remote/kalango-remote-core "$C"/usr/bin/kalango-audio; do
+         "$C"/usr/lib/kalango/remote/kalango-remote "$C"/usr/lib/kalango/remote/kalango-remote-core "$C"/usr/bin/kalango-audio \
+         "$C"/usr/bin/kalango-virtualdesk "$C"/usr/lib/kalango/kalango-fluxosd; do
   [ -f "$b" ] || continue
-  readelf -d "$b" | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p'
-  # (e as que eles carregam sozinhos, por nome: o niri abre a libwayland-server assim)
-  strings "$b" | grep -E '^lib[a-z0-9_+-]+\.so(\.[0-9]+)*$'
+  bibliotecas_chamadas "$b"
 done | sort -u | comm -23 - "$W/sonames.txt" > "$W/faltam.txt"
 if [ -s "$W/faltam.txt" ]; then echo "bibliotecas que faltam na imagem: $(tr '\n' ' ' < "$W/faltam.txt") (imagem/pacotes.txt)"; exit 1; fi
 
@@ -469,7 +596,8 @@ CFG
   # (com todos os modelos o squashfs passa de 4 GiB, o limite de um arquivo no ISO 9660: -iso-level 3 grava o
   # arquivo em vários trechos, o que o Linux monta normalmente)
   GRANDE=$W/xorriso-grande; rm -rf "$GRANDE"
-  if [ "${KALANGO_IMAGEM_TODOS_MODELOS:-0}" = 1 ]; then
+  # (o squashfs passa de 4 GiB com todos os modelos ou com uns poucos; a medida é o arquivo, não a variável)
+  if [ "$(stat -c %s "$OUT/kalangoos.squashfs")" -gt 4000000000 ]; then
     mkdir -p "$GRANDE"
     printf '#!/bin/sh\ncase "$*" in *-help*) ;; -as*) a=$1; b=$2; shift 2; exec /usr/bin/xorriso -as "$b" -iso-level 3 "$@";; esac\nexec /usr/bin/xorriso "$@"\n' > "$GRANDE/xorriso"; chmod 755 "$GRANDE/xorriso"
   fi

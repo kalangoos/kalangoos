@@ -189,3 +189,12 @@ Testes (`crates/kalangod`): `agent_file_tools_cannot_reach_the_mind_confirmation
 - Correções de segurança publicadas fora do ciclo normal de versões.
 - Revisão externa do kalangod e do isolamento antes da versão 1.0.
 - Testes automáticos com páginas e arquivos maliciosos a cada versão (fase 4).
+
+## O `/dev/kvm` e os agentes
+
+O `70-uaccess.rules` do systemd dá o `/dev/kvm` a quem está na sessão ativa (sem grupo `kvm`), e o Kalango VirtualDesk
+conta com isso. Um agente que roda como o usuário da sessão (o `kalango-agente`, o serviço dos Fluxos, as tarefas do
+`kalangod`) abre o mesmo dispositivo: ele pode rodar uma máquina virtual, e dentro dela fazer o que quiser, fora das
+regras de arquivo e de rede dos agentes. O que limita isso é a camada de aprovação (as ferramentas de máquinas pedem
+aprovação e seguem a política de rede do VirtualDesk), não o kernel. Quem não quer isso pode tirar o `uaccess` do
+`/dev/kvm` com uma regra do udev própria.

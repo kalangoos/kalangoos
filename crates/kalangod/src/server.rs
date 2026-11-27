@@ -142,7 +142,7 @@ pub fn rule_for<'a>(cfg: &'a Config, p: &Peer) -> Option<&'a CallerRule> {
     cfg.callers.iter().find(|r| {
         r.uid.map(|u| u == p.uid).unwrap_or(true)
             && r.exe_prefix.as_ref().map(|e| p.exe.starts_with(e.as_str())).unwrap_or(true)
-            && r.cgroup_prefix.as_ref().map(|c| p.cgroup.starts_with(c.as_str())).unwrap_or(true)
+            && r.cgroup_prefix.as_ref().map(|c| crate::policy::cgroup_matches(&p.cgroup, c.as_str())).unwrap_or(true)
     })
 }
 

@@ -216,6 +216,88 @@ fn a_read_only_folder_keeps_the_file_installed_unverified_and_does_not_hash_it_a
     std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+#[test]
+fn a_model_whose_licence_is_not_accepted_is_refused_by_the_queue_and_goes_on_after_the_acceptance() {
+    use kalango_modelos::licenca;
+    let s = Server::start();
+    let a = bytes(80_000, 5);
+    s.put("k/lfm.gguf", a.clone());
+    let q_dir = tempfile::tempdir().unwrap();
+    let cfg = tempfile::tempdir().unwrap();
+    let file = cfg.path().join("modelos-licencas.json");
+    let src = Source::Server { url: parse_server(&format!("{}/k", s.base()), false).unwrap(), token: None };
+    let q = Queue::start(q_dir.path().to_path_buf(), vec![entry("lfm3-1.7b", &[("lfm.gguf", &a)])], src, quick);
+    q.set_licences_file(file.clone());
+    q.enqueue("lfm3-1.7b");
+    assert!(q.wait_idle(Duration::from_secs(10)));
+    assert_eq!(q.item("lfm3-1.7b").unwrap().phase, Phase::Failed(Failure::LicenseNotAccepted));
+    assert!(s.seen().is_empty(), "nothing was requested from the server: {:?}", s.seen());
+    assert!(!q_dir.path().join("lfm.gguf").exists());
+    // the person accepts, asks again: it downloads
+    licenca::aceitar_em(&file, "lfm3-1.7b", "2026-11-24").unwrap();
+    q.enqueue("lfm3-1.7b");
+    assert!(q.wait_idle(Duration::from_secs(20)));
+    assert_eq!(q.item("lfm3-1.7b").unwrap().phase, Phase::Installed { verified: true });
+    q.stop();
+}
+
+#[test]
+fn a_new_licence_version_asks_again_and_a_model_already_on_disk_is_not_blocked() {
+    use kalango_modelos::licenca::{self, Aceites};
+    let s = Server::start();
+    let a = bytes(60_000, 6);
+    s.put("k/lfm.gguf", a.clone());
+    let cfg = tempfile::tempdir().unwrap();
+    let file = cfg.path().join("modelos-licencas.json");
+    licenca::aceitar_em(&file, "lfm3-1.7b", "2026-11-24").unwrap();
+    // (the record is for an older version of the licence)
+    let mut velho = Aceites::carregar(&file);
+    velho.lista[0].versao = "0.9".into();
+    velho.salvar(&file).unwrap();
+    let d = tempfile::tempdir().unwrap();
+    let src = Source::Server { url: parse_server(&format!("{}/k", s.base()), false).unwrap(), token: None };
+    let q = Queue::start(d.path().to_path_buf(), vec![entry("lfm3-1.7b", &[("lfm.gguf", &a)])], src.clone(), quick);
+    q.set_licences_file(file.clone());
+    q.enqueue("lfm3-1.7b");
+    assert!(q.wait_idle(Duration::from_secs(10)));
+    assert_eq!(q.item("lfm3-1.7b").unwrap().phase, Phase::Failed(Failure::LicenseNotAccepted));
+    q.stop();
+    // a file that is already there (from before the acceptances existed) is kept and checked, not refused
+    std::fs::write(d.path().join("lfm.gguf"), &a).unwrap();
+    let q = Queue::start(d.path().to_path_buf(), vec![entry("lfm3-1.7b", &[("lfm.gguf", &a)])], src, quick);
+    q.set_licences_file(file);
+    q.enqueue("lfm3-1.7b");
+    assert!(q.wait_idle(Duration::from_secs(10)));
+    assert_eq!(q.item("lfm3-1.7b").unwrap().phase, Phase::Installed { verified: true });
+    q.stop();
+}
+
+#[test]
+fn a_model_carried_by_the_system_is_installed_and_never_downloaded_again() {
+    let s = Server::start();
+    let (a, b) = (bytes(120_000, 7), bytes(90_000, 8));
+    s.put("k/a.gguf", a.clone());
+    s.put("k/b.gguf", b.clone());
+    let sys = tempfile::tempdir().unwrap();
+    std::fs::write(sys.path().join("a.gguf"), &a).unwrap();
+    // (a file with another size is not the catalog's: it does not count)
+    std::fs::write(sys.path().join("b.gguf"), &b[..1000]).unwrap();
+    let d = tempfile::tempdir().unwrap();
+    let src = Source::Server { url: parse_server(&format!("{}/k", s.base()), false).unwrap(), token: None };
+    let q = Queue::start(d.path().to_path_buf(), vec![entry("a", &[("a.gguf", &a)]), entry("b", &[("b.gguf", &b)])], src, quick);
+    q.set_system_dirs(vec![sys.path().to_path_buf()]);
+    q.enqueue("a");
+    assert_eq!(q.item("a").unwrap().phase, Phase::Installed { verified: false });
+    assert_eq!(q.item("a").unwrap().done, 120_000);
+    q.enqueue("b");
+    assert!(q.wait_idle(Duration::from_secs(10)));
+    assert_eq!(q.item("b").unwrap().phase, Phase::Installed { verified: true });
+    assert!(!d.path().join("a.gguf").exists(), "nothing is copied into the person's folder");
+    assert!(d.path().join("b.gguf").exists());
+    assert!(s.seen().iter().all(|r| !r.path.contains("a.gguf")), "{:?}", s.seen());
+    q.stop();
+}
+
 extern "C" {
     fn geteuid() -> u32;
 }

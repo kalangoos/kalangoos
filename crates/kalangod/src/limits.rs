@@ -46,6 +46,10 @@ impl Limits {
 
 pub const CGROOT: &str = "/sys/fs/cgroup";
 pub const AGENTES: &str = "kalango.slice/kalango-agentes.slice";
+/// A fatia da plataforma dos agentes (o `kalango-fluxosd`): dentro da dos agentes (a política do kalangod o trata como
+/// agente: aprovação, lista de permitidos), mas isenta da guarda do kernel, porque é a dona das pastas que a guarda
+/// protege dos agentes (`~/.local/share/kalango/fluxos`): sem a isenção o serviço não abria o próprio banco.
+pub const PLATAFORMA: &str = "kalango.slice/kalango-agentes.slice/kalango-agentes-plataforma.slice";
 const MAX_SAIDA: usize = 512 * 1024;
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -80,6 +84,47 @@ pub fn agents_cgroup_id() -> std::io::Result<(u64, u64)> {
     prepare()?;
     let md = std::fs::metadata(agents_dir())?;
     Ok((md.ino(), AGENTES.split('/').count() as u64))
+}
+
+/// Os cgroups dos agentes sob o gerenciador de usuário do systemd de cada pessoa
+/// (`user.slice/user-UID.slice/user@UID.service/kalango.slice/kalango-agentes.slice`): onde roda o `kalango-fluxosd` e o
+/// que `systemd-run --user` cria. Devolve (id, nível) de cada um, como [`agents_cgroup_id`]; `raiz` é o cgroupfs.
+pub fn user_agents_cgroup_ids_in(raiz: &Path) -> Vec<(u64, u64)> {
+    user_cgroup_ids_in(raiz, AGENTES)
+}
+
+/// Como [`user_agents_cgroup_ids_in`], para o cgroup `sub` (relativo ao `user@UID.service`) de cada pessoa.
+pub fn user_cgroup_ids_in(raiz: &Path, sub: &str) -> Vec<(u64, u64)> {
+    let mut v = Vec::new();
+    let nivel = 1 + 1 + 1 + sub.split('/').count() as u64; // user.slice, user-N.slice, user@N.service + kalango.slice/…
+    let Ok(slices) = std::fs::read_dir(raiz.join("user.slice")) else { return v };
+    for sl in slices.flatten() {
+        let n = sl.file_name().to_string_lossy().into_owned();
+        if !(n.starts_with("user-") && n.ends_with(".slice")) {
+            continue;
+        }
+        let uid = &n["user-".len()..n.len() - ".slice".len()];
+        if uid.is_empty() || !uid.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let dir = sl.path().join(format!("user@{uid}.service")).join(sub);
+        if let Ok(md) = std::fs::metadata(&dir) {
+            if md.is_dir() {
+                v.push((md.ino(), nivel));
+            }
+        }
+    }
+    v.sort();
+    v
+}
+
+pub fn user_agents_cgroup_ids() -> Vec<(u64, u64)> {
+    user_agents_cgroup_ids_in(Path::new(CGROOT))
+}
+
+/// Os cgroups da plataforma dos agentes de cada pessoa ([`PLATAFORMA`]), isentos da guarda do kernel.
+pub fn user_platform_cgroup_ids() -> Vec<(u64, u64)> {
+    user_cgroup_ids_in(Path::new(CGROOT), PLATAFORMA)
 }
 
 /// O que o trampolim recebe (um argumento JSON).
@@ -609,6 +654,36 @@ pub fn seccomp_helper() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::{user_agents_cgroup_ids_in, user_cgroup_ids_in, AGENTES, PLATAFORMA};
+
+    #[test]
+    fn the_per_user_agents_cgroups_are_found_with_their_level() {
+        let d = tempfile::tempdir().unwrap();
+        for uid in ["1000", "1001"] {
+            std::fs::create_dir_all(d.path().join(format!("user.slice/user-{uid}.slice/user@{uid}.service")).join(AGENTES)).unwrap();
+        }
+        // a person with no agents slice yet, and things that are not users
+        std::fs::create_dir_all(d.path().join("user.slice/user-1002.slice/user@1002.service")).unwrap();
+        std::fs::create_dir_all(d.path().join("user.slice/user-x.slice/user@x.service").join(AGENTES)).unwrap();
+        let v = user_agents_cgroup_ids_in(d.path());
+        assert_eq!(v.len(), 2, "{v:?}");
+        assert!(v.iter().all(|(id, nivel)| *id != 0 && *nivel == 5), "{v:?}");
+        assert_ne!(v[0].0, v[1].0);
+        assert!(user_agents_cgroup_ids_in(&d.path().join("nada")).is_empty());
+    }
+
+    #[test]
+    fn the_platform_slice_is_inside_the_agents_slice_and_found_at_its_own_level() {
+        // (the name decides the place: kalango-agentes-plataforma.slice is born under kalango-agentes.slice)
+        assert!(PLATAFORMA.starts_with(AGENTES) && PLATAFORMA.ends_with("/kalango-agentes-plataforma.slice"));
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("user.slice/user-1000.slice/user@1000.service").join(PLATAFORMA)).unwrap();
+        std::fs::create_dir_all(d.path().join("user.slice/user-1001.slice/user@1001.service").join(AGENTES)).unwrap();
+        let v = user_cgroup_ids_in(d.path(), PLATAFORMA);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert_eq!(v[0].1, 6);
+    }
+
     #[test]
     fn seccomp_do_auxiliar_bloqueia_exec_e_rede() {
         // o filtro vale só para a thread que o aplica (sem TSYNC): testa numa thread separada

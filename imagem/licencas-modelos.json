@@ -1,0 +1,33 @@
+{
+  "_leia": "DECISÃO (2026-11-24): o modelo padrão é o LFM3 e ele NUNCA vai dentro da ISO publicada: só é baixado, depois do aceite da licença (instalador e Ajustes/Central). Embutir modelos é só para ISO local de desenvolvimento. Dados por modelo para o aviso de licenças da ISO (docs/ISO-CONTEUDO.md, seção 1; lido em 2026-11-24). 'aprovado' diz se o mantenedor decidiu que este modelo pode ir DENTRO de uma ISO publicada: só mude para true depois dessa decisão (licenças fora da lista do AGENTS.md exigem pergunta). 'texto' é o arquivo em sessao/dist/share/doc/kalango/modelos/ que acompanha a ISO ('' = o texto não está no repositório: a ISO com esse modelo não é gerada).",
+  "familias": {
+    "lfm": {
+      "licenca": "LFM Open License v1.0", "spdx": "LicenseRef-LFM-Open-1.0", "texto": "LFM-Open-1.0.txt",
+      "fornecedor": "Liquid AI, Inc.", "url": "https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/blob/main/LICENSE",
+      "aviso": "Os pesos são arquivos GGUF quantizados dos modelos da Liquid AI, sob a LFM Open License v1.0. O uso comercial só é licenciado enquanto você (ou a sua entidade) não passar de US$ 10 milhões de receita anual (seção 5); acima disso é preciso licença da Liquid AI. Os arquivos GGUF são conversões (obra derivada) dos pesos originais.",
+      "aprovado": false, "somente_download": true
+    },
+    "qwen": {
+      "licenca": "Apache License 2.0", "spdx": "Apache-2.0", "texto": "Qwen-Apache-2.0.txt",
+      "fornecedor": "Alibaba Cloud (Qwen)", "url": "https://huggingface.co/Qwen/Qwen3-8B-GGUF/blob/main/LICENSE",
+      "aviso": "Os pesos são o Qwen3 da Alibaba Cloud, em GGUF quantizado (conversão do modelo original), sob a Apache License 2.0. Copyright Alibaba Cloud.",
+      "aprovado": true
+    },
+    "llama": {
+      "licenca": "Llama 3.1 Community License", "spdx": "LicenseRef-Llama-3.1", "texto": "",
+      "fornecedor": "Meta Platforms, Inc.", "url": "https://www.llama.com/llama3_1/license/",
+      "aviso": "Llama 3.1 is licensed under the Llama 3.1 Community License, Copyright (c) Meta Platforms, Inc. All Rights Reserved. Built with Llama. O uso deve seguir a Política de Uso Aceitável: https://www.llama.com/llama3_1/use-policy/",
+      "aprovado": false, "somente_download": true
+    },
+    "gemma": {
+      "licenca": "Gemma Terms of Use", "spdx": "LicenseRef-Gemma", "texto": "",
+      "fornecedor": "Google LLC", "url": "https://ai.google.dev/gemma/terms",
+      "aviso": "Gemma is provided under and subject to the Gemma Terms of Use found at gemma.ai/resources/terms (texto: https://ai.google.dev/gemma/terms). O uso está sujeito à Gemma Prohibited Use Policy: https://ai.google.dev/gemma/prohibited_use_policy",
+      "aprovado": false, "somente_download": true
+    }
+  },
+  "modelos": {
+    "lfm3-1.7b": "lfm", "lfm3-audio-2b": "lfm", "lfm3-vl-2b": "lfm", "lfm3-omni-2b": "lfm", "d1-2b": "lfm", "d1-omni-2b": "lfm",
+    "qwen3-8b": "qwen", "qwen3-32b": "qwen", "llama-3.1-8b": "llama", "gemma-3-27b": "gemma"
+  }
+}

@@ -16,4 +16,13 @@ export KALANGO_ESC_DUPLO="/usr/bin/kalango-remote end-sessions"
 export KALANGO_PESSOA_ATIVA="/usr/libexec/kalango/kalangod tela pessoa"
 # o niri-session importa este ambiente para o systemd do usuário e sobe niri.service; ao chegar em
 # graphical-session.target, sobem kalango-shell.service e kalango-aprovacao.service
+# GPU virtual com 3D (virtio-gpu com virgl, uma VM com VM_GL=1): o desenho do GTK 4 pelo GL derrubou o virgl do QEMU
+# ("vrend_check_no_error: context error reported … Unknown 1282", "Illegal command buffer") e levou a VM inteira. Nela o
+# shell desenha por software (cairo); em qualquer outra GPU nada muda, e quem exportar GSK_RENDERER antes manda.
+for d in /sys/bus/virtio/devices/virtio*; do
+    if [ "$(cat "$d/device" 2>/dev/null)" = 0x0010 ] && [ "$(cut -c1 "$d/features" 2>/dev/null)" = 1 ]; then
+        export GSK_RENDERER="${GSK_RENDERER:-cairo}"
+        break
+    fi
+done
 exec niri-session -l
