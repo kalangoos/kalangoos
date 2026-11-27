@@ -55,7 +55,7 @@ class Qmp:
     def texto(self, t):
         for ch in t:
             self.tecla(KEYS[ch] if ch.islower() or ch.isdigit() or ch in KEYS else ch)
-            time.sleep(0.05)
+            time.sleep(0.15)
 
 
 if __name__ == "__main__":

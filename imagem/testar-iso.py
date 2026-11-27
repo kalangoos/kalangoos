@@ -161,7 +161,7 @@ def optional_apps(c, user):
         out, _ = c.run(f"{sysd} systemctl --user is-active kalango-fluxos.service; {sysd} systemctl --user show kalango-fluxos.service -p ControlGroup --value | tr / ' '; ps -eo cgroup:90,args | grep '[k]alango-fluxosd servir' | cut -c1-120")
         good &= check(out.splitlines()[0].strip() == "active", "Fluxos: o serviço subiu pela ativação do soquete", out)
         print("      cgroup do serviço: " + " | ".join(out.splitlines()[1:]))
-        good &= check("kalango-agentes.slice/kalango-fluxos.service" in out.replace("\n", ""),
+        good &= check("kalango-agentes.slice kalango-fluxos.service" in out or "kalango-agentes.slice/kalango-fluxos.service" in out.replace("\r", "").replace("\n", ""),
                       "Fluxos: o serviço roda na fatia dos agentes (com a guarda do kernel ativa) e abre o próprio banco", out)
     else:
         print("      (o serviço dos agentes e fluxos não está nesta ISO)")
