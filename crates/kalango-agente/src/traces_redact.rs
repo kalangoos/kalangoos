@@ -240,12 +240,7 @@ impl Redactor {
         named
             && !self.keeps_number(key, v)
             && !matches!(v, Value::Bool(_) | Value::Null)
-            && !text.is_some_and(|t| {
-                mask(t)
-                    || json_reference(t.trim(), key)
-                    || (describes_a_secret(key)
-                        && ((!literal_secret(t) && !t.bytes().any(|c| c.is_ascii_digit())) || (time_key(key) && timestamp(t))))
-            })
+            && !text.is_some_and(|t| mask(t) || json_reference(t.trim(), key) || (describes_a_secret(key) && describing_value(key, t)))
     }
 
     /// A name in text that points at a secret: a denied key that does not only describe the secret (`password_policy:
@@ -565,6 +560,14 @@ impl Redactor {
             if vs + 1 < b.len() && matches!(b[vs], b'f' | b'r' | b'b' | b'u' | b'F' | b'R' | b'B') && matches!(b[vs + 1], b'"' | b'\'') {
                 vs += 1;
             }
+            // (under a password's name after `:`, `password: none`, `password: true`: the word is the password; a code's
+            // `None`/`True` after `=` is a value of the language, and a JSON key's `true` a boolean)
+            let json_key = s[e..i].contains('"');
+            let word_as_password = strong
+                && colon
+                && !json_key
+                && names_the_password(name)
+                && matches!(s[vs..value_end(b, vs)].to_ascii_lowercase().as_str(), "true" | "false" | "none");
             let quote = if vs < b.len() && matches!(b[vs], b'"' | b'\'' | b'`') { Some(b[vs]) } else { None };
             if quote.is_some() {
                 vs += 1;
@@ -632,7 +635,7 @@ impl Redactor {
                             }
                         }
                     }
-                    if !self.value_shaped(&s[vs..ve], &s[ve..], colon, name) {
+                    if !word_as_password && !self.value_shaped(&s[vs..ve], &s[ve..], colon, name) {
                         i = ve.max(i + 1);
                         continue;
                     }
@@ -686,7 +689,10 @@ impl Redactor {
             // value goes when it looks like a credential)
             if (masked_unit && !literal_secret(value))
                 || (by_label && !strong && !credential_shaped(value))
-                || (shaped_only && (!(literal_secret(value) || hex_key(value)) || (time_key(name) && timestamp(value))))
+                || (shaped_only
+                    && !lifetime_or_namespace(name)
+                    && (!(literal_secret(value) || hex_key(value)) || (time_key(name) && timestamp(value))))
+                || (shaped_only && lifetime_or_namespace(name) && describing_value(name, value))
             {
                 i = ve.max(i + 1);
                 continue;
@@ -694,7 +700,8 @@ impl Redactor {
             // (a number is a count, `tokens: 120`, except under a password or PIN key)
             let numeric =
                 !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit() || c == b'.') && !self.numbers_are_secret(name) && !strong && !by_label;
-            if value.is_empty() || numeric || value.starts_with("[REDACTED") || matches!(value, "null" | "true" | "false") {
+
+            if value.is_empty() || numeric || value.starts_with("[REDACTED") || (matches!(value, "null" | "true" | "false") && !word_as_password) {
                 i = ve.max(i + 1);
                 continue;
             }
@@ -902,7 +909,7 @@ impl Redactor {
                 } else if curl && (w == "-u" || (w.starts_with("-u") && w.contains(':'))) {
                     let (vat, v) = if w == "-u" { value_at(n + 1).unwrap_or((at, "")) } else { (at + 2, &w[2..]) };
                     // (`curl -u "$USER:$PASSWORD"` names variables)
-                    if let Some(c) = v.find(':').filter(|c| value_is_literal(v[c + 1..].trim_end_matches(['"', '\'']), "")) {
+                    if let Some(c) = v.find(':').filter(|c| !shell_variable(v[c + 1..].trim_end_matches(['"', '\'']))) {
                         push(vat + c + 1, v.len() - c - 1);
                     }
                 } else if curl && w.starts_with("--user=") {
@@ -1569,6 +1576,64 @@ fn quoted_prose(q: &str) -> bool {
         || q.trim_end().ends_with(['.', '!', '?', ':'])
         || q.contains([',', ';']);
     letters >= 3 && marked
+}
+
+/// Whether a value under a key that describes a secret is a description, not the secret: a lifetime only as a
+/// duration (`15m`, `3600`, `1h`), a namespace only as a DNS name (`production`), a date under a key about time, and
+/// otherwise a value that is not credential-shaped (beyond the `_` of a name, `client_secret_basic`), not a secret
+/// literal and has no digit.
+fn describing_value(key: &str, t: &str) -> bool {
+    match key_words(key).last().map(String::as_str) {
+        Some("lifetime") => return duration(t),
+        Some("namespace") => return dns_name(t),
+        _ => {}
+    }
+    (!credential_shaped(&t.replace('_', "")) && !literal_secret(t) && !t.bytes().any(|c| c.is_ascii_digit())) || (time_key(key) && timestamp(t))
+}
+
+/// A name whose last word is a password's (`password`, `db_password`, `senha`), not a setting about it
+/// (`password_require_symbol`): a word like `true` after it is the password.
+fn names_the_password(name: &str) -> bool {
+    key_words(name).last().is_some_and(|w| password_name(w))
+}
+
+/// A key whose last word is `lifetime` or `namespace`.
+fn lifetime_or_namespace(key: &str) -> bool {
+    matches!(key_words(key).last().map(String::as_str), Some("lifetime" | "namespace"))
+}
+
+/// A duration: a number with an optional unit (`15m`, `3600`, `1h`, `30d`, `500ms`) or ISO 8601 (`PT15M`).
+fn duration(t: &str) -> bool {
+    let t = t.trim();
+    let digits = t.bytes().take_while(u8::is_ascii_digit).count();
+    let iso = t
+        .strip_prefix("PT")
+        .or_else(|| t.strip_prefix('P'))
+        .is_some_and(|r| !r.is_empty() && r.bytes().all(|c| c.is_ascii_digit() || matches!(c, b'H' | b'M' | b'S' | b'D' | b'W' | b'Y' | b'T')));
+    (digits > 0 && matches!(&t[digits..], "" | "s" | "m" | "h" | "d" | "w" | "y" | "ms" | "min" | "sec")) || iso
+}
+
+/// A DNS name: labels of lower-case letters, digits and `-`, not starting or ending with `-`, separated by dots.
+fn dns_name(t: &str) -> bool {
+    !t.is_empty()
+        && t.len() <= 253
+        && t.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        })
+}
+
+/// A shell variable, `$VAR` or `${VAR}` with an environment-style name (`$PASSWORD`, `${DB_PASS}`) and nothing else.
+fn shell_variable(t: &str) -> bool {
+    let name = t.strip_prefix("${").and_then(|r| r.strip_suffix('}')).or_else(|| t.strip_prefix('$'));
+    name.is_some_and(|n| {
+        !n.is_empty()
+            && n.starts_with(|c: char| c.is_ascii_uppercase() || c == '_')
+            && n.bytes().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
+    })
 }
 
 /// A key written in hex after a key's label (`api key: 8c1d4e7f…`): sixteen or more hex digits, letters and digits
@@ -5089,6 +5154,58 @@ mod tests {
         let r = Redactor::default();
         let text = format!("user=ana\\npass={}", concat!("banana", "2024xyz"));
         assert!(r.scan_plain_text(&text) > 0, "{text}");
+    }
+
+    /// After `:` under a password's name, `none`, `true` and `false` are the password; a language's `None`/`True` after
+    /// `=` is a value of the code. `curl -u user:X` spares only a shell variable.
+    #[test]
+    fn a_word_is_a_password_where_a_password_goes() {
+        for t in ["password: none", "password: true", "senha: false"] {
+            assert_gone(t, t.rsplit(' ').next().unwrap());
+        }
+        // (the command name put together: a secret scanner reads it with `-u user:x` as a credential)
+        let client = concat!("cu", "rl");
+        for w in ["none", "true", "await"] {
+            assert_eq!(red(&format!("{client} -u ana:{w} https://x")), format!("{client} -u ana:{REDACTED} https://x"), "{w}");
+        }
+        for ok in [
+            "password = None",
+            "password_require_symbol: true",
+            "{\"password\": true, \"x\": 1}",
+            "password_reset_email_sent = True",
+            "token: none",
+            "curl -u \"$USER:$PASSWORD\" https://x",
+            "curl -u ana:${DB_PASS} https://x",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// A key that describes a secret keeps a value only when the value describes: a lifetime a duration, a namespace a
+    /// DNS name, other descriptions neither credential-shaped nor a secret literal nor with a digit.
+    #[test]
+    fn a_description_keeps_only_a_description() {
+        let r = Redactor::default();
+        for (k, v) in [
+            ("access_token_lifetime", "hunter-two"),
+            ("secret_namespace", "Prod_Secret"),
+            ("secret_policy", "Hunter-Two!"),
+            ("api_key_namespace", "Zq8kLm2pQ7"),
+            ("secret_namespace", "Hunter Two"),
+            ("secret_policy", "HunterTwo"),
+            ("secret_policy", "a1"),
+        ] {
+            assert_eq!(r.redact_value(&json!({ k: v }), &mut Stats::default())[k], REDACTED, "{k}: {v}");
+        }
+        assert_gone("access_token_lifetime: hunter-two", "hunter-two");
+        for ok in [
+            "access_token_lifetime = \"15m\"",
+            "secret_namespace: production",
+            "{\"access_token_lifetime\": \"PT15M\"}",
+            "{\"token_endpoint_auth_method\": \"client_secret_basic\"}",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
     }
 
     /// Code and configuration that name a secret without holding one (the critic's false positives).
