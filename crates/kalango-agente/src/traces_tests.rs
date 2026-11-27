@@ -1927,6 +1927,19 @@ fn a_megabyte_body_is_cleaned_in_linear_time() {
     assert!(full.as_secs_f64() < 3.0 * half.as_secs_f64().max(0.05), "not linear: {half:?} then {full:?}");
 }
 
+/// A span still dirty once its events are gone (the secret is in an attribute the first pass does not rewrite, such as
+/// a name) is not sent at all, and it is counted as dropped.
+#[test]
+fn a_span_still_dirty_without_its_events_is_dropped() {
+    let (red, guard) = (Redactor::default(), Redactor::default());
+    let token = concat!("ghp", "_abcdefghijklmnopqrstuvwxyz0123456789");
+    let mut sp = span_with(Attr::Str("um texto comum".into()));
+    sp.attrs.push(("kalango.tool.name".into(), Attr::Str(format!("ferramenta-{token}"))));
+    let mut tally = Tally::default();
+    assert!(guarded_otlp(&sp, &red, &guard, &mut tally).is_none(), "nothing of it goes");
+    assert_eq!((tally.hits, tally.dropped), (1, 1));
+}
+
 /// The final pass also reads a span's content as one text: a secret whose name is in one message and whose value is in
 /// the next (each looks harmless alone, and a weak first pass lets both through) is still stopped.
 #[test]
