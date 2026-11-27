@@ -1903,7 +1903,10 @@ fn the_final_pass_keeps_what_the_first_pass_kept() {
 /// The whole path a body takes (first pass, final pass over the values, the last look) is linear: 1 MB of spans
 /// with minified JSON full of secret names costs about twice 512 KB, and stays far from the seconds per span that a
 /// quadratic look-behind cost (round 5: 4.2 s for one 62 KB string).
+/// (`#[ignore]`d: its seconds of full CPU starve the tests that wait for a deadline; run it with
+/// `kalango-cargo-test -p kalango-agente --bin kalango-agente -- --ignored a_megabyte_body --nocapture`.)
 #[test]
+#[ignore = "a performance test: seconds of full CPU"]
 fn a_megabyte_body_is_cleaned_in_linear_time() {
     let (red, guard) = (Redactor::default(), Redactor::default());
     let unit = r#"{"name":"ana","password":"x","token":"y"},"#;
