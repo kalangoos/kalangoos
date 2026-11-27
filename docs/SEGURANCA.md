@@ -153,8 +153,12 @@ O que fica aberto, de propósito e dito:
 - **`%t` é `/run/user/UID` fixo** na política (`policy::runtime_dir`), nas ferramentas de arquivo, no Landlock de comandos e na
   guarda eBPF. Uma sessão com `XDG_RUNTIME_DIR` diferente disso fica fora de cobertura (só o conector soma o `XDG_RUNTIME_DIR` do
   próprio processo). O logind faz `/run/user/UID` em toda sessão do KalangoOS.
-- A sondagem da guarda eBPF a cada 1 s (e a pasta nascendo depois do `kalangod`) **só se prova na VM**: nenhum teste daqui roda
-  como root com o LSM `bpf`.
+- A sondagem da guarda eBPF a cada 1 s (e a pasta nascendo depois do `kalangod`) **só se prova com root e o LSM `bpf`**: nenhum
+  teste de `cargo test` roda assim. Provado à mão no host (27/11/2026, `kalango-teste-guarda-host`): fora do cgroup dos agentes o
+  arquivo protegido é lido; dentro de `kalango-agentes.slice` o kernel nega (`Operação não permitida`).
+- As pastas protegidas fora de `%t` (como `~/.local/share/kalango/mind`) são procuradas de novo a cada 15 s; só as de `%t/...` a
+  cada 1 s. A pasta dos Fluxos fica fora da guarda do kernel e segue protegida pela política e pelo Landlock (limite conhecido:
+  Fluxos acessado como outro usuário é decisão do mantenedor; ver `docs/ISO-CONTEUDO.md`).
 - A janela entre a pasta ser criada e a guarda eBPF conhecê-la (até um segundo). O Landlock e as ferramentas de arquivo não
   têm essa janela (valem pelo lugar). Fecha de vez se o serviço criar a pasta ao iniciar a sessão.
 - Os nomes na pasta (ids das revisões, não códigos) ainda podem ser listados por um comando quando a guarda eBPF está

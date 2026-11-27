@@ -211,6 +211,29 @@ APROVACAO=$(python3 -I imagem/licencas-modelos.py sessao/dist/share/kalango/loja
 case "$APROVACAO" in
   NAO-APROVADO*) echo "AVISO: esta imagem leva modelos de IA dentro (${APROVACAO#NAO-APROVADO }): só para uso local, nunca para publicar (docs/ISO-CONTEUDO.md)." >&2 ;;
 esac
+# ---- GPLv3: a licença e a oferta escrita do código-fonte do que a ISO leva (KalangoOS, niri com os patches, pacotes do
+# Ubuntu). O código do KalangoOS e os patches do niri são públicos; a oferta diz onde e por quanto tempo (seção 6.b).
+install -d "$C/usr/share/doc/kalango"
+install -m 644 LICENSE "$C/usr/share/doc/kalango/LICENSE"
+[ -f NOTICE ] && install -m 644 NOTICE "$C/usr/share/doc/kalango/NOTICE"
+KOS_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo desconhecido)
+NIRI_COMMIT=$(git -C "$DEPS/src/niri" rev-parse HEAD 2>/dev/null || echo desconhecido)
+cat > "$C/usr/share/doc/kalango/FONTE.txt" <<FONTE
+KalangoOS: código-fonte e oferta escrita (GPLv3, seção 6)
+
+Esta imagem leva software livre sob a GPL-3.0-or-later (LICENSE, nesta pasta) e outras licenças livres.
+
+1. KalangoOS (shell, kalangod, agentes, instalador, tela de entrada, sessão): commit $KOS_COMMIT
+   https://github.com/kalangoos/kalangoos  (a mesma versão da ISO está na página de releases, com o arquivo do fonte da marca).
+2. niri (compositor) com os patches do KalangoOS: commit $NIRI_COMMIT do niri; os patches estão em sessao/ e poc/ do
+   repositório acima. Niri original: https://github.com/YaLTeR/niri (GPL-3.0-or-later).
+3. Pacotes do Ubuntu: o código-fonte de cada um sai com "apt source <pacote>" (as fontes deb-src do Ubuntu).
+4. Kalango Remote, Kalango Audio, Kalango VirtualDesk: repositórios kalangoos/kalango-remote, kalango-audio e
+   kalango-virtualdesk (o fonte do VirtualDesk também vai ao lado da ISO publicada, ver virtualdesk/FONTE.txt).
+
+Se algum desses links sair do ar, peça o código-fonte correspondente em até 3 anos a contar da distribuição desta imagem,
+abrindo uma issue no repositório do item 1; ele será enviado em meio físico ou digital pelo custo da mídia.
+FONTE
 # ---- os apps nativos que têm repositório próprio (kalangoos/kalango-remote e kalangoos/kalango-audio), compilados ao
 # lado deste repositório (KALANGO_REMOTE_DIR / KALANGO_AUDIO_DIR mudam onde); KALANGO_IMAGEM_SEM_APPS=1 monta sem eles
 REMOTO=${KALANGO_REMOTE_DIR:-$ROOT/../kalango-remote}
