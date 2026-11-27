@@ -241,9 +241,9 @@ impl Redactor {
             && !self.keeps_number(key, v)
             && !matches!(v, Value::Bool(_) | Value::Null)
             && !text.is_some_and(|t| mask(t) || json_reference(t.trim(), key) || (describes_a_secret(key) && describing_value(key, t)))
-            // (an object or an array under a name that describes a secret, `password_policy: {min_length: 12}`, is
-            // read inside, where a secret still goes)
-            && !(describes_a_secret(key) && matches!(v, Value::Object(_) | Value::Array(_)))
+            // (an object or an array under a name about the rules of a secret, `password_policy: {min_length: 12}`, is
+            // read inside, where a secret still goes; under a store or the secret itself, `password_store`, it goes)
+            && !(about_the_rules(key) && matches!(v, Value::Object(_) | Value::Array(_)))
     }
 
     /// A name in text that points at a secret: a denied key that does not only describe the secret (`password_policy:
@@ -1618,6 +1618,16 @@ fn plain_name(t: &str) -> bool {
 
 /// Words that name a secret, as a part of a plain name.
 const SECRET_WORDS: &[&str] = &["secret", "password", "passwd", "pass", "pwd", "token", "key", "senha", "credential"];
+
+/// A key whose last word is about the rules of a secret, not where it is kept (`password_policy`, `token_scopes`;
+/// not `password_store`, `secret_ref`). (A key named after a secret is never one word of these.)
+fn about_the_rules(key: &str) -> bool {
+    key_words(key).last().is_some_and(|w| POLICY_WORDS.contains(&w.as_str()))
+}
+
+/// The last words of a key whose object or array is metadata about a secret (of [`ABOUT_A_SECRET`]: the words of
+/// a store, a reference or a provider are not).
+const POLICY_WORDS: &[&str] = &["policy", "length", "format", "scopes", "rotation"];
 
 /// A key whose last word is `lifetime` or `namespace`.
 fn lifetime_or_namespace(key: &str) -> bool {
@@ -5320,13 +5330,21 @@ mod tests {
         }
     }
 
-    /// A policy is an object, not a secret: under a name that describes a secret, an object or an array is read inside
-    /// (its secrets still go), in a value and in text; a name of a container of secrets, `secrets`, still loses it whole.
+    /// A policy is an object, not a secret: under a name about the rules of a secret (`password_policy`, `token_scopes`)
+    /// an object or an array is read inside (its secrets still go), in a value and in text; under any other name of a
+    /// secret, a store or a container (`password_store`, `secrets`), it goes whole.
     #[test]
     fn a_policy_object_is_read_inside() {
         let r = Redactor::default();
         let pw = weak_pw();
-        for ok in [json!({"password_policy": {"min_length": 12}}), json!({"token_policy": ["read", "write"]})] {
+        for ok in [
+            json!({"password_policy": {"min_length": 12}}),
+            json!({"token_policy": ["read", "write"]}),
+            json!({"password_length": {"min": 8, "max": 64}}),
+            json!({"token_format": {"type": "jwt"}}),
+            json!({"token_scopes": ["read", "write"]}),
+            json!({"api_key_rotation": {"days": 30}}),
+        ] {
             assert_eq!(r.redact_value(&ok, &mut Stats::default()), ok, "{ok}");
             assert_eq!(r.scan_value(&ok), 0, "{ok}");
             assert_eq!(red(&ok.to_string()), ok.to_string(), "{ok}");
@@ -5335,6 +5353,19 @@ mod tests {
         assert_eq!(r.redact_value(&inside, &mut Stats::default()), json!({"password_policy": {"min_length": 12, "password": REDACTED}}));
         assert_gone(&inside.to_string(), &pw);
         assert_eq!(r.redact_value(&json!({"secrets": {"db": "x"}}), &mut Stats::default()), json!({"secrets": REDACTED}));
+        // (only a name about the rules of a secret is read inside: a store, a container or the secret itself loses its
+        // object or array whole, in a value and in text)
+        for (k, v) in [
+            ("password_store", json!({"value": pw})),
+            ("credentials", json!({"user": "ana", "pw": pw})),
+            ("secrets", json!([pw])),
+            ("secret", json!({"value": pw})),
+            ("secret_ref", json!({"value": pw})),
+        ] {
+            let whole = json!({ k: v });
+            assert_eq!(r.redact_value(&whole, &mut Stats::default()), json!({ k: REDACTED }), "{whole}");
+            assert_gone(&whole.to_string(), &pw);
+        }
     }
 
     /// A lifetime written in parts (`1h30m`, `168h0m0s`) or in a word (`7days`) is a duration; a namespace of plain
