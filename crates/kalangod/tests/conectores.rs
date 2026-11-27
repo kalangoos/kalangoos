@@ -290,6 +290,25 @@ fn a_connector_cannot_read_the_mind_confirmation_codes() {
     assert!(!out.contains(&content) && !out.contains("codigo=0"), "{out}");
 }
 
+/// `KALANGOD_REQUIRE_HOST_TESTS` for the connector host test, with no host needed (no `systemd-run` on the `PATH`): `=1`
+/// fails, without it the test skips with a `SKIPPED` line.
+#[test]
+fn the_require_host_tests_variable_turns_the_connector_skip_into_a_failure() {
+    let run = |require: Option<&str>| {
+        let mut c = Command::new(std::env::current_exe().unwrap());
+        c.args(["--exact", "a_connector_cannot_read_the_mind_confirmation_codes", "--nocapture"]).env("PATH", "/nonexistent").env_remove("KALANGOD_REQUIRE_HOST_TESTS");
+        if let Some(v) = require {
+            c.env("KALANGOD_REQUIRE_HOST_TESTS", v);
+        }
+        let o = c.output().unwrap();
+        (o.status.success(), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+    };
+    let (ok, out) = run(Some("1"));
+    assert!(!ok && out.contains("KALANGOD_REQUIRE_HOST_TESTS=1 and there is no"), "required: {out}");
+    let (ok, out) = run(None);
+    assert!(ok && out.contains("SKIPPED"), "not required: {out}");
+}
+
 /// A socket the connector needs (a database's) is declared in its manifest, by the person, and it is the only other
 /// one it reaches — where the kernel can keep it to that (Landlock ABI 9); elsewhere such a connector does not start.
 /// A socket through which programs get started (the session bus) is never given, whatever the manifest says.

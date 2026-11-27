@@ -17,7 +17,7 @@
 //! registro são os mesmos.
 
 use kalango_i18n::{tr, trf};
-use crate::limits::{self, Limits, Pedido, Seccomp};
+use crate::limits::{self, Landlock, Limits, Pedido, Seccomp};
 use crate::tools::admin::SISTEMA_ESCRITA;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -213,6 +213,38 @@ fn startup_write(escrita: &[PathBuf], startup: &[PathBuf]) -> Option<(PathBuf, P
     })
 }
 
+/// What a connector never reaches (the manifest may not ask for it, and its Landlock leaves it out): the keys, the
+/// keyring, KalangoOS's own folders (`policy::KALANGO_PROTECTED`, as written and in the XDG folders this session uses, where
+/// the programs that own them read them), the Mind's confirmation codes also where this session's `XDG_RUNTIME_DIR`
+/// puts them, and the vault's file.
+fn connector_protected(home: &Path, session_runtime: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut protegidas: Vec<PathBuf> = [".ssh", ".gnupg", ".local/share/keyrings"].iter().map(|p| home.join(p)).collect();
+    for p in crate::policy::KALANGO_PROTECTED {
+        protegidas.push(crate::policy::normalize(&crate::policy::expand(p, home)));
+        for (var, prefix) in [("XDG_CONFIG_HOME", "~/.config/"), ("XDG_DATA_HOME", "~/.local/share/"), ("XDG_STATE_HOME", "~/.local/state/")] {
+            if let Some(rest) = p.strip_prefix(prefix) {
+                let base = std::env::var_os(var).map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| home.join(&prefix[2..]));
+                protegidas.push(crate::policy::normalize(&base.join(rest)));
+            }
+        }
+        protegidas.extend(session_runtime_variant(p, session_runtime.clone()));
+    }
+    protegidas.push(crate::cofre::file());
+    protegidas
+}
+
+/// What the person is shown of the connector's isolation for the files: the rules the kernel is given, nothing else
+/// (the system folders cut around the protected ones, not the plain list).
+fn isolation_view(l: &Landlock) -> Value {
+    json!({"leitura": l.leitura, "listar": l.listar, "escrita": l.escrita})
+}
+
+/// The connector's kernel rules. The protected folders are worked out here, from the home and the session's runtime folder,
+/// and cannot be passed in: nothing a caller does leaves them out of what `agent_landlock` cuts around.
+fn connector_rules(home: &Path, session_runtime: Option<PathBuf>, leitura: Vec<PathBuf>, escrita: Vec<PathBuf>, portas: Option<Vec<u16>>, sockets: Vec<PathBuf>) -> Landlock {
+    crate::tools::admin::agent_landlock(&connector_protected(home, session_runtime), leitura, vec![], escrita, portas, vec![], sockets)
+}
+
 /// A protected `%t/…` folder as this session's `$XDG_RUNTIME_DIR` names it (besides `/run/user/UID`).
 fn session_runtime_variant(p: &str, xdg: Option<PathBuf>) -> Option<PathBuf> {
     let rest = p.strip_prefix("%t/")?;
@@ -237,19 +269,8 @@ pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
     escrita.extend(m.escrita.iter().map(|p| expand(p)));
     // o Landlock não abre exceção dentro de uma permissão: pedir ~ (ou /home, ou /) daria acesso a ~/.ssh — e pedir
     // ~/.config daria a configuração do KalangoOS (as permissões dos agentes, os outros conectores)
-    let mut protegidas: Vec<PathBuf> = [".ssh", ".gnupg", ".local/share/keyrings"].iter().map(|p| home().join(p)).collect();
-    // (as written, and in the XDG folders this session uses, where the programs that own them read them)
-    for p in crate::policy::KALANGO_PROTECTED {
-        protegidas.push(expand(p));
-        for (var, prefix) in [("XDG_CONFIG_HOME", "~/.config/"), ("XDG_DATA_HOME", "~/.local/share/"), ("XDG_STATE_HOME", "~/.local/state/")] {
-            if let Some(rest) = p.strip_prefix(prefix) {
-                protegidas.push(crate::policy::normalize(&xdg(var, &prefix[2..]).join(rest)));
-            }
-        }
-        // (the runtime folder as this session names it, besides /run/user/UID)
-        protegidas.extend(session_runtime_variant(p, std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)));
-    }
-    protegidas.push(crate::cofre::file());
+    let session_runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    let protegidas = connector_protected(&home(), session_runtime.clone());
     for p in leitura.iter().chain(&escrita) {
         if let Some(x) = protegidas.iter().find(|x| crate::policy::is_within(p, x) || crate::policy::is_within(x, p)) {
             return Err(trf("the manifest asks for access to {path}, which is or contains the protected folder {protected}", &[("path", p.display().to_string()), ("protected", x.display().to_string())]));
@@ -283,11 +304,16 @@ pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
         // `cofre:NOME` vira o valor guardado, só aqui e só para este conector
         ambiente.insert(k.clone(), crate::cofre::resolve(v)?);
     }
-    let isolamento = json!({
-        "leitura": crate::tools::admin::system_read_roots().into_iter().chain(leitura.iter().cloned()).collect::<Vec<_>>(), "escrita": escrita, "sockets": sockets,
+    // (what the person is shown is what the kernel is given: the system folders cut around the protected ones)
+    let landlock = connector_rules(&home(), session_runtime, leitura, escrita, portas.clone(), sockets.clone());
+    let mut isolamento = json!({
+        "sockets": sockets,
         "rede": match &portas { Some(p) if p.is_empty() => json!("nenhuma"), Some(p) => json!({"portas_tcp": p}), None => json!("livre") },
         "limites": m.limites, "ambiente": ambiente.keys().collect::<Vec<_>>(), "registro": registro,
     });
+    if let (Some(o), Value::Object(v)) = (isolamento.as_object_mut(), isolation_view(&landlock)) {
+        o.extend(v);
+    }
     let uid = nix::unistd::getuid().as_raw();
     let gid = nix::unistd::getgid().as_raw();
     let mut lim = m.limites.clone();
@@ -299,7 +325,7 @@ pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
         programa: &m.comando, argumentos: &m.argumentos, uid, gid, limites: lim,
         // (no local sockets but its own and the ones the manifest names: on Landlock ABI 9 the kernel keeps it to them,
         // on older kernels it gets none — see `check_sockets` and limits.rs)
-        landlock: Some(crate::tools::admin::agent_landlock(&protegidas, leitura, vec![], escrita, portas, vec![], sockets.clone())), seccomp: Some(Seccomp { sem_rede: !m.rede, sem_unix: true }), ambiente: Some(ambiente),
+        landlock: Some(landlock), seccomp: Some(Seccomp { sem_rede: !m.rede, sem_unix: true }), ambiente: Some(ambiente),
         pasta: Some(pasta.unwrap_or(dados)), dry_run: false, tmp_privado: false, extra: vec![],
     }, "kalango-conector")?;
     let mut cmd = prep.cmd;
@@ -565,8 +591,37 @@ pub fn run(path: &Path) -> Result<i32, String> {
 
 #[cfg(test)]
 mod startup_tests {
-    use super::session_runtime_variant;
+    use super::{connector_protected, connector_rules, isolation_view, session_runtime_variant};
+    use serde_json::Value;
     use std::path::PathBuf;
+
+    /// The connector's rules leave out the Mind's codes wherever `%t` is (the policy's `/run/user/UID` and this session's
+    /// `XDG_RUNTIME_DIR`), whatever else is asked, and what the person is shown is the same cut. No host needed: falls if the
+    /// protected folders stop reaching the rules (`connector_rules` working out an empty list, or without the session's variant).
+    #[test]
+    fn the_connector_rules_leave_out_the_mind_codes_and_the_shown_isolation_says_so() {
+        use crate::policy::is_within;
+        let home = tempfile::tempdir().unwrap();
+        let uid = nix::unistd::getuid().as_raw();
+        let policy = crate::policy::runtime_dir(uid).join("kalango/mind-confirm");
+        let session = PathBuf::from("/run/user/4242/kalango/mind-confirm");
+        let l = connector_rules(home.path(), Some("/run/user/4242".into()), vec![PathBuf::from("/srv/conector")], vec![PathBuf::from("/dev/null")], None, vec![]);
+        for codes in [&policy, &session] {
+            for g in l.leitura.iter().chain(&l.escrita) {
+                assert!(!is_within(codes, g) && !is_within(g, codes), "{} reaches {}", g.display(), codes.display());
+            }
+        }
+        assert!(!l.leitura.contains(&PathBuf::from("/run")) && l.listar.contains(&PathBuf::from("/run")), "{:?}", l.listar);
+        assert!(l.leitura.contains(&PathBuf::from("/usr")) && l.leitura.contains(&PathBuf::from("/srv/conector")));
+        // what the person is shown is that same cut: `/run` is not listed as read whole
+        let shown = isolation_view(&l);
+        let read: Vec<&str> = shown["leitura"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        assert!(!read.contains(&"/run") && read.contains(&"/usr"), "{read:?}");
+        assert!(shown["listar"].as_array().unwrap().iter().any(|v| v == "/run"), "{shown}");
+        // the protected list itself has both places and the home's keys
+        let p = connector_protected(home.path(), Some("/run/user/4242".into()));
+        assert!(p.contains(&policy) && p.contains(&session) && p.contains(&home.path().join(".ssh")), "{p:?}");
+    }
 
     /// The connector host also protects the Mind's codes where its own `XDG_RUNTIME_DIR` puts them.
     #[test]
