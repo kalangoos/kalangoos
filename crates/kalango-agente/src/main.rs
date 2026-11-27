@@ -25,6 +25,9 @@ mod remote;
 mod grounding;
 mod search_query;
 mod motor;
+mod request;
+mod traces;
+mod traces_redact;
 mod model_scope;
 mod intl_words;
 mod permissoes;
@@ -275,6 +278,14 @@ fn agent_spec(v: &serde_json::Value, descricao: &str) -> serde_json::Value {
 }
 
 fn main() {
+    // what the trace capture still has queued gets a moment to go when the process ends by returning
+    struct FlushTraces;
+    impl Drop for FlushTraces {
+        fn drop(&mut self) {
+            traces::flush(std::time::Duration::from_millis(400));
+        }
+    }
+    let _flush_traces = FlushTraces;
     // voice and vision servers idle for a while give their GPU memory back
     modelo::encerrar_ociosos();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -1466,8 +1477,11 @@ fn main() {
         if line.trim().is_empty() {
             break;
         }
+        let parsed = serde_json::from_str::<serde_json::Value>(line.trim()).ok();
+        // a request with where its parts came from: {"parts": [{"text": "…", "origin": "typed|pasted|dictated"}]}
+        let parts = parsed.as_ref().and_then(request::from_parts);
         // a JSON object is a setting from the shell, e.g. {"web": false}
-        if let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+        if let (None, Some(serde_json::Value::Object(o))) = (&parts, &parsed) {
             if let Some(b) = o.get("web").and_then(|v| v.as_bool()) {
                 agent.allow_web = b;
             }
@@ -1481,7 +1495,13 @@ fn main() {
             continue;
         }
         // a line can also be a JSON string (a request with line breaks, from the shell)
-        let request = serde_json::from_str::<String>(line.trim()).unwrap_or_else(|_| line.trim().to_string());
+        let request = match parts {
+            Some(r) => {
+                agent.pasted.pending = r.pasted;
+                r.text
+            }
+            None => serde_json::from_str::<String>(line.trim()).unwrap_or_else(|_| line.trim().to_string()),
+        };
         if let Err(e) = agent.ask(&request, &emit, &mut confirm) {
             let (codigo, e) = permissoes::separar(&e);
             if json {

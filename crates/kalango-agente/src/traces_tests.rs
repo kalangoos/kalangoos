@@ -1,0 +1,2276 @@
+//! Tests of the trace capture against a fake receiver on a Unix socket that checks the bodies against the contract
+//! (docs/INGEST.md, schema version 1). The real-model test is in tests/traces.rs.
+
+use super::*;
+use crate::modelo::ToolCall;
+use std::io::Read;
+use std::os::unix::net::UnixListener;
+use std::sync::atomic::AtomicBool;
+
+// ---------------------------------------------------------------- a fake receiver
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    /// answers 200
+    Ok,
+    /// accepts and never reads or answers (a daemon that hangs)
+    Stall,
+    /// answers this status
+    Status(u16),
+}
+
+struct Receiver {
+    bodies: Arc<Mutex<Vec<String>>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for Receiver {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Receiver {
+    fn start(path: &Path, mode: Mode) -> Receiver {
+        let _ = std::fs::remove_file(path);
+        let listener = UnixListener::bind(path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (b, s) = (bodies.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while !s.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut c, _)) => {
+                        if mode == Mode::Stall {
+                            held.push(c);
+                            continue;
+                        }
+                        c.set_nonblocking(false).unwrap();
+                        c.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 65536];
+                        // headers, then Content-Length bytes
+                        let (head_end, len) = loop {
+                            let n = c.read(&mut chunk).unwrap_or(0);
+                            if n == 0 {
+                                break (0, 0);
+                            }
+                            buf.extend_from_slice(&chunk[..n]);
+                            if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                let head = String::from_utf8_lossy(&buf[..p]).to_string();
+                                assert!(head.starts_with("POST /v1/traces HTTP/1.1"), "{head}");
+                                assert!(head.to_lowercase().contains("content-type: application/json"), "{head}");
+                                let len = head
+                                    .lines()
+                                    .find_map(|l| l.to_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                                    .unwrap();
+                                break (p + 4, len);
+                            }
+                        };
+                        while buf.len() < head_end + len {
+                            let n = c.read(&mut chunk).unwrap_or(0);
+                            if n == 0 {
+                                break;
+                            }
+                            buf.extend_from_slice(&chunk[..n]);
+                        }
+                        if head_end > 0 {
+                            b.lock().unwrap().push(String::from_utf8_lossy(&buf[head_end..]).to_string());
+                        }
+                        let (code, text) = match mode {
+                            Mode::Status(c) => (c, "x"),
+                            _ => (200, "OK"),
+                        };
+                        let body = "{\"partialSuccess\":{}}";
+                        let _ = write!(
+                            c,
+                            "HTTP/1.1 {code} {text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(2)),
+                }
+            }
+        });
+        Receiver { bodies, stop }
+    }
+
+    fn requests(&self) -> Vec<Value> {
+        self.bodies.lock().unwrap().iter().map(|b| serde_json::from_str(b).expect("the body is JSON")).collect()
+    }
+
+    fn raw(&self) -> String {
+        self.bodies.lock().unwrap().join("\n")
+    }
+
+    /// Every span received, with the privacy mode of its resource.
+    fn spans(&self) -> Vec<(Value, String)> {
+        let mut out = Vec::new();
+        for r in self.requests() {
+            validate_request(&r);
+            for rs in r["resourceSpans"].as_array().unwrap() {
+                let mode =
+                    attr(&rs["resource"]["attributes"], "kalango.privacy.mode").map(|v| v["stringValue"].as_str().unwrap().to_string()).unwrap();
+                for ss in rs["scopeSpans"].as_array().unwrap() {
+                    for sp in ss["spans"].as_array().unwrap() {
+                        out.push((sp.clone(), mode.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn wait_for(&self, spans: usize) -> Vec<(Value, String)> {
+        // (generous: it returns as soon as the spans are there; a loaded machine can take seconds to redact 2 MB)
+        let end = Instant::now() + Duration::from_secs(30);
+        loop {
+            let s = self.spans();
+            if s.len() >= spans || Instant::now() > end {
+                return s;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+fn attr<'a>(attrs: &'a Value, key: &str) -> Option<&'a Value> {
+    attrs.as_array()?.iter().find(|a| a["key"] == key).map(|a| &a["value"])
+}
+
+fn s_attr<'a>(span: &'a Value, key: &str) -> Option<&'a str> {
+    attr(&span["attributes"], key).and_then(|v| v["stringValue"].as_str())
+}
+
+fn list_attr(span: &Value, key: &str) -> Option<Vec<String>> {
+    attr(&span["attributes"], key)
+        .map(|v| v["arrayValue"]["values"].as_array().unwrap().iter().map(|x| x["stringValue"].as_str().unwrap().to_string()).collect())
+}
+
+fn is_hex(s: &str, n: usize) -> bool {
+    s.len() == n && s.bytes().all(|c| c.is_ascii_hexdigit()) && s.bytes().any(|c| c != b'0')
+}
+
+/// The contract of docs/INGEST.md, sections 2, 3 and 5.
+fn validate_request(r: &Value) {
+    let rss = r["resourceSpans"].as_array().expect("resourceSpans");
+    let mut total = 0;
+    for rs in rss {
+        let res = &rs["resource"]["attributes"];
+        let res_span = json!({"attributes": res});
+        assert_eq!(s_attr(&res_span, "service.name"), Some("kalango-agente"));
+        assert_eq!(attr(res, "kalango.schema_version").unwrap()["intValue"], "1", "schema_version is required, int, in the resource");
+        let mode = s_attr(&res_span, "kalango.privacy.mode").expect("privacy mode in the resource");
+        assert!(matches!(mode, "metadata" | "content"), "the hook never sends `none` and never an unknown mode: {mode}");
+        for ss in rs["scopeSpans"].as_array().unwrap() {
+            for sp in ss["spans"].as_array().unwrap() {
+                total += 1;
+                validate_span(sp, mode);
+            }
+        }
+    }
+    assert!(total <= 2000);
+}
+
+fn validate_span(sp: &Value, mode: &str) {
+    assert!(is_hex(sp["traceId"].as_str().unwrap(), 32), "traceId: 16 bytes in hex, not zero");
+    assert!(is_hex(sp["spanId"].as_str().unwrap(), 16), "spanId: 8 bytes in hex, not zero");
+    if let Some(p) = sp["parentSpanId"].as_str() {
+        assert!(is_hex(p, 16));
+    }
+    assert!(sp["startTimeUnixNano"].is_string() && sp["endTimeUnixNano"].is_string(), "times are strings");
+    let (a, b) = (sp["startTimeUnixNano"].as_str().unwrap().parse::<u64>().unwrap(), sp["endTimeUnixNano"].as_str().unwrap().parse::<u64>().unwrap());
+    assert!(b >= a);
+    let attrs = sp["attributes"].as_array().unwrap();
+    assert!(attrs.len() <= 128);
+    for a in attrs {
+        let k = a["key"].as_str().unwrap();
+        assert!(
+            ["gen_ai.", "kalango.", "service.", "error.", "http.", "server.", "exception."].iter().any(|p| k.starts_with(p)),
+            "attribute outside the allowed families: {k}"
+        );
+        if let Some(s) = a["value"]["stringValue"].as_str() {
+            assert!(s.len() <= 64 * 1024 + 64, "strings are cut at 64 KiB: {k}");
+        }
+    }
+    let events = sp["events"].as_array().cloned().unwrap_or_default();
+    assert!(events.len() <= 64);
+    if mode != "content" {
+        assert!(events.is_empty(), "no events outside content mode");
+    }
+    for e in &events {
+        assert!(e["name"].is_string() && e["timeUnixNano"].is_string());
+        for a in e["attributes"].as_array().unwrap() {
+            let k = a["key"].as_str().unwrap();
+            // (the event attributes of the contract: content, role, index, finish_reason, message, body, provenance…)
+            assert!(["content", "role", "index", "finish_reason", "message", "body"].contains(&k) || k.starts_with("kalango."), "{k}");
+        }
+    }
+    let name = sp["name"].as_str().unwrap();
+    let op = s_attr(sp, "gen_ai.operation.name");
+    if name == "kalango.turn" {
+        assert!(sp["parentSpanId"].is_null(), "the root has no parent");
+        assert_eq!(sp["kind"], 1);
+        for k in ["kalango.session.id", "kalango.agent.id", "kalango.privacy.mode"] {
+            assert!(s_attr(sp, k).is_some(), "root: {k}");
+        }
+        assert_eq!(s_attr(sp, "kalango.privacy.mode"), Some(mode));
+        assert!(attr(&sp["attributes"], "kalango.turn.index").is_some());
+        if mode == "content" {
+            assert!(events.iter().any(|e| e["name"] == "gen_ai.user.message"));
+        }
+    } else if let Some(model) = name.strip_prefix("chat ") {
+        assert_eq!(op, Some("chat"));
+        assert_eq!(sp["kind"], 3);
+        assert!(sp["parentSpanId"].is_string());
+        assert_eq!(s_attr(sp, "gen_ai.request.model"), Some(model));
+        assert!(s_attr(sp, "gen_ai.provider.name").is_some());
+        for k in ["gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens"] {
+            assert!(attr(&sp["attributes"], k).unwrap()["intValue"].is_string(), "{k}");
+        }
+        assert!(list_attr(sp, "gen_ai.response.finish_reasons").is_some());
+        for e in &events {
+            assert!(e["name"].as_str().unwrap().starts_with("gen_ai."), "{e}");
+        }
+    } else if let Some(tool) = name.strip_prefix("execute_tool ") {
+        assert_eq!(op, Some("execute_tool"));
+        assert_eq!(s_attr(sp, "gen_ai.tool.name"), Some(tool));
+        assert_eq!(s_attr(sp, "kalango.tool.name"), Some(tool));
+        // (the agent's own levels, as they are: the receiver derives what it needs from them and from read_only)
+        assert!(matches!(s_attr(sp, "kalango.tool.level"), Some("observar" | "usuario" | "sistema" | "total")));
+        assert!(attr(&sp["attributes"], "kalango.tool.read_only").unwrap()["boolValue"].is_boolean());
+        let appr = s_attr(sp, "kalango.approval").unwrap();
+        assert!(matches!(appr, "none" | "asked" | "approved" | "denied"));
+        assert_eq!(attr(&sp["attributes"], "kalango.approval.latency_ms").is_some(), appr != "none", "latency when the person was asked");
+        // (never a bare `external`: the kind is always said)
+        assert!(matches!(
+            s_attr(sp, "kalango.provenance"),
+            Some("tool_local" | "external:file" | "external:web" | "external:mail" | "external:tool" | "external:paste")
+        ));
+    }
+    if let Some(t) = list_attr(sp, "kalango.taint") {
+        assert!(!t.is_empty());
+        assert!(
+            t.iter().all(|x| matches!(x.as_str(), "external:mail" | "external:web" | "external:file" | "external:tool" | "external:paste")),
+            "{t:?}"
+        );
+    }
+    assert!(sp["status"]["code"] == 1 || sp["status"]["code"] == 2);
+}
+
+// ---------------------------------------------------------------- helpers
+
+impl Attr {
+    fn into_str(self) -> String {
+        match self {
+            Attr::Str(s) => s,
+            other => panic!("not a string: {other:?}"),
+        }
+    }
+}
+
+fn tool(name: &str, level: &str, read_only: bool) -> Tool {
+    Tool { name: name.into(), description: String::new(), schema: json!({}), level: level.into(), read_only, destructive: false }
+}
+
+fn tools() -> Vec<Tool> {
+    vec![
+        tool("arquivos.listar", "observar", true),
+        tool("web.ler", "observar", true),
+        tool("arquivos.escrever", "usuario", false),
+        tool("sistema.executar", "sistema", false),
+    ]
+}
+
+fn fast() -> Tuning {
+    // (short waits between tries, so the tests run fast; a long I/O wait, so a busy machine does not turn a slow answer of
+    // the fake receiver into a lost batch — the stall tests set their own)
+    Tuning {
+        retry_base: Duration::from_millis(40),
+        retry_max: Duration::from_millis(80),
+        linger: Duration::from_millis(20),
+        io_timeout: Duration::from_secs(5),
+        ..Tuning::default()
+    }
+}
+
+struct Setup {
+    _dir: tempfile::TempDir,
+    rx: Receiver,
+    sink: Sink,
+}
+
+fn setup() -> Setup {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("traind.sock");
+    let rx = Receiver::start(&path, Mode::Ok);
+    let sink = Sink::start(&path, fast());
+    Setup { _dir: dir, rx, sink }
+}
+
+fn begin(s: &Setup, cfg: Config, request: &str) -> Turn {
+    Turn::begin(
+        &s.sink,
+        &cfg,
+        Begin {
+            session: "conv-1",
+            agent: "agente",
+            index: 0,
+            request,
+            tools: &tools(),
+            local_tools: Vec::new,
+            connectors: vec!["gmail".into()],
+            taint: vec![],
+            secret: false,
+            pasted: vec![],
+        },
+    )
+}
+
+fn reply(content: &str, calls: &[(&str, &str, Value)]) -> Result<Reply, String> {
+    Ok(Reply {
+        content: content.into(),
+        tool_calls: calls
+            .iter()
+            .map(|(id, n, a)| ToolCall { id: id.to_string(), name: n.replace('.', "__"), arguments: a.clone(), raw_arguments: a.to_string() })
+            .collect(),
+        cut: false,
+        tokens: 140,
+        prompt_tokens: 100,
+        evaluated: 100,
+    })
+}
+
+fn call_tool(t: &Turn, name: &str, args: Value, ok: bool, text: &str) {
+    t.observe(&Event::ToolStart { tool: name.into(), args, level: "observar".into(), description: String::new() });
+    t.observe(&Event::ToolDone { tool: name.into(), ok, text: text.into(), summary: String::new() });
+}
+
+fn msgs(user: &str) -> Vec<Value> {
+    vec![json!({"role": "system", "content": "You are the agent."}), json!({"role": "user", "content": user})]
+}
+
+fn by_name<'a>(spans: &'a [(Value, String)], prefix: &str) -> Vec<&'a Value> {
+    spans.iter().map(|(s, _)| s).filter(|s| s["name"].as_str().unwrap().starts_with(prefix)).collect()
+}
+
+/// A whole turn: one model call asking for a tool, the tool, a second call that answers.
+fn full_turn(t: &Turn, user: &str, tool_name: &str, tool_text: &str) {
+    let c = t.clock();
+    t.chat("lfm3-test", &msgs(user), c, &reply("", &[("call-1", tool_name, json!({"caminho": "~/Documentos"}))]));
+    call_tool(t, tool_name, json!({"caminho": "~/Documentos"}), true, tool_text);
+    let mut m = msgs(user);
+    m.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": tool_name.replace('.', "__"), "arguments": "{}"}}]}));
+    m.push(json!({"role": "tool", "tool_call_id": "call-1", "content": tool_text}));
+    let c = t.clock();
+    t.chat("lfm3-test", &m, c, &reply("Done.", &[]));
+    t.observe(&Event::Answer("Done.".into()));
+    t.end(&Ok(()));
+}
+
+// ---------------------------------------------------------------- the switches
+
+#[test]
+fn settings_default_to_recording_everything() {
+    assert_eq!(Config::from_settings(&Value::Null), Config { record: true, content: true });
+    assert_eq!(Config::from_settings(&json!({"idioma_respostas": "pt"})), Config::default());
+    assert_eq!(Config::from_settings(&json!({"rastros": {"gravar": false}})), Config { record: false, content: true });
+    assert_eq!(Config::from_settings(&json!({"rastros": {"gravar": true, "conteudo": "so_metadados"}})), Config { record: true, content: false });
+    assert_eq!(Config::from_settings(&json!({"rastros": {"conteudo": "completo"}})), Config::default());
+    // what is not understood is the safer choice
+    assert!(!Config::from_settings(&json!({"rastros": {"conteudo": "tudo!"}})).content);
+}
+
+#[test]
+fn recording_off_sends_nothing() {
+    let s = setup();
+    let t = begin(&s, Config { record: false, content: true }, "oi");
+    assert!(!t.is_on());
+    full_turn(&t, "oi", "arquivos.listar", "a.txt");
+    s.sink.flush(Duration::from_secs(10));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(s.rx.requests().is_empty());
+    assert_eq!(s.sink.counters(), Counters::default());
+}
+
+#[test]
+fn metadata_only_sends_structure_and_no_text() {
+    let s = setup();
+    let t = begin(&s, Config { record: true, content: false }, "listar meus arquivos secretos");
+    full_turn(&t, "listar meus arquivos secretos", "arquivos.listar", "conteudo-do-resultado-xyz");
+    let spans = s.rx.wait_for(4);
+    assert_eq!(spans.len(), 4, "root, 2 chats, 1 tool");
+    let raw = s.rx.raw();
+    for text in ["listar meus arquivos secretos", "conteudo-do-resultado-xyz", "You are the agent", "Done.", "~/Documentos"] {
+        assert!(!raw.contains(text), "{text} must not be sent in metadata mode");
+    }
+    for (sp, mode) in &spans {
+        assert_eq!(mode, "metadata");
+        assert!(sp["events"].is_null(), "no events at all");
+    }
+    let root = by_name(&spans, "kalango.turn")[0];
+    assert_eq!(s_attr(root, "kalango.privacy.mode"), Some("metadata"));
+    assert!(attr(&root["attributes"], "kalango.content.length").is_some(), "lengths stay");
+    // the structure stays: names, levels, tokens
+    let tool = by_name(&spans, "execute_tool")[0];
+    assert_eq!(s_attr(tool, "kalango.tool.name"), Some("arquivos.listar"));
+    assert_eq!(s_attr(tool, "kalango.tool.level"), Some("observar"));
+    let chat = by_name(&spans, "chat")[0];
+    assert_eq!(attr(&chat["attributes"], "gen_ai.usage.output_tokens").unwrap()["intValue"], "40");
+}
+
+#[test]
+fn full_content_sends_the_prompts_answers_and_tool_bodies_as_events() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "listar meus arquivos");
+    full_turn(&t, "listar meus arquivos", "arquivos.listar", "a.txt b.txt");
+    let spans = s.rx.wait_for(4);
+    assert_eq!(spans.len(), 4);
+    let root = by_name(&spans, "kalango.turn")[0];
+    assert_eq!(s_attr(root, "kalango.session.id"), Some("conv-1"));
+    let names = |sp: &Value| sp["events"].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(names(root), ["gen_ai.user.message", "gen_ai.choice"]);
+    let chats = by_name(&spans, "chat");
+    assert_eq!(chats.len(), 2);
+    let second = chats.iter().find(|c| names(c).contains(&"gen_ai.tool.message".to_string())).unwrap();
+    assert_eq!(names(second), ["gen_ai.system.message", "gen_ai.user.message", "gen_ai.assistant.message", "gen_ai.tool.message", "gen_ai.choice"]);
+    // the span tree: chats and tools hang from the root; the tool from the call that asked for it
+    let root_id = root["spanId"].as_str().unwrap();
+    assert!(chats.iter().all(|c| c["parentSpanId"] == root_id));
+    let tool = by_name(&spans, "execute_tool arquivos.listar")[0];
+    assert_eq!(
+        tool["parentSpanId"],
+        chats.iter().find(|c| list_attr(c, "gen_ai.response.finish_reasons") == Some(vec!["tool_calls".into()])).unwrap()["spanId"]
+    );
+    let bodies: Vec<&str> = tool["events"].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap()).collect();
+    assert_eq!(bodies, ["kalango.tool.args", "kalango.tool.result"]);
+    assert_eq!(list_attr(chats[0], "gen_ai.response.finish_reasons"), Some(vec!["tool_calls".into()]));
+    assert_eq!(list_attr(chats[1], "gen_ai.response.finish_reasons"), Some(vec!["stop".into()]));
+    // every span of a turn shares one trace id
+    let ids: BTreeSet<&str> = spans.iter().map(|(s, _)| s["traceId"].as_str().unwrap()).collect();
+    assert_eq!(ids.len(), 1);
+}
+
+// ---------------------------------------------------------------- redaction in the payload
+
+#[test]
+fn a_prompt_with_a_token_leaves_no_secret_in_the_payload() {
+    let s = setup();
+    let token = concat!("ghp", "_abcdefghijklmnopqrstuvwxyz0123456789");
+    let pem = &crate::traces_redact::test_pem("OPENSSH", "b3BlbnNzaC1rZXktdjEAAAAABG5vbmU", true);
+    let user = format!("use este token {token} e a senha password=hunter2-correct-horse para entrar");
+    let t = begin(&s, Config::default(), &user);
+    let c = t.clock();
+    let input = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": user}),
+        json!({"role": "tool", "tool_call_id": "x", "content": format!("env:\nHOME=/home/ana\nPATH=/bin\nSHELL=/bin/zsh\n{pem}")}),
+    ];
+    t.chat("lfm3-test", &input, c, &reply(concat!("ok, token sk", "-abcdefghijklmnopqrstuvwxyz123456"), &[("c1", "sistema.executar", json!({"programa": "curl", "env": {"AWS_KEY": concat!("AKIA", "ABCDEFGHIJKLMNOP")}, "api_key": concat!("k-9f8e7d", "6c5b4a"), "cabecalhos": "Authorization: Bearer abc123def456ghi789"}))]));
+    call_tool(
+        &t,
+        "sistema.executar",
+        json!({"programa": "curl", "senha": "plain-pass-777", "url": "https://u:s3cretpw@host/x"}),
+        true,
+        &format!("cookie: sid=zzz-cookie-999\n{pem}"),
+    );
+    t.observe(&Event::Answer(format!("pronto {token}")));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(3);
+    assert_eq!(spans.len(), 3);
+    let raw = s.rx.raw();
+    for secret in [
+        token,
+        "hunter2-correct-horse",
+        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmU",
+        "/home/ana",
+        concat!("AKIA", "ABCDEFGHIJKLMNOP"),
+        concat!("sk", "-abcdefghijklmnopqrstuvwxyz123456"),
+        "k-9f8e7d6c5b4a",
+        "abc123def456ghi789",
+        "plain-pass-777",
+        "s3cretpw",
+        "zzz-cookie-999",
+        "PRIVATE KEY-----\nb3Blbn",
+    ] {
+        assert!(!raw.contains(secret), "{secret} leaked into the payload");
+    }
+    assert!(raw.contains("[REDACTED"), "something was redacted");
+    // the trace says it redacted
+    assert!(spans.iter().any(|(sp, _)| attr(&sp["attributes"], "kalango.redactions").is_some()));
+}
+
+#[test]
+fn a_secret_tool_sends_no_result() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "mostra a senha do cofre");
+    call_tool(&t, "cofre.ler", json!({"nome": "banco"}), true, "SENHA-DO-BANCO-123");
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(2);
+    let tool = by_name(&spans, "execute_tool cofre.ler")[0];
+    assert_eq!(attr(&tool["attributes"], "kalango.tool.result_secret").unwrap()["boolValue"], true);
+    assert!(!s.rx.raw().contains("SENHA-DO-BANCO-123"));
+    let result = tool["events"].as_array().unwrap().iter().find(|e| e["name"] == "kalango.tool.result").unwrap();
+    assert_eq!(attr(&result["attributes"], "kalango.tool.result_omitted").unwrap()["stringValue"], "secret");
+}
+
+#[test]
+fn a_file_over_64_kib_goes_as_size_and_hash() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "ler o arquivo grande");
+    let big = format!("conteudo-{}", "x".repeat(70 * 1024));
+    call_tool(&t, "arquivos.listar", json!({"caminho": "~/grande.txt"}), true, &big);
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(2);
+    let tool = by_name(&spans, "execute_tool")[0];
+    assert_eq!(attr(&tool["attributes"], "kalango.truncated").unwrap()["boolValue"], true);
+    let raw = s.rx.raw();
+    assert!(!raw.contains("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"));
+    assert!(raw.contains(&format!("[omitted: {} bytes, sha256 ", big.len())));
+}
+
+// ---------------------------------------------------------------- secrets in the model's context
+
+/// The assistant's message that asks for one tool call (as the engine keeps it in the conversation).
+fn assistant_call(id: &str, tool: &str, args: &str) -> Value {
+    json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function", "function": {"name": tool.replace('.', "__"), "arguments": args}}]})
+}
+
+fn event_named<'a>(span: &'a Value, name: &str) -> Vec<&'a Value> {
+    span["events"].as_array().map(|e| e.iter().filter(|e| e["name"] == name).collect()).unwrap_or_default()
+}
+
+fn ev_attr<'a>(event: &'a Value, key: &str) -> Option<&'a Value> {
+    event["attributes"].as_array()?.iter().find(|a| a["key"] == key).map(|a| &a["value"])
+}
+
+#[test]
+fn a_secret_tool_result_in_the_input_is_omitted_and_the_completion_that_follows_is_metadata_only() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "qual a senha do banco?");
+    let input = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "qual a senha do banco?"}),
+        assistant_call("c1", "cofre.ler", "{\"nome\":\"banco-pessoal\"}"),
+        json!({"role": "tool", "tool_call_id": "c1", "content": "SENHA-DO-BANCO-123"}),
+    ];
+    let c = t.clock();
+    // the model repeats the secret in its reply
+    t.chat("m", &input, c, &reply("A senha do banco é SENHA-DO-BANCO-123.", &[]));
+    t.observe(&Event::Answer("A senha do banco é SENHA-DO-BANCO-123.".into()));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(2);
+    let raw = s.rx.raw();
+    assert!(!raw.contains("SENHA-DO-BANCO-123"), "the secret never leaves, not even when the model says it");
+    assert!(!raw.contains("banco-pessoal"), "nor the arguments of the secret tool");
+    let chat = by_name(&spans, "chat")[0];
+    let tool_msg = event_named(chat, "gen_ai.tool.message");
+    assert_eq!(tool_msg.len(), 1);
+    assert_eq!(ev_attr(tool_msg[0], "content").unwrap()["stringValue"], "[omitted: secret tool result]");
+    // only a coarse size: no exact length and no hash of the value (a short secret can be guessed from either)
+    assert_eq!(ev_attr(tool_msg[0], "kalango.content.length_bucket").unwrap()["stringValue"], "<64");
+    assert!(ev_attr(tool_msg[0], "kalango.content.length").is_none() && ev_attr(tool_msg[0], "kalango.content.sha256").is_none());
+    for hash in [crate::traces_redact::sha256_hex(b"SENHA-DO-BANCO-123"), crate::traces_redact::sha256_hex(b"{\"nome\":\"banco-pessoal\"}")] {
+        assert!(!raw.contains(&hash), "no hash of the secret or of its arguments in the payload");
+    }
+    assert!(!raw.contains("sha256"), "the payload of a turn with a secret has no hash at all");
+    assert_eq!(ev_attr(tool_msg[0], "kalango.tool.name").unwrap()["stringValue"], "cofre.ler");
+    // the call that asked for it is there, without its arguments
+    assert_eq!(event_named(chat, "gen_ai.assistant.message").len(), 1);
+    // the completion: metadata only (tokens and finish reason stay, the text does not)
+    assert!(event_named(chat, "gen_ai.choice").is_empty(), "no completion content after a secret result");
+    assert_eq!(attr(&chat["attributes"], "kalango.secret_in_context").unwrap()["boolValue"], true);
+    assert_eq!(attr(&chat["attributes"], "gen_ai.usage.output_tokens").unwrap()["intValue"], "40");
+    // the turn says so, and its answer is not sent
+    let root = by_name(&spans, "kalango.turn")[0];
+    assert_eq!(attr(&root["attributes"], "kalango.secret_in_context").unwrap()["boolValue"], true);
+    assert!(event_named(root, "gen_ai.choice").is_empty());
+    assert_eq!(event_named(root, "gen_ai.user.message").len(), 1, "what the person asked still goes");
+}
+
+#[test]
+fn a_tool_result_whose_call_id_cannot_be_resolved_is_treated_as_secret() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "x");
+    let input = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "x"}),
+        json!({"role": "tool", "tool_call_id": "fantasma", "content": "CONTEUDO-DESCONHECIDO-42"}),
+        json!({"role": "tool", "content": "SEM-ID-NENHUM-77"}),
+    ];
+    let c = t.clock();
+    t.chat("m", &input, c, &reply("repito CONTEUDO-DESCONHECIDO-42", &[]));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(2);
+    let raw = s.rx.raw();
+    assert!(!raw.contains("CONTEUDO-DESCONHECIDO-42") && !raw.contains("SEM-ID-NENHUM-77"), "fail closed");
+    let chat = by_name(&spans, "chat")[0];
+    let msgs = event_named(chat, "gen_ai.tool.message");
+    assert_eq!(msgs.len(), 2);
+    for m in msgs {
+        assert_eq!(ev_attr(m, "content").unwrap()["stringValue"], "[omitted: secret tool result]");
+        assert!(ev_attr(m, "kalango.tool.name").is_none(), "an unresolved call has no name to say");
+        assert!(ev_attr(m, "kalango.content.length").is_none() && ev_attr(m, "kalango.content.sha256").is_none());
+    }
+    assert!(event_named(chat, "gen_ai.choice").is_empty());
+    assert_eq!(attr(&by_name(&spans, "kalango.turn")[0]["attributes"], "kalango.secret_in_context").unwrap()["boolValue"], true);
+}
+
+#[test]
+fn what_the_model_said_after_a_secret_result_is_omitted_from_later_inputs_too() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "x");
+    let input = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "qual a senha?"}),
+        assistant_call("c1", "cofre.ler", "{}"),
+        json!({"role": "tool", "tool_call_id": "c1", "content": "valor-secreto-xyz"}),
+        json!({"role": "assistant", "content": "A senha é ECO-DA-SENHA-77"}),
+        json!({"role": "user", "content": "e a conta?"}),
+    ];
+    let c = t.clock();
+    t.chat("m", &input, c, &reply("ok", &[]));
+    t.end(&Ok(()));
+    let _ = s.rx.wait_for(2);
+    let raw = s.rx.raw();
+    assert!(!raw.contains("ECO-DA-SENHA-77") && !raw.contains("valor-secreto-xyz"));
+    assert!(raw.contains("e a conta?"), "what the person said goes");
+}
+
+#[test]
+fn the_arguments_of_a_secret_tool_are_omitted_in_every_place_and_the_rest_of_the_turn_sends_no_arguments() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "pegue a senha");
+    let c = t.clock();
+    t.chat("m", &msgs("pegue a senha"), c, &reply("", &[("c1", "cofre.ler", json!({"nome": "conta-do-joao"}))]));
+    call_tool(&t, "cofre.ler", json!({"nome": "conta-do-joao"}), true, "RESULTADO-SECRETO-5");
+    // the window no longer holds the result (it was cut), but this turn already saw a secret: the next completion
+    // and the next tool's arguments carry nothing
+    let c = t.clock();
+    t.chat("m", &msgs("de novo"), c, &reply("", &[("c2", "web.ler", json!({"url": "https://example.org/RESULTADO-SECRETO-5"}))]));
+    call_tool(&t, "web.ler", json!({"url": "https://example.org/RESULTADO-SECRETO-5"}), true, "pagina");
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(5);
+    let raw = s.rx.raw();
+    assert!(!raw.contains("conta-do-joao") && !raw.contains("RESULTADO-SECRETO-5"), "{raw}");
+    let secret_tool = by_name(&spans, "execute_tool cofre.ler")[0];
+    let args = event_named(secret_tool, "kalango.tool.args");
+    assert_eq!(ev_attr(args[0], "kalango.tool.args_omitted").unwrap()["stringValue"], "secret");
+    let later = by_name(&spans, "execute_tool web.ler")[0];
+    assert_eq!(ev_attr(event_named(later, "kalango.tool.args")[0], "kalango.tool.args_omitted").unwrap()["stringValue"], "secret_in_context");
+    assert_eq!(ev_attr(event_named(later, "kalango.tool.result")[0], "body").unwrap()["stringValue"], "pagina", "results of ordinary tools still go");
+    let chats = by_name(&spans, "chat");
+    // (the call that asks for the secret tool: the choice is there, its arguments are not)
+    let ask = event_named(chats[0], "gen_ai.choice");
+    assert_eq!(ask.len(), 1);
+    assert!(ev_attr(ask[0], "message").unwrap()["stringValue"].as_str().unwrap().contains("[omitted: secret tool arguments]"));
+    assert!(event_named(chats[1], "gen_ai.choice").is_empty(), "after the secret result: metadata only");
+    assert_eq!(attr(&chats[1]["attributes"], "kalango.secret_in_context").unwrap()["boolValue"], true);
+}
+
+#[test]
+fn ordinary_tools_are_unaffected_by_the_secret_rules() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "liste");
+    let input = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "liste"}),
+        assistant_call("c1", "arquivos.listar", "{\"caminho\":\"~/Documentos\"}"),
+        json!({"role": "tool", "tool_call_id": "c1", "content": "a.txt b.txt"}),
+    ];
+    let c = t.clock();
+    t.chat("m", &input, c, &reply("Há dois arquivos.", &[]));
+    call_tool(&t, "arquivos.listar", json!({"caminho": "~/Documentos"}), true, "a.txt b.txt");
+    t.observe(&Event::Answer("Há dois arquivos.".into()));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(3);
+    let chat = by_name(&spans, "chat")[0];
+    assert_eq!(ev_attr(event_named(chat, "gen_ai.tool.message")[0], "content").unwrap()["stringValue"], "a.txt b.txt");
+    assert_eq!(event_named(chat, "gen_ai.choice").len(), 1);
+    assert!(attr(&chat["attributes"], "kalango.secret_in_context").is_none());
+    let tool = by_name(&spans, "execute_tool")[0];
+    assert!(ev_attr(event_named(tool, "kalango.tool.args")[0], "body").unwrap()["stringValue"].as_str().unwrap().contains("Documentos"));
+    let root = by_name(&spans, "kalango.turn")[0];
+    assert!(attr(&root["attributes"], "kalango.secret_in_context").is_none());
+    assert_eq!(event_named(root, "gen_ai.choice").len(), 1);
+}
+
+#[test]
+fn metadata_mode_gives_no_exact_size_for_a_secret_and_the_completion_after_it() {
+    let s = setup();
+    let t = begin(&s, Config { record: true, content: false }, "qual a senha?");
+    let secret = "SENHA-DE-TESTE-ABCDEFGHIJ";
+    let input = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "qual a senha?"}),
+        assistant_call("c1", "cofre.ler", "{}"),
+        json!({"role": "tool", "tool_call_id": "c1", "content": secret}),
+    ];
+    let c = t.clock();
+    t.chat("m", &input, c, &reply(&format!("é {secret}"), &[]));
+    call_tool(&t, "cofre.ler", json!({}), true, secret);
+    t.observe(&Event::Answer(format!("é {secret}")));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(3);
+    assert_eq!(spans.len(), 3);
+    let raw = s.rx.raw();
+    assert!(!raw.contains(secret));
+    let chat = by_name(&spans, "chat")[0];
+    // once a secret is in the context nothing is an exact size: not the secret's, not the reply after it, not the sum
+    // of what was sent (which leaves the secret and what the assistant said after it out)
+    assert!(attr(&chat["attributes"], "kalango.content.length").is_none());
+    assert_eq!(attr(&chat["attributes"], "kalango.content.length_bucket").unwrap()["stringValue"], "<64");
+    assert!(attr(&chat["attributes"], "kalango.output.length").is_none());
+    assert_eq!(attr(&chat["attributes"], "kalango.output.length_bucket").unwrap()["stringValue"], "<64");
+    let tool = by_name(&spans, "execute_tool cofre.ler")[0];
+    assert!(attr(&tool["attributes"], "kalango.content.length").is_none());
+    assert_eq!(attr(&tool["attributes"], "kalango.content.length_bucket").unwrap()["stringValue"], "<64");
+    let root = by_name(&spans, "kalango.turn")[0];
+    assert!(attr(&root["attributes"], "kalango.output.length").is_none());
+    assert_eq!(attr(&root["attributes"], "kalango.output.length_bucket").unwrap()["stringValue"], "<64");
+}
+
+#[test]
+fn length_buckets_are_coarse() {
+    let b = |n| length_attr("k", n, true);
+    assert_eq!(b(0).1.clone().into_str(), "<64");
+    assert_eq!(b(63).1.into_str(), "<64");
+    assert_eq!(b(64).1.into_str(), "<1KiB");
+    assert_eq!(b(1023).1.into_str(), "<1KiB");
+    assert_eq!(b(1024).1.into_str(), "<64KiB");
+    assert_eq!(b(65535).1.into_str(), "<64KiB");
+    assert_eq!(b(65536).1.into_str(), ">=64KiB");
+    assert_eq!(b(5).0, "k.length_bucket");
+    assert_eq!(length_attr("k", 5, false).0, "k.length");
+}
+
+#[test]
+fn the_arguments_of_a_tool_call_are_redacted_by_key_wherever_the_call_appears() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "rode");
+    let args = "{\"programa\":\"curl\",\"password\":\"pw-valor-um-abc\",\"api_key\":\"chave-valor-dois\"}";
+    let input = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "rode"}),
+        assistant_call("c1", "sistema.executar", args),
+        json!({"role": "tool", "tool_call_id": "c1", "content": "{\"token\": \"tk-valor-tres-xyz\", \"ok\": true}"}),
+        assistant_call("c2", "sistema.executar", "{\"password\": \"pw-valor-quatro\", oops"),
+    ];
+    let c = t.clock();
+    t.chat("m", &input, c, &reply("", &[("c3", "sistema.executar", serde_json::from_str(args).unwrap())]));
+    call_tool(&t, "sistema.executar", serde_json::from_str(args).unwrap(), true, "feito");
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(3);
+    let raw = s.rx.raw();
+    for secret in ["pw-valor-um-abc", "chave-valor-dois", "tk-valor-tres-xyz", "pw-valor-quatro"] {
+        assert!(!raw.contains(secret), "{secret} leaked: {raw}");
+    }
+    assert!(raw.contains("curl"), "the rest of the arguments stays");
+    assert!(raw.contains("[omitted: unparsed arguments]"), "arguments that do not parse are omitted when they look secret");
+    // the structure is kept: the assistant's message is JSON the receiver can read, with the keys still named
+    let chat = by_name(&spans, "chat")[0];
+    let first = &event_named(chat, "gen_ai.assistant.message")[0];
+    let content: Value = serde_json::from_str(ev_attr(first, "content").unwrap()["stringValue"].as_str().unwrap()).unwrap();
+    let call_args: Value = serde_json::from_str(content["tool_calls"][0]["function"]["arguments"].as_str().unwrap()).unwrap();
+    assert_eq!(call_args["password"], "[REDACTED]");
+    assert_eq!(call_args["api_key"], "[REDACTED]");
+    assert_eq!(call_args["programa"], "curl");
+}
+
+#[test]
+fn a_secret_in_turn_one_keeps_turn_two_metadata_only() {
+    let s = setup();
+    let mut conv = Conversation::new();
+    // turn 1: the model reads a secret
+    let t1 = Turn::begin(
+        &s.sink,
+        &Config::default(),
+        Begin {
+            session: &conv.session,
+            agent: "a",
+            index: conv.turns,
+            request: "qual a senha?",
+            tools: &tools(),
+            local_tools: Vec::new,
+            connectors: vec![],
+            taint: conv.taint.clone(),
+            secret: conv.secret,
+            pasted: vec![],
+        },
+    );
+    let input = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "qual a senha?"}),
+        assistant_call("c1", "cofre.ler", "{}"),
+        json!({"role": "tool", "tool_call_id": "c1", "content": "valor-secreto-turno-um"}),
+    ];
+    let c = t1.clock();
+    t1.chat("m", &input, c, &reply("ECO-TURNO-UM-77", &[]));
+    t1.end(&Ok(()));
+    assert!(t1.secret_in_context());
+    conv.finish_turn(&t1, &input);
+    assert!(conv.secret && conv.turns == 1);
+    // turn 2: the window no longer holds the tool result, but the assistant's echo is in the history
+    let t2 = Turn::begin(
+        &s.sink,
+        &Config::default(),
+        Begin {
+            session: &conv.session,
+            agent: "a",
+            index: conv.turns,
+            request: "e agora?",
+            tools: &tools(),
+            local_tools: Vec::new,
+            connectors: vec![],
+            taint: conv.taint.clone(),
+            secret: conv.secret,
+            pasted: vec![],
+        },
+    );
+    let history = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "qual a senha?"}),
+        json!({"role": "assistant", "content": "A senha é ECO-TURNO-UM-77"}),
+        json!({"role": "user", "content": "e agora?"}),
+    ];
+    let c = t2.clock();
+    t2.chat("m", &history, c, &reply("de novo ECO-TURNO-UM-77", &[("c9", "web.ler", json!({"url": "https://example.org/ECO-TURNO-UM-77"}))]));
+    call_tool(&t2, "web.ler", json!({"url": "https://example.org/ECO-TURNO-UM-77"}), true, "pagina");
+    t2.observe(&Event::Answer("ECO-TURNO-UM-77".into()));
+    t2.end(&Ok(()));
+    let spans = s.rx.wait_for(6);
+    let raw = s.rx.raw();
+    assert!(!raw.contains("ECO-TURNO-UM-77") && !raw.contains("valor-secreto-turno-um"), "{raw}");
+    let roots = by_name(&spans, "kalango.turn");
+    assert_eq!(roots.len(), 2);
+    for r in &roots {
+        assert_eq!(attr(&r["attributes"], "kalango.secret_in_context").unwrap()["boolValue"], true);
+    }
+    let second_chat = by_name(&spans, "chat")
+        .into_iter()
+        .find(|c| event_named(c, "gen_ai.assistant.message").len() == 1 && event_named(c, "gen_ai.tool.message").is_empty())
+        .unwrap();
+    assert!(event_named(second_chat, "gen_ai.choice").is_empty(), "turn 2: no completion content");
+    assert_eq!(ev_attr(event_named(second_chat, "gen_ai.assistant.message")[0], "content").unwrap()["stringValue"], "[omitted: secret in context]");
+    assert_eq!(event_named(second_chat, "gen_ai.user.message").len(), 2, "what the person said still goes");
+    let web = by_name(&spans, "execute_tool web.ler")[0];
+    assert_eq!(ev_attr(event_named(web, "kalango.tool.args")[0], "kalango.tool.args_omitted").unwrap()["stringValue"], "secret_in_context");
+}
+
+#[test]
+fn a_restored_conversation_with_a_secret_tool_result_starts_secret() {
+    let with_secret = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "qual a senha?"}),
+        assistant_call("c1", "cofre.ler", "{}"),
+        json!({"role": "tool", "tool_call_id": "c1", "content": "x"}),
+        json!({"role": "assistant", "content": "pronto"}),
+    ];
+    let mut conv = Conversation::new();
+    conv.restore_secret(&with_secret);
+    assert!(conv.secret);
+    // a result whose call is nowhere in the history: unknown origin, treated as secret
+    let mut conv = Conversation::new();
+    conv.restore_secret(&[json!({"role": "user", "content": "oi"}), json!({"role": "tool", "tool_call_id": "perdido", "content": "?"})]);
+    assert!(conv.secret);
+    // ordinary tools do not mark it
+    let mut conv = Conversation::new();
+    conv.restore_secret(&[
+        json!({"role": "user", "content": "oi"}),
+        assistant_call("c1", "arquivos.listar", "{}"),
+        json!({"role": "tool", "tool_call_id": "c1", "content": "a.txt"}),
+    ]);
+    assert!(!conv.secret);
+}
+
+/// A conversation picked up again in a new process (the engine's `continuar`) gets back what its history holds from
+/// outside: a request pasted in an earlier turn (its mark in `mensagens.json`) as well as a page a tool read.
+#[test]
+fn a_restored_conversation_keeps_the_paste_and_the_outside_results_as_taint() {
+    use crate::context::PASTED_KEY;
+    let saved: Vec<Value> = serde_json::from_str(
+        &json!([
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "resuma: TEXTO COLADO", PASTED_KEY: true},
+            {"role": "assistant", "content": "resumo"},
+            {"role": "user", "content": "e agora?"},
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let mut conv = Conversation::new();
+    conv.restore(&saved);
+    assert_eq!(conv.taint, ["external:paste"], "the paste of an earlier turn still taints the conversation");
+    // with a page read too: both kinds, and nothing for a conversation that was all typed
+    let mut with_page = saved.clone();
+    with_page.push(assistant_call("c1", "web.ler", "{}"));
+    with_page.push(json!({"role": "tool", "tool_call_id": "c1", "content": crate::defesa::envelope("web.ler", "uma página")}));
+    let mut conv = Conversation::new();
+    conv.restore(&with_page);
+    assert_eq!(conv.taint, ["external:paste", "external:web"]);
+    let mut conv = Conversation::new();
+    conv.restore(&[json!({"role": "user", "content": "oi"}), json!({"role": "assistant", "content": "olá"})]);
+    assert!(conv.taint.is_empty() && !conv.secret);
+}
+
+/// What a recorded turn brought in from outside goes to the conversation, and the next turn starts with it (taint is
+/// carried between turns without the model: before, only the `#[ignore]`d real-model test covered it).
+#[test]
+fn the_taint_of_a_turn_carries_to_the_next_one() {
+    let s = setup();
+    let mut conv = Conversation::new();
+    let t1 = begin(&s, Config::default(), "o que diz o site?");
+    call_tool(&t1, "web.ler", json!({"url": "https://example.org"}), true, "texto do site");
+    t1.end(&Ok(()));
+    conv.finish_turn(&t1, &[]);
+    assert_eq!(conv.taint, ["external:web"], "the page read in turn 1 stays with the conversation");
+    // turn 2 begins with it: its root introduces it, so its first call is marked before anything is read
+    let t2 = Turn::begin(
+        &s.sink,
+        &Config::default(),
+        Begin {
+            session: &conv.session,
+            agent: "a",
+            index: conv.turns,
+            request: "e agora?",
+            tools: &tools(),
+            local_tools: Vec::new,
+            connectors: vec![],
+            taint: conv.taint.clone(),
+            secret: conv.secret,
+            pasted: vec![],
+        },
+    );
+    let c = t2.clock();
+    t2.chat("m", &msgs("e agora?"), c, &reply("ok", &[]));
+    t2.end(&Ok(()));
+    let spans = s.rx.wait_for(4);
+    let chats = by_name(&spans, "chat");
+    assert_eq!(list_attr(chats.last().unwrap(), "kalango.taint"), Some(vec!["external:web".to_string()]));
+    conv.finish_turn(&t2, &[]);
+    assert_eq!((conv.taint.clone(), conv.turns), (vec!["external:web".to_string()], 2));
+}
+
+#[test]
+fn a_new_conversation_starts_clean() {
+    let a = Conversation::new();
+    assert!(!a.secret && a.taint.is_empty() && a.turns == 0);
+    let s = setup();
+    let t = begin(&s, Config::default(), "x");
+    call_tool(&t, "cofre.ler", json!({}), true, "segredo-qualquer");
+    t.end(&Ok(()));
+    let mut conv = Conversation::new();
+    conv.finish_turn(&t, &[]);
+    assert!(conv.secret);
+    let fresh = Conversation::new();
+    assert!(!fresh.secret, "a new conversation does not inherit it");
+    assert_ne!(fresh.session, conv.session);
+}
+
+// ---------------------------------------------------------------- the final pass and the property tests
+
+/// A span with one content event, for the tests that go straight to the body that would be sent.
+fn span_with(content: Attr) -> SpanData {
+    SpanData {
+        trace_id: [1; 16],
+        span_id: [2; 8],
+        parent: Some([3; 8]),
+        name: "chat m".into(),
+        kind: 3,
+        start_ns: 1,
+        end_ns: 2,
+        attrs: vec![("gen_ai.operation.name".into(), Attr::Str("chat".into()))],
+        events: vec![EventData {
+            name: "gen_ai.user.message",
+            time_ns: 1,
+            attrs: vec![("role".into(), Attr::Str("user".into())), ("content".into(), content)],
+        }],
+        error: None,
+        is_root: false,
+        privacy: "content",
+    }
+}
+
+fn body_text(span: &SpanData, first: &Redactor, guard: &Redactor) -> (String, Tally) {
+    let mut tally = Tally::default();
+    let body = request_body(&[span], first, guard, &mut tally);
+    (body.to_string(), tally)
+}
+
+/// A small deterministic generator (the tests need no randomness crate and must be repeatable).
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// What the property tests plant: the text that holds it, and the needle that must never reach the socket.
+fn planted(rng: &mut Rng, n: usize) -> (String, String) {
+    let tokens = [
+        concat!("ghp", "_abcdefghijklmnopqrstuvwxyz0123456789"),
+        concat!("xox", "b-1234567890-abcdefghijklmnop"),
+        concat!("sk", "-abcdefghijklmnopqrstuvwxyz123456"),
+        concat!("AKIA", "ABCDEFGHIJKLMNOP"),
+        "Zx9Qm3Lp7Vb2Nc8Rt5Yw1Ke4Hd6Gf0Js",
+        concat!("hf", "_abcdefghijklmnopqrstuvwxyzABCD"),
+    ];
+    let plain = format!("valor-simples-{n}-zq");
+    match rng.below(9) {
+        k @ 0..=5 => (format!("antes {} depois", tokens[k]), tokens[k].to_string()),
+        6 => (format!("{{\"password\":\"{plain}\",\"ok\":1}}"), plain),
+        7 => (format!("api_key={plain} e mais texto"), plain),
+        _ => (
+            crate::traces_redact::test_pem("OPENSSH", &format!("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo{n}"), true),
+            format!("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo{n}"),
+        ),
+    }
+}
+
+/// Wraps the text in 0 to 3 levels of string-encoded JSON of varied shapes (what a stringify-before-redact bug does).
+fn wrapped(rng: &mut Rng, text: String) -> String {
+    let mut cur = text;
+    for _ in 0..rng.below(4) {
+        cur = match rng.below(6) {
+            0 => serde_json::to_string(&cur).unwrap(),
+            1 => json!({"arguments": cur}).to_string(),
+            2 => json!({"content": cur, "role": "tool"}).to_string(),
+            3 => json!({"tool_calls": [{"function": {"name": "x", "arguments": cur}}]}).to_string(),
+            4 => json!([{"body": cur}, 1, null]).to_string(),
+            _ => format!("resultado:\n{cur}\n"),
+        };
+    }
+    cur
+}
+
+fn plant_case(rng: &mut Rng, n: usize) -> (Attr, String) {
+    let (text, needle) = planted(rng, n);
+    let w = wrapped(rng, text);
+    // as text, or as structured JSON holding the text (the shape the emitter uses for assistant messages)
+    let attr = if rng.below(2) == 0 { Attr::Str(w) } else { Attr::Json(json!({"content": w, "tool_calls": [{"function": {"arguments": w}}]})) };
+    (attr, needle)
+}
+
+#[test]
+fn property_a_planted_secret_in_any_nesting_never_reaches_the_socket() {
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let (first, guard) = (Redactor::default(), Redactor::default());
+    for n in 0..3000 {
+        let (attr, needle) = plant_case(&mut rng, n);
+        let (body, _) = body_text(&span_with(attr.clone()), &first, &guard);
+        assert!(!body.contains(&needle), "case {n}: {needle} reached the body from {attr:?}\n{body}");
+    }
+}
+
+#[test]
+fn property_b_the_final_pass_alone_stops_what_a_weak_first_pass_lets_through() {
+    // a first pass with no deny list and the tokens it can see: the bugs a review found are exactly this kind of miss
+    let mut rng = Rng(0xD1B5_4A32_D192_ED03);
+    let weak = Redactor::new(&[]);
+    let guard = Redactor::default();
+    let mut degraded = 0;
+    for n in 0..3000 {
+        let (attr, needle) = plant_case(&mut rng, n);
+        let (body, tally) = body_text(&span_with(attr.clone()), &weak, &guard);
+        assert!(!body.contains(&needle), "case {n}: {needle} reached the body past the final pass from {attr:?}\n{body}");
+        if tally.hits > 0 {
+            degraded += 1;
+        }
+    }
+    assert!(degraded > 500, "the final pass had real work to do ({degraded} spans)");
+}
+
+#[test]
+fn a_span_the_final_pass_stops_is_sent_without_its_content_and_says_so() {
+    let plain = "valor-simples-final-pass";
+    let weak = Redactor::new(&[]);
+    let guard = Redactor::default();
+    let span = span_with(Attr::Str(format!("{{\"password\":\"{plain}\"}}")));
+    let mut tally = Tally::default();
+    let body = request_body(&[&span], &weak, &guard, &mut tally);
+    let text = body.to_string();
+    assert!(!text.contains(plain));
+    assert_eq!(tally.hits, 1);
+    let sent = &body["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+    assert!(sent["events"].is_null(), "the content is gone, the span stays (the tree keeps its shape)");
+    assert!(
+        attr(&sent["attributes"], "kalango.redactions.final").unwrap()["intValue"].as_str().unwrap().parse::<u64>().unwrap() >= 1,
+        "it counts what it found"
+    );
+    assert_eq!(s_attr(sent, "gen_ai.operation.name"), Some("chat"));
+    assert_eq!(sent["parentSpanId"], hex(&[3; 8]));
+}
+
+#[test]
+fn ordinary_turns_do_not_trip_the_final_pass() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "listar meus arquivos");
+    full_turn(&t, "listar meus arquivos", "arquivos.listar", "a.txt b.txt relatorio-trimestral-final-2026.pdf");
+    let t2 = begin(&s, Config::default(), "rode");
+    call_tool(
+        &t2,
+        "sistema.executar",
+        json!({"programa": "ls", "args": ["-la", "/home/ana/Documentos"]}),
+        true,
+        "total 8\ndrwxr-xr-x 2 ana ana 4096 nov 25 10:00 .\n",
+    );
+    t2.end(&Ok(()));
+    let spans = s.rx.wait_for(6);
+    assert_eq!(spans.len(), 6);
+    assert_eq!(s.sink.counters().redacted_final, 0, "no false positive on a normal payload");
+    assert!(spans.iter().all(|(sp, _)| attr(&sp["attributes"], "kalango.redactions.final").is_none()));
+}
+
+// ---------------------------------------------------------------- side channels
+
+#[test]
+fn the_size_of_what_the_model_said_after_a_secret_is_not_in_the_metadata() {
+    let s = setup();
+    let t = begin(&s, Config { record: true, content: false }, "x");
+    let mk = |echo: &str| {
+        vec![
+            json!({"role": "system", "content": "sys"}),
+            json!({"role": "user", "content": "qual a senha?"}),
+            assistant_call("c1", "cofre.ler", "{}"),
+            json!({"role": "tool", "tool_call_id": "c1", "content": "valor-secreto-xyz"}),
+            json!({"role": "assistant", "content": echo}),
+        ]
+    };
+    let c = t.clock();
+    t.chat("m", &mk("curto"), c, &reply("ok", &[]));
+    let c = t.clock();
+    t.chat("m", &mk(&"a senha é valor-secreto-xyz ".repeat(40)), c, &reply("ok", &[]));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(3);
+    let chats = by_name(&spans, "chat");
+    assert_eq!(chats.len(), 2);
+    for c in &chats {
+        assert!(attr(&c["attributes"], "kalango.content.length").is_none(), "no exact length once a secret is in the context");
+    }
+    assert_eq!(
+        attr(&chats[0]["attributes"], "kalango.content.length_bucket"),
+        attr(&chats[1]["attributes"], "kalango.content.length_bucket"),
+        "the assistant's echo is not counted"
+    );
+}
+
+#[test]
+fn the_secret_of_a_conversation_is_known_even_when_the_turn_was_not_recorded() {
+    let secret_history = vec![
+        json!({"role": "user", "content": "qual a senha?"}),
+        assistant_call("c1", "cofre.ler", "{}"),
+        json!({"role": "tool", "tool_call_id": "c1", "content": "x"}),
+    ];
+    let mut conv = Conversation::new();
+    conv.finish_turn(&Turn::disabled(), &secret_history);
+    assert!(conv.secret, "recording was off for the turn: the history is still looked at");
+    assert_eq!(conv.turns, 1);
+    // and an ordinary history leaves it clean
+    let mut conv = Conversation::new();
+    conv.finish_turn(&Turn::disabled(), &[json!({"role": "user", "content": "oi"})]);
+    assert!(!conv.secret);
+}
+
+// ---------------------------------------------------------------- what a tool span says (E2E-1: D3, D5, D8, D10)
+
+#[test]
+fn the_provenance_of_a_tool_span_always_names_the_kind() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "leia");
+    call_tool(&t, "arquivos.ler", json!({"caminho": "~/a.txt"}), true, "conteudo");
+    call_tool(&t, "web.ler", json!({"url": "https://example.org"}), true, "pagina");
+    call_tool(&t, "gmail.buscar", json!({}), true, "um e-mail");
+    call_tool(&t, "arquivos.listar", json!({}), true, "a.txt");
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(5);
+    let prov = |name: &str| s_attr(by_name(&spans, name)[0], "kalango.provenance").map(str::to_string);
+    assert_eq!(prov("execute_tool arquivos.ler").as_deref(), Some("external:file"));
+    assert_eq!(prov("execute_tool web.ler").as_deref(), Some("external:web"));
+    assert_eq!(prov("execute_tool gmail.buscar").as_deref(), Some("external:mail"));
+    assert_eq!(prov("execute_tool arquivos.listar").as_deref(), Some("tool_local"));
+    assert!(spans.iter().all(|(sp, _)| s_attr(sp, "kalango.provenance") != Some("external")), "never the bare word");
+}
+
+#[test]
+fn the_level_is_the_agents_own_and_read_only_comes_from_the_tool() {
+    let s = setup();
+    // a read-only tool with the `usuario` level, as arquivos.ler has in kalangod
+    let tools = vec![
+        tool("arquivos.ler", "usuario", true),
+        tool("arquivos.escrever", "usuario", false),
+        tool("sistema.executar", "sistema", false),
+        tool("pacotes.instalar", "total", false),
+    ];
+    let t = Turn::begin(
+        &s.sink,
+        &Config::default(),
+        Begin {
+            session: "s",
+            agent: "a",
+            index: 0,
+            request: "x",
+            tools: &tools,
+            local_tools: Vec::new,
+            connectors: vec![],
+            taint: vec![],
+            secret: false,
+            pasted: vec![],
+        },
+    );
+    for n in ["arquivos.ler", "arquivos.escrever", "sistema.executar", "pacotes.instalar"] {
+        call_tool(&t, n, json!({}), true, "ok");
+    }
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(5);
+    let level = |n: &str| {
+        let sp = by_name(&spans, &format!("execute_tool {n}"))[0];
+        (
+            s_attr(sp, "kalango.tool.level").unwrap().to_string(),
+            attr(&sp["attributes"], "kalango.tool.read_only").unwrap()["boolValue"].as_bool().unwrap(),
+        )
+    };
+    assert_eq!(level("arquivos.ler"), ("usuario".to_string(), true), "a read is not a write");
+    assert_eq!(level("arquivos.escrever"), ("usuario".to_string(), false));
+    assert_eq!(level("sistema.executar"), ("sistema".to_string(), false));
+    assert_eq!(level("pacotes.instalar"), ("total".to_string(), false));
+}
+
+#[test]
+fn the_agents_own_tools_are_not_external_content() {
+    let c = vec!["gmail".to_string()];
+    for own in [
+        "fluxos.planejar",
+        "fluxos.adicionar_bloco",
+        "fluxos.concluir",
+        "agentes.listar",
+        "relogio.agora",
+        "sistema.info",
+        "memoria.guardar",
+        "calculadora.calcular",
+        "agente.plano",
+        "pessoa.perguntar",
+        "conversa.buscar",
+        "pontos.listar",
+        "servicos.listar",
+        "processos.listar",
+        "rede.estado",
+        "sessao.entrar_sem_senha",
+        "ferramentas.listar",
+        "modelos.listar",
+    ] {
+        assert_eq!(external_kind(own, &c), None, "{own} is the agent's own or the computer's");
+    }
+    // what brings third-party content in is marked, and so is anything not known (when in doubt, mark)
+    assert_eq!(external_kind("correio.ler", &c), Some("external:mail"));
+    assert_eq!(external_kind("web.buscar", &c), Some("external:web"));
+    assert_eq!(external_kind("arquivos.ler", &c), Some("external:file"));
+    assert_eq!(external_kind("tela.ver", &c), Some("external:tool"));
+    assert_eq!(external_kind("tarefas.executar", &c), Some("external:tool"));
+    assert_eq!(external_kind("sistema.executar", &c), Some("external:tool"));
+    assert_eq!(external_kind("registros.ler", &c), Some("external:tool"));
+    assert_eq!(external_kind("vm.executar", &c), Some("external:tool"));
+    assert_eq!(external_kind("remoto.conectar", &c), Some("external:tool"));
+    assert_eq!(external_kind("gmail.buscar", &c), Some("external:mail"));
+    assert_eq!(external_kind("ferramenta_nova_do_futuro.fazer", &c), Some("external:tool"));
+}
+
+#[test]
+fn a_turn_that_only_plans_a_flow_carries_no_taint() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "crie um fluxo");
+    call_tool(&t, "fluxos.planejar", json!({"descricao": "x"}), true, "{\"passos\":[]}");
+    call_tool(&t, "relogio.agora", json!({}), true, "10:00");
+    call_tool(&t, "agentes.listar", json!({}), true, "[]");
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(4);
+    assert!(spans.iter().all(|(sp, _)| list_attr(sp, "kalango.taint").is_none()), "the agent's own plan is not third-party content");
+    assert!(t.taint().is_empty());
+    assert!(by_name(&spans, "execute_tool").iter().all(|sp| s_attr(sp, "kalango.provenance") == Some("tool_local")));
+}
+
+#[test]
+fn a_tool_that_looks_secret_by_name_is_documented_as_a_harmless_false_positive() {
+    // "entrar_sem_senha" has "senha" in it: its result is treated as a secret (nothing leaks, a little is lost)
+    assert!(is_secret_tool("sessao.entrar_sem_senha"));
+    assert!(is_secret_tool("gatilho_internet.girar_segredo"));
+    assert!(!is_secret_tool("arquivos.ler"));
+}
+
+#[test]
+fn the_tool_call_id_the_model_gave_is_on_the_tool_span() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "liste duas vezes");
+    let c = t.clock();
+    t.chat(
+        "m",
+        &msgs("liste duas vezes"),
+        c,
+        &reply(
+            "",
+            &[
+                ("call-a", "arquivos.listar", json!({"caminho": "~/um"})),
+                ("call-b", "arquivos.listar", json!({"caminho": "~/dois"})),
+                ("call-c", "web.ler", json!({"url": "https://example.org"})),
+            ],
+        ),
+    );
+    call_tool(&t, "arquivos.listar", json!({"caminho": "~/um"}), true, "a");
+    call_tool(&t, "arquivos.listar", json!({"caminho": "~/dois"}), true, "b");
+    call_tool(&t, "web.ler", json!({"url": "https://example.org"}), true, "p");
+    // a call the engine made itself (no model call asked for it): no id
+    call_tool(&t, "relogio.agora", json!({}), true, "10:00");
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(6);
+    let ids: Vec<Option<String>> = spans
+        .iter()
+        .map(|(sp, _)| sp)
+        .filter(|sp| sp["name"].as_str().unwrap().starts_with("execute_tool"))
+        .map(|sp| s_attr(sp, "gen_ai.tool.call.id").map(str::to_string))
+        .collect();
+    assert_eq!(
+        ids,
+        [Some("call-a".to_string()), Some("call-b".to_string()), Some("call-c".to_string()), None],
+        "the calls of one reply are matched in order, by name"
+    );
+}
+
+#[test]
+fn random_looking_call_ids_go_as_a_stable_alias_everywhere_and_trip_nothing() {
+    // llama.cpp ids are 32 random letters and digits: they look like secrets to every detector, and are not
+    let long = "6Y7r0xwCZJZDkUOxZ6bJAHJALbV1vlPi";
+    let alias = trace_call_id(long);
+    assert!(alias.starts_with("call_") && alias.len() == 21 && alias.bytes().skip(5).all(|b| b.is_ascii_hexdigit()), "{alias}");
+    assert_eq!(alias, trace_call_id(long), "stable: the same id is the same alias in every span and event");
+    assert_ne!(alias, trace_call_id("6Y7r0xwCZJZDkUOxZ6bJAHJALbV1vlPj"));
+    assert_eq!(trace_call_id("call-1"), "call-1", "a short id is left as it is");
+
+    let s = setup();
+    let t = begin(&s, Config::default(), "liste");
+    let input = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "liste"}),
+        json!({"role": "assistant", "content": "", "tool_calls": [{"id": long, "type": "function", "function": {"name": "arquivos__listar", "arguments": "{}"}}]}),
+        json!({"role": "tool", "tool_call_id": long, "content": "a.txt"}),
+    ];
+    let c = t.clock();
+    t.chat("m", &input, c, &reply("", &[(long, "arquivos.listar", json!({}))]));
+    call_tool(&t, "arquivos.listar", json!({}), true, "a.txt");
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(3);
+    assert_eq!(s.sink.counters().redacted_final, 0, "an id is not a secret to the final pass");
+    let raw = s.rx.raw();
+    assert!(!raw.contains(long), "the model's own id does not go: its alias does");
+    let tool = by_name(&spans, "execute_tool")[0];
+    assert_eq!(s_attr(tool, "gen_ai.tool.call.id"), Some(alias.as_str()));
+    let chat = by_name(&spans, "chat")[0];
+    // the call in the history, the result that answers it and the call the model just made all carry the same alias
+    let hist: Value =
+        serde_json::from_str(ev_attr(event_named(chat, "gen_ai.assistant.message")[0], "content").unwrap()["stringValue"].as_str().unwrap()).unwrap();
+    assert_eq!(hist["tool_calls"][0]["id"], alias.as_str());
+    assert_eq!(ev_attr(event_named(chat, "gen_ai.tool.message")[0], "kalango.tool.call.id").unwrap()["stringValue"], alias.as_str());
+    let choice: Value =
+        serde_json::from_str(ev_attr(event_named(chat, "gen_ai.choice")[0], "message").unwrap()["stringValue"].as_str().unwrap()).unwrap();
+    assert_eq!(choice["tool_calls"][0]["id"], alias.as_str());
+}
+
+// ---------------------------------------------------------------- what the person pasted (N1) and the labels in metadata mode (N2)
+
+fn begin_pasted(s: &Setup, cfg: Config, request: &str, pasted: Vec<(usize, usize)>) -> Turn {
+    Turn::begin(
+        &s.sink,
+        &cfg,
+        Begin {
+            session: "conv-1",
+            agent: "agente",
+            index: 0,
+            request,
+            tools: &tools(),
+            local_tools: Vec::new,
+            connectors: vec![],
+            taint: vec![],
+            secret: false,
+            pasted,
+        },
+    )
+}
+
+#[test]
+fn what_the_person_pasted_is_external_paste_on_the_root_and_the_message_and_taints_the_turn() {
+    let s = setup();
+    let request = "resuma isto: texto copiado de uma pagina qualquer. obrigado";
+    // chars 12..49 are the pasted part
+    let t = begin_pasted(&s, Config::default(), request, vec![(12, 49)]);
+    let c = t.clock();
+    t.chat("m", &msgs(request), c, &reply("ok", &[]));
+    t.observe(&Event::Answer("ok".into()));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(2);
+    let root = by_name(&spans, "kalango.turn")[0];
+    assert_eq!(s_attr(root, "kalango.provenance"), Some("external:paste"));
+    assert_eq!(s_attr(root, "kalango.paste.ranges"), Some("[[12,49]]"));
+    assert_eq!(list_attr(root, "kalango.taint"), Some(vec!["external:paste".to_string()]));
+    let user = &event_named(root, "gen_ai.user.message")[0];
+    assert_eq!(ev_attr(user, "kalango.provenance").unwrap()["stringValue"], "external:paste");
+    assert_eq!(ev_attr(user, "kalango.paste.ranges").unwrap()["stringValue"], "[[12,49]]");
+    // the calls that follow carry the taint; the person's words are all there
+    assert_eq!(list_attr(by_name(&spans, "chat")[0], "kalango.taint"), Some(vec!["external:paste".to_string()]));
+    assert_eq!(ev_attr(user, "content").unwrap()["stringValue"], request);
+    assert_eq!(t.taint(), ["external:paste"], "the conversation keeps it for the next turns");
+}
+
+#[test]
+fn the_pasted_message_is_external_paste_inside_the_model_inputs_too() {
+    let s = setup();
+    let request = "resuma: texto colado de fora";
+    let t = begin_pasted(&s, Config::default(), request, vec![(8, 28)]);
+    let input = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "uma pergunta antiga digitada"}),
+        // (an older turn that typed the same words: it stays the person's)
+        json!({"role": "user", "content": request}),
+        json!({"role": "assistant", "content": "feito"}),
+        // (a content that is not a string)
+        json!({"role": "user", "content": [{"type": "text", "text": request}]}),
+        // (the context window adds its notes, the clock, to the end of the current request)
+        json!({"role": "user", "content": format!("{request}\n\nAgora: 10:00")}),
+    ];
+    let c = t.clock();
+    t.chat("m", &input, c, &reply("ok", &[]));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(2);
+    let users = event_named(by_name(&spans, "chat")[0], "gen_ai.user.message");
+    let prov = |e: &Value| ev_attr(e, "kalango.provenance").unwrap()["stringValue"].as_str().unwrap().to_string();
+    assert_eq!(users.iter().map(|e| prov(e)).collect::<Vec<_>>(), ["user", "user", "user", "external:paste"], "only this turn's request");
+}
+
+/// The window the engine really sends (context.rs, with the clock note at the end), built from an archive that has
+/// an engine's note and a request pasted in an earlier turn: the marks the window drops still reach the traces.
+#[test]
+fn through_the_real_context_window_notes_are_agent_and_an_earlier_paste_stays_external_paste() {
+    use crate::context::{build_with_tail, estimate, Settings, State, NOTE_KEY, PASTED_KEY};
+    let s = setup();
+    let request = "e agora, o que falta?";
+    let history = vec![
+        json!({"role": "user", "content": "uma pergunta digitada"}),
+        json!({"role": "assistant", "content": "ok"}),
+        json!({"role": "user", "content": "resuma: TEXTO COLADO ANTIGO", PASTED_KEY: true}),
+        json!({"role": "assistant", "content": "feito"}),
+        json!({"role": "user", "content": request}),
+        json!({"role": "assistant", "content": "faltam dois"}),
+        json!({"role": "user", "content": "Confira a resposta antes de concluir.", NOTE_KEY: true}),
+    ];
+    let w = build_with_tail("sys", &history, &State::default(), &Settings::from_prefs(&Value::Null, 262_144), "Agora é 10:00", &mut |m| {
+        estimate(m, 0, 2.8)
+    });
+    // (the model never sees the marks)
+    assert!(w.messages.iter().all(|m| m.get(NOTE_KEY).is_none() && m.get(PASTED_KEY).is_none()));
+    assert_eq!(w.marks.len(), w.messages.len());
+    // this turn was typed
+    let t = begin_pasted(&s, Config::default(), request, vec![]);
+    let c = t.clock();
+    t.chat_marked("m", &w.messages, &w.marks, c, &reply("ok", &[]));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(2);
+    let users = event_named(by_name(&spans, "chat")[0], "gen_ai.user.message");
+    let prov = |e: &Value| ev_attr(e, "kalango.provenance").unwrap()["stringValue"].as_str().unwrap().to_string();
+    assert_eq!(users.iter().map(|e| prov(e)).collect::<Vec<_>>(), ["user", "external:paste", "user", "agent"]);
+}
+
+/// A pasted request keeps its mark in the archive the engine saves, so a later turn (or the conversation picked up
+/// again) still sends it as `external:paste`, while this turn's typed request is `user`.
+#[test]
+fn a_request_pasted_in_an_earlier_turn_stays_external_paste_in_the_next_turns() {
+    use crate::context::{build_with_tail, estimate, Settings, State, PASTED_KEY};
+    let s = setup();
+    let pasted = "texto colado: RELATORIO-123";
+    let typed = "obrigado; e o total?";
+    let saved: Vec<Value> = serde_json::from_str(
+        &json!([
+            {"role": "user", "content": pasted, PASTED_KEY: true},
+            {"role": "assistant", "content": "lido"},
+            {"role": "user", "content": typed},
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let w = build_with_tail("sys", &saved, &State::default(), &Settings::from_prefs(&Value::Null, 262_144), "", &mut |m| estimate(m, 0, 2.8));
+    let t = begin_pasted(&s, Config::default(), typed, vec![]);
+    let c = t.clock();
+    t.chat_marked("m", &w.messages, &w.marks, c, &reply("ok", &[]));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(2);
+    let users = event_named(by_name(&spans, "chat")[0], "gen_ai.user.message");
+    let prov = |e: &Value| ev_attr(e, "kalango.provenance").unwrap()["stringValue"].as_str().unwrap().to_string();
+    assert_eq!(users.iter().map(|e| prov(e)).collect::<Vec<_>>(), ["external:paste", "user"]);
+}
+
+#[test]
+fn a_typed_request_is_user_inside_the_model_inputs() {
+    let s = setup();
+    let request = "resuma: texto digitado";
+    let t = begin_pasted(&s, Config::default(), request, vec![]);
+    let input = vec![json!({"role": "system", "content": "sys"}), json!({"role": "user", "content": request})];
+    let c = t.clock();
+    t.chat("m", &input, c, &reply("ok", &[]));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(2);
+    let users = event_named(by_name(&spans, "chat")[0], "gen_ai.user.message");
+    let prov = |e: &Value| ev_attr(e, "kalango.provenance").unwrap()["stringValue"].as_str().unwrap().to_string();
+    assert_eq!(users.iter().map(|e| prov(e)).collect::<Vec<_>>(), ["user"]);
+}
+
+#[test]
+fn what_the_person_typed_is_user_and_not_tainted() {
+    let s = setup();
+    let t = begin_pasted(&s, Config::default(), "oi, tudo bem?", vec![]);
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(1);
+    let root = by_name(&spans, "kalango.turn")[0];
+    // (the root says it too, so the receiver does not take its default, `agent`)
+    assert_eq!(s_attr(root, "kalango.provenance"), Some("user"));
+    assert!(list_attr(root, "kalango.taint").is_none() && attr(&root["attributes"], "kalango.paste.ranges").is_none());
+    assert_eq!(ev_attr(event_named(root, "gen_ai.user.message")[0], "kalango.provenance").unwrap()["stringValue"], "user");
+}
+
+#[test]
+fn a_typed_root_is_user_in_metadata_mode_too() {
+    let s = setup();
+    let t = begin_pasted(&s, Config { record: true, content: false }, "oi", vec![]);
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(1);
+    assert_eq!(s_attr(by_name(&spans, "kalango.turn")[0], "kalango.provenance"), Some("user"));
+}
+
+#[test]
+fn a_paste_is_marked_in_metadata_mode_too_without_the_text() {
+    let s = setup();
+    let t = begin_pasted(&s, Config { record: true, content: false }, "cole: PAGINA-COPIADA-123", vec![(6, 24)]);
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(1);
+    let root = by_name(&spans, "kalango.turn")[0];
+    assert_eq!(s_attr(root, "kalango.provenance"), Some("external:paste"));
+    assert_eq!(s_attr(root, "kalango.paste.ranges"), Some("[[6,24]]"));
+    assert_eq!(list_attr(root, "kalango.taint"), Some(vec!["external:paste".to_string()]));
+    assert!(root["events"].is_null() && !s.rx.raw().contains("PAGINA-COPIADA-123"));
+}
+
+#[test]
+fn the_ids_of_the_tool_results_in_the_input_are_labels_in_metadata_mode_without_any_content() {
+    let s = setup();
+    let long = "6Y7r0xwCZJZDkUOxZ6bJAHJALbV1vlPi";
+    let input = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "liste e leia"}),
+        json!({"role": "assistant", "content": "", "tool_calls": [{"id": "call-a", "type": "function", "function": {"name": "arquivos__listar", "arguments": "{}"}}, {"id": long, "type": "function", "function": {"name": "arquivos__ler", "arguments": "{}"}}]}),
+        json!({"role": "tool", "tool_call_id": "call-a", "content": "RESULTADO-UM-SECRETO"}),
+        json!({"role": "tool", "tool_call_id": long, "content": "RESULTADO-DOIS-SECRETO"}),
+    ];
+    for content in [false, true] {
+        let t = begin(&s, Config { record: true, content }, "liste e leia");
+        let c = t.clock();
+        t.chat("m", &input, c, &reply("ok", &[]));
+        t.end(&Ok(()));
+    }
+    let spans = s.rx.wait_for(4);
+    let chats = by_name(&spans, "chat");
+    assert_eq!(chats.len(), 2);
+    for chat in &chats {
+        assert_eq!(list_attr(chat, "kalango.tool.call.ids"), Some(vec!["call-a".to_string(), trace_call_id(long)]), "in the order of the results");
+    }
+    let (meta, full) = (chats.iter().find(|c| c["events"].is_null()).unwrap(), chats.iter().find(|c| !c["events"].is_null()).unwrap());
+    assert!(!event_named(full, "gen_ai.tool.message").is_empty());
+    // no content from the metadata chat: the text of the results is only in the full one's events
+    let meta_text = serde_json::to_string(meta).unwrap();
+    assert!(!meta_text.contains("RESULTADO-") && !meta_text.contains(long));
+}
+
+// ---------------------------------------------------------------- taint, gates, approvals
+
+/// What brings back an earlier result (`conversa.abrir`, `conversa.buscar`) carries where that result came from, and
+/// the calls that came into an internet trigger are the internet's: none of them is the agent's own content.
+#[test]
+fn a_reopened_or_found_earlier_result_and_internet_calls_keep_their_outside_origin() {
+    use crate::defesa::envelope;
+    let page = envelope("web.ler", "texto de uma página");
+    let clock = envelope("relogio.agora", "10:00");
+    let found_web = "[m3 · troca 1 · web.ler] trecho da página\n[m1 · troca 1 · pessoa] o que diz o site?";
+    let found_own = "[m1 · troca 1 · pessoa] lembre do bolo\n[m2 · troca 1 · agente] lembrei";
+    let c = vec![];
+    assert_eq!(result_kind("conversa.abrir", &page, &c), Some("external:web"));
+    assert_eq!(result_kind("conversa.abrir", &clock, &c), None, "an own tool's result reopened is still own");
+    assert_eq!(result_kind("conversa.abrir", "texto sem envelope", &c), Some("external:tool"), "unknown origin: marked");
+    assert_eq!(result_kind("conversa.buscar", found_web, &c), Some("external:web"));
+    assert_eq!(result_kind("conversa.buscar", found_own, &c), None);
+    assert_eq!(result_kind("conversa.buscar", "[m4 · troca 2 · ferramenta] ?", &c), Some("external:tool"));
+    for name in ["gatilho_internet.chamadas", "internet.calls", "internet.call_body"] {
+        assert_eq!(external_kind(name, &c), Some("external:web"), "{name}");
+        assert_eq!(result_kind(name, "{}", &c), Some("external:web"), "{name}");
+    }
+    // the rest of the internet trigger's tools stay the agent's own (they configure it)
+    assert_eq!(external_kind("gatilho_internet.criar", &c), None);
+
+    // in a turn: the tool span, the taint, and the tool message in a later model call
+    let s = setup();
+    let t = begin(&s, Config::default(), "o que dizia a página?");
+    let c0 = t.clock();
+    t.chat("m", &msgs("o que dizia a página?"), c0, &reply("", &[("c1", "conversa.abrir", json!({"ref": "m3"}))]));
+    call_tool(&t, "conversa.abrir", json!({"ref": "m3"}), true, &page);
+    let input = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "o que dizia a página?"}),
+        assistant_call("c1", "conversa.abrir", "{\"ref\":\"m3\"}"),
+        json!({"role": "tool", "tool_call_id": "c1", "content": page}),
+    ];
+    let c1 = t.clock();
+    t.chat("m", &input, c1, &reply("dizia isto", &[]));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(4);
+    let tool = by_name(&spans, "execute_tool conversa.abrir")[0];
+    assert_eq!(s_attr(tool, "kalango.provenance"), Some("external:web"));
+    assert_eq!(list_attr(by_name(&spans, "chat")[1], "kalango.taint"), Some(vec!["external:web".to_string()]));
+    let msg = event_named(by_name(&spans, "chat")[1], "gen_ai.tool.message")[0];
+    assert_eq!(ev_attr(msg, "kalango.provenance").unwrap()["stringValue"], "external:web");
+}
+
+#[test]
+fn external_content_taints_what_follows_and_the_root() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "o que diz o site?");
+    // before anything external: no taint
+    let c = t.clock();
+    t.chat("m", &msgs("o que diz o site?"), c, &reply("", &[("c1", "web.ler", json!({"url": "https://example.org"}))]));
+    call_tool(&t, "web.ler", json!({"url": "https://example.org"}), true, "texto do site");
+    let c = t.clock();
+    t.chat("m", &msgs("segunda"), c, &reply("resposta", &[]));
+    call_tool(&t, "gmail.buscar", json!({}), true, "um e-mail");
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(5);
+    let chats = by_name(&spans, "chat");
+    assert_eq!(list_attr(chats[0], "kalango.taint"), None, "the first call saw nothing external");
+    assert_eq!(list_attr(chats[1], "kalango.taint"), Some(vec!["external:web".to_string()]), "every call after it carries the taint");
+    let web = by_name(&spans, "execute_tool web.ler")[0];
+    assert_eq!(list_attr(web, "kalango.taint"), Some(vec!["external:web".to_string()]));
+    assert_eq!(s_attr(web, "kalango.provenance"), Some("external:web"));
+    let mail = by_name(&spans, "execute_tool gmail.buscar")[0];
+    assert_eq!(list_attr(mail, "kalango.taint"), Some(vec!["external:mail".to_string()]));
+    let root = by_name(&spans, "kalango.turn")[0];
+    assert_eq!(list_attr(root, "kalango.taint"), Some(vec!["external:mail".to_string(), "external:web".to_string()]));
+    // and the agent keeps it for the next turns of the conversation
+    assert_eq!(t.taint(), ["external:mail", "external:web"]);
+}
+
+#[test]
+fn a_turn_with_only_local_tools_has_no_taint_and_a_new_turn_inherits_the_conversations() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "listar");
+    full_turn(&t, "listar", "arquivos.escrever", "ok");
+    let spans = s.rx.wait_for(4);
+    assert!(spans.iter().all(|(sp, _)| list_attr(sp, "kalango.taint").is_none()));
+    let t2 = Turn::begin(
+        &s.sink,
+        &Config::default(),
+        Begin {
+            session: "conv-1",
+            agent: "agente",
+            index: 1,
+            request: "de novo",
+            tools: &tools(),
+            local_tools: Vec::new,
+            connectors: vec![],
+            taint: vec!["external:web".into()],
+            secret: false,
+            pasted: vec![],
+        },
+    );
+    let c = t2.clock();
+    t2.chat("m", &msgs("de novo"), c, &reply("ok", &[]));
+    t2.end(&Ok(()));
+    let spans = s.rx.wait_for(6);
+    let second_root = spans
+        .iter()
+        .map(|(s, _)| s)
+        .find(|s| s["name"] == "kalango.turn" && attr(&s["attributes"], "kalango.turn.index").unwrap()["intValue"] == "1")
+        .unwrap();
+    assert_eq!(list_attr(second_root, "kalango.taint"), Some(vec!["external:web".to_string()]));
+}
+
+#[test]
+fn external_kind_names_what_each_tool_brings_in() {
+    let c = vec!["gmail".to_string(), "notion".to_string()];
+    assert_eq!(external_kind("web.buscar", &c), Some("external:web"));
+    assert_eq!(external_kind("arquivos.ler", &c), Some("external:file"));
+    assert_eq!(external_kind("arquivos.listar", &c), None, "a folder listing is not content");
+    assert_eq!(external_kind("gmail.ler", &c), Some("external:mail"));
+    assert_eq!(external_kind("notion.pagina", &c), Some("external:tool"));
+    assert_eq!(external_kind("tela.ver", &c), Some("external:tool"));
+    assert_eq!(external_kind("calculadora.calcular", &c), None);
+    assert_eq!(external_kind("memoria.guardar", &c), None);
+}
+
+#[test]
+fn the_gate_that_forced_a_call_is_on_that_calls_span() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "crie um fluxo");
+    t.gate("forced_planejar");
+    let c = t.clock();
+    t.chat("m", &msgs("crie um fluxo"), c, &reply("", &[("c1", "fluxos.planejar", json!({"descricao": "x"}))]));
+    call_tool(&t, "fluxos.planejar", json!({"descricao": "x"}), true, "{\"passos\":[]}");
+    let c = t.clock();
+    t.chat("m", &msgs("crie um fluxo"), c, &reply("pronto", &[]));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(4);
+    let chats = by_name(&spans, "chat");
+    assert_eq!(s_attr(chats[0], "kalango.gate"), Some("forced_planejar"));
+    assert_eq!(s_attr(chats[1], "kalango.gate"), None, "only the forced call");
+    let draft = by_name(&spans, "execute_tool fluxos.planejar")[0];
+    assert_eq!(attr(&draft["attributes"], "kalango.flow.draft").unwrap()["boolValue"], true);
+    assert_eq!(list_attr(by_name(&spans, "kalango.turn")[0], "kalango.gates"), Some(vec!["forced_planejar".to_string()]));
+}
+
+#[test]
+fn approval_outcomes_none_asked_approved_denied_auto() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "mexer em arquivos");
+    // none
+    call_tool(&t, "arquivos.listar", json!({}), true, "a");
+    // approved (the card was up, the person said yes)
+    t.observe(&Event::Ask { id: 1, tool: "arquivos.escrever".into(), description: String::new(), args: json!({}), level: "usuario".into() });
+    std::thread::sleep(Duration::from_millis(15));
+    t.approval_answer(true);
+    call_tool(&t, "arquivos.escrever", json!({}), true, "feito");
+    // denied
+    t.observe(&Event::Ask { id: 2, tool: "arquivos.escrever".into(), description: String::new(), args: json!({}), level: "usuario".into() });
+    t.approval_answer(false);
+    call_tool(&t, "arquivos.escrever", json!({}), false, "você não permitiu");
+    // asked and never answered (the turn went on to the end)
+    t.observe(&Event::Ask { id: 3, tool: "sistema.executar".into(), description: String::new(), args: json!({}), level: "sistema".into() });
+    call_tool(&t, "sistema.executar", json!({}), false, "expirou");
+    // let through by "Aprovar sozinho"
+    t.approval_auto();
+    call_tool(&t, "arquivos.escrever", json!({}), true, "feito");
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(6);
+    let tools: Vec<&Value> = spans.iter().map(|(s, _)| s).filter(|s| s["name"].as_str().unwrap().starts_with("execute_tool")).collect();
+    let outcomes: Vec<&str> = tools.iter().map(|t| s_attr(t, "kalango.approval").unwrap()).collect();
+    assert_eq!(outcomes, ["none", "approved", "denied", "asked", "approved"]);
+    assert!(attr(&tools[1]["attributes"], "kalango.approval.latency_ms").unwrap()["intValue"].as_str().unwrap().parse::<u64>().unwrap() >= 10);
+    assert_eq!(tools[2]["status"]["code"], 1, "a denial is the person's answer, not a tool failure");
+    assert_eq!(tools[3]["status"]["code"], 2);
+    assert_eq!(attr(&tools[4]["attributes"], "kalango.approval.auto").unwrap()["boolValue"], true);
+    // levels follow the contract's names; read_only comes from the tool's contract
+    assert_eq!(s_attr(tools[0], "kalango.tool.level"), Some("observar"));
+    assert_eq!(s_attr(tools[3], "kalango.tool.level"), Some("sistema"));
+    assert_eq!(attr(&tools[1]["attributes"], "kalango.tool.read_only").unwrap()["boolValue"], false);
+    assert_eq!(s_attr(by_name(&spans, "kalango.turn")[0], "kalango.user.signal"), Some("deny"));
+}
+
+#[test]
+fn a_failed_model_call_and_a_failed_turn_are_errors_without_content() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "oi");
+    let c = t.clock();
+    t.chat("m", &msgs("oi"), c, &Err("llama-server: connection to /home/ana/secret-path failed".to_string()));
+    t.end(&Err("llama-server: connection to /home/ana/secret-path failed".to_string()));
+    let spans = s.rx.wait_for(2);
+    let chat = by_name(&spans, "chat")[0];
+    assert_eq!(chat["status"]["code"], 2);
+    assert_eq!(s_attr(chat, "error.type"), Some("model_error"));
+    assert_eq!(by_name(&spans, "kalango.turn")[0]["status"]["code"], 2);
+    assert!(!s.rx.raw().contains("secret-path"), "an error message never carries the person's paths");
+}
+
+#[test]
+fn a_long_conversation_keeps_the_system_prompt_and_the_latest_messages_within_the_event_limit() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "x");
+    let mut m = vec![json!({"role": "system", "content": "SYS"})];
+    for n in 0..150 {
+        m.push(json!({"role": if n % 2 == 0 { "user" } else { "assistant" }, "content": format!("mensagem {n}")}));
+    }
+    let c = t.clock();
+    t.chat("m", &m, c, &reply("fim", &[]));
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(2);
+    let chat = by_name(&spans, "chat")[0];
+    let events = chat["events"].as_array().unwrap();
+    assert!(events.len() <= 62);
+    assert_eq!(events[0]["name"], "gen_ai.system.message");
+    assert!(s.rx.raw().contains("mensagem 149") && !s.rx.raw().contains("\"mensagem 0\""));
+    assert!(attr(&chat["attributes"], "kalango.input.omitted_messages").is_some());
+}
+
+// ---------------------------------------------------------------- the producer never gets in the way
+
+#[test]
+fn without_a_daemon_nothing_is_recorded_and_nothing_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Sink::start(&dir.path().join("nobody.sock"), fast());
+    let t = Turn::begin(
+        &sink,
+        &Config::default(),
+        Begin {
+            session: "s",
+            agent: "a",
+            index: 0,
+            request: "oi",
+            tools: &tools(),
+            local_tools: Vec::new,
+            connectors: vec![],
+            taint: vec![],
+            secret: false,
+            pasted: vec![],
+        },
+    );
+    assert!(!t.is_on(), "no socket: the turn is not even built");
+    full_turn(&t, "oi", "arquivos.listar", "x");
+    t.gate("forced_planejar");
+    t.approval_answer(true);
+    assert_eq!(sink.counters(), Counters::default());
+}
+
+/// The engine's wiring of a paste, without the model: the shell's ranges are taken when the request starts and its
+/// message in the archive is marked; the next request, typed, is not.
+#[test]
+fn the_engine_marks_a_pasted_request_in_the_archive_and_not_a_typed_one() {
+    use crate::context::PASTED_KEY;
+    use crate::motor::PasteMarks;
+    let mut p = PasteMarks::default();
+    p.pending = vec![(4, 9)];
+    assert_eq!(p.start(), [(4, 9)], "the ranges go to the trace");
+    assert!(p.pending.is_empty(), "taken");
+    assert_eq!(p.message("cole: texto")[PASTED_KEY], true, "the pasted request is marked");
+    assert_eq!(p.message("cole: texto")["content"], "cole: texto");
+    // the next request was typed
+    assert!(p.start().is_empty());
+    assert!(p.message("e agora?").get(PASTED_KEY).is_none());
+}
+
+/// Picking a kept conversation up in a new process (the engine's `continuar`, without the model or kalangod): the
+/// paste and the page in its history taint it again, its turns and id are kept, and the page is outside content for the
+/// engine's own check too.
+#[test]
+fn a_conversation_picked_up_again_brings_its_taint_turns_and_outside_results() {
+    use crate::context::PASTED_KEY;
+    let page = crate::defesa::envelope("web.ler", "uma página");
+    let saved = vec![
+        json!({"role": "system", "content": "o prompt antigo"}),
+        json!({"role": "user", "content": "resuma: TEXTO COLADO", PASTED_KEY: true}),
+        assistant_call("c1", "web.ler", "{}"),
+        json!({"role": "tool", "tool_call_id": "c1", "content": page}),
+        json!({"role": "assistant", "content": "resumo"}),
+        json!({"role": "user", "content": "e agora?"}),
+    ];
+    let p = crate::motor::picked_up(saved, "conv-antiga");
+    assert_eq!(p.conv.taint, ["external:paste", "external:web"]);
+    assert_eq!((p.conv.turns, p.conv.session.as_str()), (2, "conv-antiga"));
+    assert!(p.messages.iter().all(|m| m["role"] != "system"), "the current system prompt stays");
+    assert_eq!(p.messages.len(), 5);
+    assert!(p.person_text.contains("TEXTO COLADO") && p.person_text.contains("e agora?"));
+    assert_eq!(p.outside.len(), 1);
+    assert_eq!(p.outside[0].0, "web.ler");
+    // all typed: clean
+    let p = crate::motor::picked_up(vec![json!({"role": "user", "content": "oi"}), json!({"role": "assistant", "content": "olá"})], "c");
+    assert!(p.conv.taint.is_empty() && !p.conv.secret);
+}
+
+/// The final pass looks at the span's values with the same exceptions as the first pass: what the first pass kept
+/// (a whole `${{ … }}` reference, a boarding pass, a bare "Password:" label, sampling settings) is not taken out
+/// because of how the serialized JSON around it happens to read.
+#[test]
+fn the_final_pass_keeps_what_the_first_pass_kept() {
+    let (red, guard) = (Redactor::default(), Redactor::default());
+    for t in [
+        "TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+        "password: ${{ secrets.DB_PASSWORD }}",
+        "Boarding pass: seat 14C",
+        "Boarding pass: seat 14C\n",
+        "Password:",
+        "Senha:",
+        "max_tokens = 512\ntemperature = 0.2",
+    ] {
+        let t = t.to_string();
+        assert_eq!(red.redact_str(&t, &mut crate::traces_redact::Stats::default()), t, "the first pass keeps {t:?}");
+        let mut tally = Tally::default();
+        let v = guarded_otlp(&span_with(Attr::Str(t.clone())), &red, &guard, &mut tally).expect("sent");
+        let text = v.to_string();
+        assert!(!text.contains("final_pass") && tally.hits == 0, "the final pass took {t:?} out: {text}");
+        let esc = serde_json::to_string(&t).unwrap();
+        assert!(text.contains(&esc[1..esc.len() - 1]), "the content is sent whole: {text}");
+    }
+    // (that it still stops what a weak first pass lets through is property_b_the_final_pass_alone_stops_…)
+}
+
+/// The whole path a body takes (first pass, final pass over the values, the last look) is linear: 1 MB of spans
+/// with minified JSON full of secret names costs about twice 512 KB, and stays far from the seconds per span that a
+/// quadratic look-behind cost (round 5: 4.2 s for one 62 KB string).
+/// (`#[ignore]`d: its seconds of full CPU starve the tests that wait for a deadline; run it with
+/// `kalango-cargo-test -p kalango-agente --bin kalango-agente -- --ignored a_megabyte_body --nocapture`.)
+#[test]
+#[ignore = "a performance test: seconds of full CPU"]
+fn a_megabyte_body_is_cleaned_in_linear_time() {
+    let (red, guard) = (Redactor::default(), Redactor::default());
+    let unit = r#"{"name":"ana","password":"x","token":"y"},"#;
+    let piece: String = format!("[{}]", unit.repeat(60_000 / unit.len()));
+    let time = |spans: usize| {
+        let sp: Vec<SpanData> = (0..spans).map(|_| span_with(Attr::Str(piece.clone()))).collect();
+        let chunk: Vec<&SpanData> = sp.iter().collect();
+        let t = Instant::now();
+        let mut tally = Tally::default();
+        let body = final_body(&chunk, &red, &guard, &mut tally, &|b| guard.scan_value(b));
+        assert!(body.is_some_and(|b| !b.contains("\"password\":\"x\"")), "the passwords are cut");
+        t.elapsed()
+    };
+    let half = time(8);
+    let full = time(16);
+    eprintln!("final pass, 512 KB: {half:?}, 1 MB: {full:?}");
+    assert!(full < Duration::from_secs(20), "1 MB took {full:?}");
+    assert!(full.as_secs_f64() < 3.0 * half.as_secs_f64().max(0.05), "not linear: {half:?} then {full:?}");
+}
+
+/// A span still dirty once its events are gone (the secret is in an attribute the first pass does not rewrite, such as
+/// a name) is not sent at all, and it is counted as dropped.
+#[test]
+fn a_span_still_dirty_without_its_events_is_dropped() {
+    let (red, guard) = (Redactor::default(), Redactor::default());
+    let token = concat!("ghp", "_abcdefghijklmnopqrstuvwxyz0123456789");
+    let mut sp = span_with(Attr::Str("um texto comum".into()));
+    sp.attrs.push(("kalango.tool.name".into(), Attr::Str(format!("ferramenta-{token}"))));
+    let mut tally = Tally::default();
+    assert!(guarded_otlp(&sp, &red, &guard, &mut tally).is_none(), "nothing of it goes");
+    assert_eq!((tally.hits, tally.dropped), (1, 1));
+}
+
+/// The final pass also reads a span's content as one text: a secret whose name is in one message and whose value is in
+/// the next (each looks harmless alone, and a weak first pass lets both through) is still stopped.
+#[test]
+fn the_final_pass_sees_a_secret_split_across_two_messages() {
+    let (weak, guard) = (Redactor::new(&[]), Redactor::default());
+    let mut sp = span_with(Attr::Str("a senha do servidor é a de sempre, na linha de baixo:".into()));
+    sp.events[0].attrs[1] = ("content".into(), Attr::Str("password".into()));
+    let mut second = sp.events[0].clone();
+    second.attrs = vec![("role".into(), Attr::Str("user".into())), ("content".into(), Attr::Str("banana2024".into()))];
+    sp.events.push(second);
+    // each value alone is harmless to the final pass's value look
+    assert_eq!(guard.scan_value(&json!("password")) + guard.scan_value(&json!("banana2024")), 0);
+    let mut tally = Tally::default();
+    let v = guarded_otlp(&sp, &weak, &guard, &mut tally);
+    assert_eq!(tally.hits, 1, "the joined content shows the secret");
+    assert!(v.is_none_or(|v| !v.to_string().contains("banana2024")));
+}
+
+/// How often the final pass takes out content the first pass left whole, over the critic's corpora (run by hand:
+/// `cargo test … -- --ignored final_pass_rate --nocapture`).
+#[test]
+#[ignore = "reads the critic's corpora from the scratchpad"]
+fn final_pass_rate_on_texts_the_first_pass_keeps() {
+    let dir = "/tmp/claude-1000/-home-home-Documentos-repositorios/67b4c35b-2158-48d2-8770-ae5884d4592b/scratchpad/critico-rastros5/";
+    let (red, guard) = (Redactor::default(), Redactor::default());
+    for f in ["fp5.txt", "fp4.txt", "keep5.txt"] {
+        let src = std::fs::read_to_string(format!("{dir}{f}")).unwrap();
+        let texts: Vec<&str> = src.split("\n=====\n").map(|t| t.trim_end_matches('\n')).filter(|t| !t.is_empty()).collect();
+        let (mut kept, mut removed) = (0, 0);
+        for t in &texts {
+            if red.redact_str(t, &mut crate::traces_redact::Stats::default()) != *t {
+                continue;
+            }
+            kept += 1;
+            let mut tally = Tally::default();
+            let v = guarded_otlp(&span_with(Attr::Str(t.to_string())), &red, &guard, &mut tally);
+            if v.is_none_or(|v| v.to_string().contains("final_pass")) {
+                removed += 1;
+                eprintln!("REMOVED {f}: {t:?}");
+            }
+        }
+        eprintln!("FINAL PASS {f}: {removed} of {kept} texts the first pass keeps were taken out ({} texts)", texts.len());
+    }
+}
+
+/// The last look over the whole body before it is written: when it finds something, or fails, nothing is sent and
+/// the spans are counted as dropped.
+#[test]
+fn the_last_look_over_the_body_stops_it_and_a_panic_in_it_does_too() {
+    let (red, guard) = (Redactor::default(), Redactor::default());
+    let sp = span_with(Attr::Str("um texto comum".into()));
+    let chunk = [&sp];
+    let mut t = Tally::default();
+    let body = final_body(&chunk, &red, &guard, &mut t, &|b| guard.scan_value(b)).expect("a clean body goes");
+    assert!(body.contains("um texto comum") && t.dropped == 0);
+    let mut t = Tally::default();
+    assert!(final_body(&chunk, &red, &guard, &mut t, &|_| 1).is_none(), "a finding stops the body");
+    assert_eq!((t.hits, t.dropped), (1, 1));
+    let mut t = Tally::default();
+    assert!(final_body(&chunk, &red, &guard, &mut t, &|_| panic!("a detector bug (test)")).is_none(), "a panic stops it too");
+    assert_eq!(t.dropped, 1);
+}
+
+/// Tools under the agent's own prefixes whose results are someone else's.
+#[test]
+fn mcp_tools_a_creative_apps_tool_and_the_wifi_list_are_outside_content() {
+    let c = vec![];
+    for name in ["mcp.clima", "mcp.qualquer_ferramenta", "craft.chamar", "rede.wifi"] {
+        assert_eq!(external_kind(name, &c), Some("external:tool"), "{name}");
+        assert_eq!(result_kind(name, "{}", &c), Some("external:tool"), "{name}");
+    }
+    // what only configures or lists the agent's own
+    for name in ["mcp.registrar", "craft.apps", "craft.encerrar", "rede.estado", "rede.conexoes"] {
+        assert_eq!(external_kind(name, &c), None, "{name}");
+    }
+}
+
+/// A bug in a detector (a panic while redacting one span) costs that span only: the sender thread lives on and the
+/// next turns are sent. (Before: the panic ended the thread, and nothing was sent again until the agent restarted.)
+#[test]
+fn a_panic_in_the_redactor_drops_that_span_and_the_sender_goes_on() {
+    let s = setup();
+    let bad = begin(&s, Config::default(), crate::traces_redact::TEST_PANIC_MARKER);
+    bad.end(&Ok(()));
+    // (the first turn's batch is redacted before the next one is queued)
+    std::thread::sleep(Duration::from_millis(300));
+    let good = begin(&s, Config::default(), "um pedido comum");
+    good.end(&Ok(()));
+    let spans = s.rx.wait_for(1);
+    assert_eq!(spans.len(), 1, "only the second turn");
+    assert!(!s.rx.raw().contains(crate::traces_redact::TEST_PANIC_MARKER));
+    assert!(s.rx.raw().contains("um pedido comum"));
+    assert!(s.sink.counters().dropped >= 1, "the span left out is counted");
+}
+
+/// A daemon that stopped accepting (its listen backlog full): connecting must give up after the I/O wait like the
+/// rest of the exchange, never block the sender thread for good.
+#[test]
+fn a_daemon_with_a_full_backlog_does_not_block_the_connect() {
+    use std::os::fd::FromRawFd;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("traind.sock");
+    // a listener that never accepts, with the smallest backlog
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    // SAFETY: the fd belongs to `listener`, alive for the whole test; listen(2) only changes its backlog.
+    assert_eq!(unsafe { libc::listen(std::os::fd::AsRawFd::as_raw_fd(&listener), 0) }, 0);
+    // fill the backlog with connections nobody accepts (non-blocking: they stop when it is full)
+    let mut pending = Vec::new();
+    for _ in 0..64 {
+        // SAFETY: plain socket(2); the fd is owned by the UnixStream made from it right below.
+        let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC, 0) };
+        assert!(fd >= 0);
+        // SAFETY: fd is a fresh socket owned by nobody else.
+        let stream = unsafe { UnixStream::from_raw_fd(fd) };
+        let addr = sockaddr_un(&path);
+        // SAFETY: addr is a valid sockaddr_un for the length given.
+        let r =
+            unsafe { libc::connect(fd, &addr as *const libc::sockaddr_un as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_un>() as u32) };
+        if r != 0 {
+            break;
+        }
+        pending.push(stream);
+    }
+    assert!(!pending.is_empty(), "some connections got into the backlog");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let p = path.clone();
+    std::thread::spawn(move || {
+        let t = Instant::now();
+        let r = post(&p, "{}", Duration::from_millis(200));
+        let _ = tx.send((r.is_err(), t.elapsed()));
+    });
+    let (failed, took) = rx.recv_timeout(Duration::from_secs(3)).expect("the connect blocked the sender thread");
+    assert!(failed && took < Duration::from_secs(2), "{failed} {took:?}");
+    drop(listener);
+}
+
+fn sockaddr_un(path: &Path) -> libc::sockaddr_un {
+    // SAFETY: an all-zero sockaddr_un is valid; the path is copied in below, shorter than sun_path.
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (d, s) in addr.sun_path.iter_mut().zip(std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str())) {
+        *d = *s as libc::c_char;
+    }
+    addr
+}
+
+#[test]
+fn a_stalled_daemon_costs_the_agent_less_than_a_millisecond_per_call_and_the_queue_drops_the_oldest() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("traind.sock");
+    let _rx = Receiver::start(&path, Mode::Stall);
+    let sink = Sink::start(&path, Tuning { capacity: 16, io_timeout: Duration::from_millis(150), ..fast() });
+    // bodies bigger than the socket's buffer, so the write itself stalls
+    let big = "y".repeat(60 * 1024);
+    // (a timing measure on a shared machine: a few preemptions can push one batch of turns over; it is taken up to three
+    // times and the best batch counts, so a busy neighbour does not fail it while a real slowdown still does)
+    let mut best = (f64::MAX, f64::MAX, f64::MAX);
+    for _attempt in 0..3 {
+        let mut times = Vec::new();
+        for n in 0..300 {
+            let t = Turn::begin(
+                &sink,
+                &Config::default(),
+                Begin {
+                    session: "s",
+                    agent: "a",
+                    index: n,
+                    request: "oi",
+                    tools: &tools(),
+                    local_tools: Vec::new,
+                    connectors: vec![],
+                    taint: vec![],
+                    secret: false,
+                    pasted: vec![],
+                },
+            );
+            let started = Instant::now();
+            let c = t.clock();
+            t.chat("m", &msgs(&big), c, &reply("ok", &[("c", "arquivos.listar", json!({}))]));
+            t.observe(&Event::ToolStart {
+                tool: "arquivos.listar".into(),
+                args: json!({"caminho": "~"}),
+                level: "observar".into(),
+                description: String::new(),
+            });
+            t.observe(&Event::ToolDone { tool: "arquivos.listar".into(), ok: true, text: big.clone(), summary: String::new() });
+            t.end(&Ok(()));
+            times.push(started.elapsed());
+        }
+        times.sort();
+        let per_call = |d: Duration| d.as_secs_f64() * 1000.0 / 4.0; // chat + tool start/done + end: four calls
+        let mean: f64 = times.iter().map(|d| per_call(*d)).sum::<f64>() / times.len() as f64;
+        let p50 = per_call(times[times.len() / 2]);
+        let p99 = per_call(times[times.len() * 99 / 100]);
+        eprintln!(
+            "traces overhead with a stalled daemon: mean {mean:.4} ms, p50 {p50:.4} ms, p99 {p99:.4} ms per call (turn of 4 calls, 60 KiB bodies)"
+        );
+        if mean < best.0 {
+            best = (mean, p50, p99);
+        }
+        if best.0 < 1.0 && best.1 < 1.0 && best.2 < 20.0 {
+            break;
+        }
+    }
+    // the cost of the work itself: under a millisecond per call, typically and on average; and the agent never waits on
+    // the stalled socket (that would be the 150 ms I/O wait): even the slowest turns of a loaded machine, which the
+    // scheduler preempts for a few milliseconds, stay far below it
+    let (mean, p50, p99) = best;
+    assert!(mean < 1.0, "mean {mean} ms per call");
+    assert!(p50 < 1.0, "p50 {p50} ms per call");
+    assert!(p99 < 20.0, "p99 {p99} ms per call: the agent waited on the stalled daemon");
+    let c = sink.counters();
+    assert!(c.dropped > 0, "the bounded queue dropped spans: {c:?}");
+    assert_eq!(c.sent, 0);
+    // and the queue never grows past its capacity
+    assert!(sink.shared.q.lock().unwrap().items.len() <= 16);
+}
+
+#[test]
+fn a_daemon_that_comes_back_is_reached_again_after_the_backoff() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("traind.sock");
+    // a stale socket: the file is there, nobody listens
+    drop(UnixListener::bind(&path).unwrap());
+    let sink = Sink::start(&path, fast());
+    let mk = |n: u32| {
+        Turn::begin(
+            &sink,
+            &Config::default(),
+            Begin {
+                session: "s",
+                agent: "a",
+                index: n,
+                request: "oi",
+                tools: &tools(),
+                local_tools: Vec::new,
+                connectors: vec![],
+                taint: vec![],
+                secret: false,
+                pasted: vec![],
+            },
+        )
+    };
+    let t = mk(0);
+    assert!(t.is_on());
+    t.end(&Ok(()));
+    sink.flush(Duration::from_secs(10));
+    assert_eq!(sink.counters().dropped, 1, "lost, counted, and no panic");
+    // during the backoff the next spans are lost without trying
+    let t = mk(1);
+    t.end(&Ok(()));
+    sink.flush(Duration::from_secs(10));
+    assert_eq!(sink.counters().dropped, 2);
+    // the daemon starts, the backoff passes: spans flow again. (Turn after turn until one arrives: on a loaded machine the
+    // fake daemon's thread may take a moment to listen, and a turn sent before that is lost like any other.)
+    let rx = Receiver::start(&path, Mode::Ok);
+    std::thread::sleep(Duration::from_millis(150));
+    let mut n = 2;
+    while rx.spans().is_empty() && n < 100 {
+        let t = mk(n);
+        t.end(&Ok(()));
+        sink.flush(Duration::from_secs(10));
+        n += 1;
+        if rx.spans().is_empty() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    assert_eq!(rx.wait_for(1).len(), 1, "spans flow again once the daemon is back");
+    assert_eq!(sink.counters().sent, 1);
+}
+
+#[test]
+fn a_daemon_that_refuses_a_batch_loses_it_without_retrying() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("traind.sock");
+    let rx = Receiver::start(&path, Mode::Status(400));
+    let sink = Sink::start(&path, fast());
+    let t = Turn::begin(
+        &sink,
+        &Config::default(),
+        Begin {
+            session: "s",
+            agent: "a",
+            index: 0,
+            request: "oi",
+            tools: &tools(),
+            local_tools: Vec::new,
+            connectors: vec![],
+            taint: vec![],
+            secret: false,
+            pasted: vec![],
+        },
+    );
+    t.end(&Ok(()));
+    sink.flush(Duration::from_secs(10));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(rx.requests().len(), 1, "never repeated");
+    assert_eq!(sink.counters().dropped, 1);
+}
+
+#[test]
+fn big_batches_are_split_under_the_body_limit() {
+    let s = setup();
+    let t = begin(&s, Config::default(), "x");
+    // 30 tool spans of ~60 KiB each: well over the 512 KiB a request should carry
+    let body = "z".repeat(60 * 1024);
+    for _ in 0..30 {
+        call_tool(&t, "arquivos.listar", json!({}), true, &body);
+    }
+    t.end(&Ok(()));
+    let spans = s.rx.wait_for(31);
+    assert_eq!(spans.len(), 31);
+    assert!(s.rx.requests().len() >= 3);
+    assert!(s.rx.bodies.lock().unwrap().iter().all(|b| b.len() <= 4 * 1024 * 1024));
+}
+
+#[test]
+fn ids_are_random_and_never_zero() {
+    let a: [u8; 16] = random_id();
+    let b: [u8; 16] = random_id();
+    assert_ne!(a, b);
+    assert!(a.iter().any(|x| *x != 0));
+    let s1 = new_session_id();
+    assert!(s1.starts_with("s-") && s1.len() == 18);
+}

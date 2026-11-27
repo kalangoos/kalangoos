@@ -197,6 +197,22 @@ pub fn definir_historico(dias: u64) {
     log(&format!("histórico de {dias} dias ({n} conversas antigas apagadas)"));
 }
 
+/// Whether what the agents do is recorded for Kalango Train (it stays on this computer): `rastros.gravar`, on by default.
+pub fn rastros_gravar() -> bool {
+    crate::configuracoes::ajustes()["rastros"]["gravar"].as_bool().unwrap_or(true)
+}
+
+/// Whether the recording has the text too (`"completo"`, the default) or only names, times and counts (`"so_metadados"`).
+pub fn rastros_completo() -> bool {
+    crate::configuracoes::ajustes()["rastros"]["conteudo"].as_str().is_none_or(|c| c == "completo")
+}
+
+/// Saves the person's choice; the agent reads it at the start of every turn (traces.rs of kalango-agente).
+pub fn definir_rastros(gravar: bool, completo: bool) {
+    crate::configuracoes::salvar_ajuste("rastros", json!({"gravar": gravar, "conteudo": if completo { "completo" } else { "so_metadados" }}));
+    log(&format!("rastros: gravar {gravar}, conteúdo {}", if completo { "completo" } else { "só metadados" }));
+}
+
 /// Whether the agents ask before using the cloud (the hybrid or local mode; the cloud mode does not).
 pub fn pergunta_antes_da_nuvem() -> bool {
     crate::configuracoes::ajustes()["modo_agentes"].as_str().unwrap_or("hibrido") != "nuvem"
@@ -258,6 +274,8 @@ pub struct PrivacyPage {
     atualizacoes: (gtk::Label, gtk::Label),
     historico: gtk::DropDown,
     nuvem: gtk::Switch,
+    rastros: gtk::Switch,
+    rastros_conteudo: (gtk::Label, gtk::DropDown),
     settings: std::rc::Weak<crate::configuracoes::Configuracoes>,
 }
 
@@ -381,14 +399,32 @@ impl PrivacyPage {
         apagar.set_margin_top(8);
         dados.append(&apagar);
         m.painel.append(&dados);
+        // the panel: privacy and traces (what the agents do is recorded for Kalango Train; it never leaves this computer)
+        let rastros_card = caixa(Orientation::Vertical, 2, "cfg-cartao");
+        rastros_card.append(&rotulo_cartao("escudo", tr("PRIVACY AND TRACES")));
+        let rastros = interruptor();
+        let rs = gtk::Label::new(Some(tr("Stays only on this computer")));
+        rastros_card.append(&linha("", tr("Record what the agents do"), &rs, &rastros));
+        let nomes_r = vec![tr("Everything").to_string(), tr("Only metadata").to_string()];
+        let rastros_sel = seletor(&nomes_r, 140);
+        let rcs = gtk::Label::new(Some(" "));
+        // (what "Everything" means for personal data, said where it is chosen: kept as it came until Kalango Train
+        // prepares a dataset item, which is where it is cleaned)
+        let aviso_dados = tr("“Everything” keeps the text as it came, on this computer only: e-mails, phone numbers, CPFs and names that you type or paste, or that the agent reads, stay in the traces. Before recording, a secret is cut out only when it has a known shape: after a password, token or key label in the interface languages (“password: …”, “my password is …”, in JSON, XML or a config file, on the next line, URL or HTML encoded), after Bearer, Basic or Token, in a cookie, after the password flag of known tools (--password, mysql -p, curl -u, docker login -p), inside code next to a secret’s name, a known token prefix (ghp_, sk-, AKIA…), a private key or a long random-looking string (pure hex and UUIDs only after a key’s label). What has none of these shapes is recorded: a word written alone with no label, -p X with no known command, a password given by position to a function or a tool (new mysqli(…), sqlcmd -P), a user:password pair in a sentence, a code made only of digits, a sentence in another language, a password split across lines. Public keys (ssh-rsa AAAA…) are not secrets and stay. Kalango Train cleans personal data only when an item is prepared for a dataset. Choose “Only metadata” to keep no text.");
+        rastros_sel.set_tooltip_text(Some(aviso_dados));
+        rcs.set_tooltip_text(Some(aviso_dados));
+        rastros_card.append(&linha("", tr("What is recorded"), &rcs, &rastros_sel));
+        m.painel.append(&rastros_card);
         let page = Rc::new(PrivacyPage {
             frame: m, loading: Cell::new(false), tabela, apps: RefCell::default(), agente: RefCell::default(),
-            disco: (disco_sub, disco_selo), firewall: (fw_sub, fw.clone()), bloqueio, atualizacoes: (at_sub, at_selo), historico, nuvem, settings: Rc::downgrade(c),
+            disco: (disco_sub, disco_selo), firewall: (fw_sub, fw.clone()), bloqueio, atualizacoes: (at_sub, at_selo), historico, nuvem, rastros, rastros_conteudo: (rcs, rastros_sel), settings: Rc::downgrade(c),
         });
         crate::configuracoes::registrar_posicao(c, "cfg priv firewall", fw.upcast_ref());
         crate::configuracoes::registrar_posicao(c, "cfg priv bloqueio", page.bloqueio.upcast_ref());
         crate::configuracoes::registrar_posicao(c, "cfg priv historico", page.historico.upcast_ref());
         crate::configuracoes::registrar_posicao(c, "cfg priv nuvem", page.nuvem.upcast_ref());
+        crate::configuracoes::registrar_posicao(c, "cfg priv rastros", page.rastros.upcast_ref());
+        crate::configuracoes::registrar_posicao(c, "cfg priv rastros conteudo", page.rastros_conteudo.1.upcast_ref());
         crate::configuracoes::registrar_posicao(c, "cfg priv apagar", apagar.upcast_ref());
         page.ligar(&fw, &apagar);
         page
@@ -430,6 +466,21 @@ impl PrivacyPage {
             glib::Propagation::Proceed
         });
         let w = Rc::downgrade(self);
+        self.rastros.connect_state_set(move |_, on| {
+            if let Some(p) = w.upgrade().filter(|p| !p.loading.get()) {
+                definir_rastros(on, rastros_completo());
+                p.mostrar_rastros();
+            }
+            glib::Propagation::Proceed
+        });
+        let w = Rc::downgrade(self);
+        self.rastros_conteudo.1.connect_selected_notify(move |d| {
+            if let Some(p) = w.upgrade().filter(|p| !p.loading.get()) {
+                definir_rastros(rastros_gravar(), d.selected() == 0);
+                p.mostrar_rastros();
+            }
+        });
+        let w = Rc::downgrade(self);
         apagar.connect_clicked(move |b| {
             let Some(p) = w.upgrade() else { return };
             // a second click confirms (the button says what it will do)
@@ -469,6 +520,19 @@ impl PrivacyPage {
             p.preencher_tabela();
             p.preencher_painel(&seg);
         });
+    }
+
+    /// The traces card from the saved choice: the switch, the content, and the line that says what is being recorded
+    /// (paused: the content choice is dimmed).
+    fn mostrar_rastros(&self) {
+        let antes = self.loading.replace(true);
+        let (gravar, completo) = (rastros_gravar(), rastros_completo());
+        self.rastros.set_active(gravar);
+        self.rastros.set_state(gravar);
+        self.rastros_conteudo.1.set_selected(if completo { 0 } else { 1 });
+        self.rastros_conteudo.1.set_sensitive(gravar);
+        self.rastros_conteudo.0.set_text(if !gravar { tr("Nothing is recorded") } else if completo { tr("Prompts, answers and actions are recorded as they are, personal data included") } else { tr("Only names, times and counts are recorded") });
+        self.loading.set(antes);
     }
 
     fn preencher_painel(&self, s: &Seguranca) {
@@ -524,6 +588,7 @@ impl PrivacyPage {
         let pergunta = pergunta_antes_da_nuvem();
         self.nuvem.set_active(pergunta);
         self.nuvem.set_state(pergunta);
+        self.mostrar_rastros();
         self.loading.set(false);
         if depurando() {
             eprintln!("debug privacidade: segurança (disco {}, firewall {:?}, automáticas {}, {} pendentes)", s.criptografado, s.firewall, s.automaticas, s.pendentes);

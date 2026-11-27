@@ -81,7 +81,7 @@ fn app_id(name: &str) -> Option<String> {
             let id = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             // the same name, a name that has it, or the same first letters (another language's name: "Calculadora", "Calculator")
             let prefix = |n: &str| n.chars().zip(want.chars()).take_while(|(a, b)| a == b).count() >= 5;
-            let score = if names.iter().any(|n| *n == want) { 3 } else if names.iter().any(|n| n.contains(&want)) || id.to_lowercase().contains(&want) { 2 }
+            let score = if names.contains(&want) { 3 } else if names.iter().any(|n| n.contains(&want)) || id.to_lowercase().contains(&want) { 2 }
                 else if names.iter().any(|n| prefix(n)) { 1 } else { 0 };
             if score > 0 && best.as_ref().is_none_or(|(s, _)| score > *s) {
                 best = Some((score, id));
