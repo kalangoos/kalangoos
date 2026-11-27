@@ -95,7 +95,7 @@ fn answer_rule(language: &str) -> String {
 /// Turns in a row where every call failed: the agent is going in circles (stop and ask the person).
 const MAX_FAILED_TURNS: usize = 3;
 /// Tools the engine never offers: they exist for kalangod's own undo.
-pub(crate) const INTERNAL: &[&str] = &["arquivos.restaurar", "arquivos.apagar_criado", "agentes.apagar_criado"];
+pub(crate) const INTERNAL: &[&str] = &["arquivos.restaurar", "arquivos.apagar_criado", "agentes.apagar_criado", "remoto.maquinas", "remoto.consultar", "remoto.executar"];
 
 /// Domains of the tools and the words of a request that bring them in (pt and en). A small model chooses
 /// better among a dozen tools than among fifty.
@@ -316,7 +316,7 @@ pub(crate) fn needs_taint_check(name: &str, level: &str, from_connector: bool, r
 /// Remote asks). The person is asked once either way.
 fn conversation_asks(perm: Perm, tool: &str, kalangod_asks_startup: bool) -> bool {
     // (connecting to another computer: Kalango Remote's plan panel is the question, with the steps and the limits)
-    perm == Perm::Ask && !(tool.starts_with("tela.") && tool != "tela.ver") && tool != crate::remote::TOOL && !kalangod_asks_startup
+    perm == Perm::Ask && !(tool.starts_with("tela.") && tool != "tela.ver") && tool != crate::remote::TOOL && tool != crate::suporte::ACT && !kalangod_asks_startup
 }
 
 /// Whether kalangod is asked if it will ask the person itself before this call (`kalango/inicio`): any tool that
@@ -940,7 +940,18 @@ impl Agent {
         // calculator, plan and question tools of the other notes below are not offered (a small model proposes the
         // connection better with nothing else to pick, and no note names a tool that is not there).
         let mut remote_only = false;
-        if crate::remote::wanted(&lower) {
+        // remote support (`remoto.maquinas`, `remoto.consultar`, `remoto.executar`): only for a request about a machine to
+        // look at or fix, and then alone, with a note and examples (the tools are kept out of every other request)
+        if crate::suporte::wanted(&lower) {
+            let support: Vec<Tool> = self.tools.iter().filter(|t| crate::suporte::TOOLS.contains(&t.name.as_str()) && permissoes::get(t) != Perm::Never && !self.desligada(t)).cloned().collect();
+            if support.iter().any(|t| t.name == crate::suporte::CONSULT) {
+                let nota = crate::suporte::note(&api_name);
+                self.messages[0]["content"] = json!(format!("{}\n\n{nota}", self.messages[0]["content"].as_str().unwrap_or("")));
+                offered = support;
+                remote_only = true;
+            }
+        }
+        if !remote_only && crate::remote::wanted(&lower) {
             let t = crate::remote::tool();
             if permissoes::get(&t) != Perm::Never && !self.desligada(&t) {
                 let nota = trf_model("To connect to another computer call {tool} now, with the computer's name as the person said it (\"notebook da mãe\" is a name: do not ask for another); it shows them a plan and only a click of theirs connects. Never connect any other way, never invent an address, and say plainly if they decline.", &[("tool", api_name(crate::remote::TOOL))]);
@@ -1284,6 +1295,10 @@ impl Agent {
                 // (the connection's address or name rewritten out of what a page or file said: spaces, dashes, case)
                 if tainted.is_none() && name == crate::remote::TOOL {
                     tainted = crate::remote::squashed_taint(&call.arguments, &trusted, &self.external);
+                }
+                // (a command for another machine built out of what a machine printed or a file said)
+                if tainted.is_none() && name == crate::suporte::ACT {
+                    tainted = crate::suporte::taint(&call.arguments, &trusted, &self.external);
                 }
                 {
                     if let Some(value) = tainted {

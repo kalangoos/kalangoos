@@ -95,6 +95,8 @@ sem `-f`, sem `--`, sem opção que não esteja na forma. `--help`, `-o ProxyCom
   `restart`…); senão a tarefa para antes de perguntar.
 * O Remote repete as verificações (perfil, formas da lista para `consult`, caracteres de controle) porque
   `kalango-remote ssh-run` pode ser chamado por qualquer processo seu: o `kalangod` não é a única barreira.
+* Os verbos do comando (`restart`, `stop`, `disable`, `--now`, `daemon-reload`…) também precisam vir de você: o motor só
+  aceita um verbo se você o pediu ("reinicie" → `restart`, "pare" → `stop`…); o que uma máquina imprimiu não conta.
 
 ## Limites e o que fica registrado
 
@@ -135,14 +137,17 @@ perfil e a forma do comando recusam; e por fim ainda há a sua aprovação, que 
 * Rede bloqueada para agentes (Ajustes › Rede): o SSH sai pela rota normal do computador.
 * Perfis `consultar`/`agir` não limitam o que o usuário da conexão pode ler no disco: use um usuário só para o suporte.
 
-## Fluxo "Suporte remoto"
+## Fluxo "Suporte remoto" (não incluído, de propósito)
 
-Modelo pronto em `crates/kalango-shell/assets/fluxos-modelos/suporte-remoto.json` (pergunta a máquina → consulta →
-agente resume → se há falha, outro agente propõe UM comando → **aprovação** → `remoto.executar` → consulta de novo →
-relatório). **Pendente de propósito:** não está na lista `TEMPLATES` de `central_agentes_modelos.rs`, porque o cartão novo na galeria
-da Central de agentes é uma mudança visível que ainda não existe no Design System (design primeiro); depois do
-desenho, acrescente a linha `include_str!("../assets/fluxos-modelos/suporte-remoto.json")`. O teste `the_support_flow_template_is_valid`, do
-`kalangod`, valida o fluxo e os argumentos de cada ferramenta.
+O modelo de fluxo (pergunta a máquina → consulta → agente resume → outro agente propõe UM comando → aprovação →
+`remoto.executar`) foi **retirado** desta entrega por dois motivos:
+
+* **Segurança.** Num fluxo, o argumento `{comando}` é preenchido por substituição de texto a partir do diagnóstico, que
+  é a saída de `remoto.consultar` (conteúdo externo). A regra palavra a palavra do motor vale para o agente, não para a
+  substituição do fluxo: uma ordem escondida num log poderia chegar ao comando. Só entra de volta com um **menu fixo**
+  de ações (por exemplo "reiniciar o serviço X da lista fechada", escolhido pela pessoa) ou com a mesma checagem de
+  contaminação aplicada pelo executor de fluxos, e sempre com a aprovação do comando exato.
+* **Design primeiro.** O cartão na galeria da Central de agentes ainda não existe no Design System.
 
 ## Telas a desenhar (design primeiro, ainda não construídas)
 

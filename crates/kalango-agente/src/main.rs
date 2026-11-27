@@ -22,6 +22,7 @@ mod paste_as;
 mod now;
 mod calc;
 mod remote;
+mod suporte;
 mod grounding;
 mod search_query;
 mod motor;

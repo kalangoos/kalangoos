@@ -616,7 +616,7 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
         let p = Pending {
             id: 0, tool: name.into(), level: level.into(), args: args.clone(), caller: format!("{} ({})", rule.name, peer.exe), uid: peer.uid, pid: peer.pid, reason,
             descricao: kalango_i18n::tr(tool.description).into(), efeito: match tool.effect { crate::policy::Effect::Leitura => "leitura", crate::policy::Effect::Escreve => "escreve", crate::policy::Effect::Destrutiva => "destrutiva" }.into(),
-            reversivel: tool.reversible, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: None, no_always: crate::tools::gatilho_internet::asks(name) || no_always_for(name), cartao
+            reversivel: tool.reversible, criado: 0, prazo_s: 0, exe: peer.exe.clone(), decision: None, startup: None, no_always: crate::tools::gatilho_internet::asks(name) || no_always_for(name) || name == "remoto.executar", cartao
         };
         match st.approvals.request_with_always(p, timeout) {
             (Outcome::Approved, alternative) => (Ok(()), alternative),
@@ -682,6 +682,14 @@ pub fn call(st: &State, peer: &Peer, rule: &CallerRule, name: &str, args: &Value
                 }
             }
         }
+        // a command on another computer asks every time, showing the machine and the exact command (never "always")
+        _ if name == "remoto.executar" => match crate::tools::suporte_remoto::needs_approval(peer, args) {
+            Ok(reason) => approve("usuario", reason.unwrap_or_default())?,
+            Err(e) => {
+                log(st, peer, rule, name, tool.level, args, "erro", &e, None, None);
+                return Err(e);
+            }
+        },
         // the virtual machines ask as the person chose in VirtualDesk (turning off and deleting, always); an
         // "always" answered here for exactly this request goes ahead
         // a creative app's tool: the level of that tool with these arguments (kalango_craft::niveis); confirm allows
