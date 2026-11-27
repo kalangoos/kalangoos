@@ -450,7 +450,11 @@ pub fn dispatch(st: &State, peer: &Peer, msg: &Value) -> Option<Value> {
             }
         }
         // the folders no agent reaches (the agents center shows them as "never")
-        "kalango/protegidas" => ok(id, json!({"pastas": st.cfg.protected_paths})),
+        "kalango/protegidas" => {
+            // (`%t` as the caller's runtime folder, so the privacy panel shows a place, not a placeholder)
+            let pastas: Vec<String> = st.cfg.protected_paths.iter().map(|p| if p.starts_with("%t/") { crate::policy::expand(p, &peer.home).display().to_string() } else { p.clone() }).collect();
+            ok(id, json!({"pastas": pastas}))
+        }
         // the person's "always" answers, and taking one back
         "kalango/sempre" => ok(id, json!({"respostas": st.approvals.standing_for(peer.uid)})),
         "kalango/revogar_sempre" => {

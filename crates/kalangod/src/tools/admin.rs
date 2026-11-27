@@ -692,8 +692,45 @@ fn pkg_versions(c: &Ctx, a: &Value) -> Result<Out, String> {
 }
 
 // ------------------------------------------------------------------ tarefas
-pub const SISTEMA_LEITURA: &[&str] = &["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc", "/opt", "/proc", "/sys", "/dev", "/run", "/var/lib", "/var/cache", "/snap", "/nix"];
+const SISTEMA_LEITURA: &[&str] = &["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc", "/opt", "/proc", "/sys", "/dev", "/run", "/var/lib", "/var/cache", "/snap", "/nix"];
 pub const SISTEMA_ESCRITA: &[&str] = &["/tmp", "/var/tmp", "/dev/null", "/dev/zero", "/dev/full", "/dev/tty", "/dev/pts", "/dev/shm"];
+
+/// The system folders a command or a connector reads, as listed (for what the person is shown). The grants themselves
+/// only come from `agent_landlock`.
+pub fn system_read_roots() -> Vec<std::path::PathBuf> {
+    SISTEMA_LEITURA.iter().map(Into::into).collect()
+}
+
+/// THE assembly of the kernel rules (Landlock) of a command (`task_run`) and of a connector (`conector::spawn`), the only
+/// place the system's read grants come from: the system folders cut around the protected folders inside them (the
+/// Mind's confirmation codes), then what the caller adds. `read`/`list`/`write` are the caller's own, already cut.
+pub fn agent_landlock(protected: &[std::path::PathBuf], read: Vec<std::path::PathBuf>, list: Vec<std::path::PathBuf>, write: Vec<std::path::PathBuf>,
+    ports: Option<Vec<u16>>, pinned: Vec<crate::limits::Fixa>, sockets: Vec<std::path::PathBuf>) -> Landlock {
+    let (mut leitura, mut listar) = system_read(protected);
+    leitura.extend(read);
+    listar.extend(list);
+    Landlock { leitura, escrita: write, listar, portas: ports, fixas: pinned, sockets }
+}
+
+/// `SISTEMA_LEITURA` as Landlock grants (what a command or a connector reads of the system): (read, list only). Landlock
+/// only grants, so a protected folder inside one of them (the Mind's confirmation codes, in `/run/user/UID/kalango`)
+/// cannot be excepted: the root that holds it is not granted whole, its other entries are, one by one, and the folders
+/// on the way are listable only (`startup::carve`). That goes by the folder's place, not by what exists, so one made
+/// while the command runs is not reachable either. `/etc` stays whole (carving it would drop its links, and the root
+/// only file there, `/etc/shadow`, is not readable by the person's uid).
+fn system_read(protected: &[std::path::PathBuf]) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+    use crate::policy::is_within;
+    let holds = |r: &str| r != "/etc" && protected.iter().any(|p| is_within(p, std::path::Path::new(r)));
+    let (cut, whole): (Vec<&str>, Vec<&str>) = SISTEMA_LEITURA.iter().partition(|r| holds(r));
+    let mut read: Vec<std::path::PathBuf> = whole.into_iter().map(Into::into).collect();
+    let mut list = Vec::new();
+    if !cut.is_empty() {
+        let c = crate::startup::carve(&cut.iter().map(std::path::PathBuf::from).collect::<Vec<_>>(), protected, &[]);
+        read.extend(c.write.into_iter().chain(c.read));
+        list = c.list;
+    }
+    (read, list)
+}
 
 /// An agent asks for a folder its commands may write in: the person answers on the approval screen (`allowlist.rs`).
 fn folder_request(c: &Ctx, a: &Value) -> Result<Out, String> {
@@ -796,13 +833,10 @@ fn task_run(c: &Ctx, a: &Value) -> Result<Out, String> {
         }
         f
     }).collect();
-    let landlock = Landlock {
-        leitura: SISTEMA_LEITURA.iter().map(Into::into).chain(reads.write).chain(reads.read).chain(writes.read).collect(),
-        // (no shared /tmp, /var/tmp nor /dev/shm: the command has its own TMPDIR, and nothing it leaves is picked up by
-        // the person's programs)
-        escrita: SISTEMA_ESCRITA.iter().filter(|p| !p.ends_with("tmp") && !p.ends_with("shm")).map(Into::into).collect(),
-        listar: reads.list.into_iter().chain(writes.list).collect(), portas: None, fixas, sockets: vec![],
-    };
+    // (no shared /tmp, /var/tmp nor /dev/shm: the command has its own TMPDIR, and nothing it leaves is picked up by the
+    // person's programs)
+    let landlock = agent_landlock(&protected, reads.write.into_iter().chain(reads.read).chain(writes.read).collect(), reads.list.into_iter().chain(writes.list).collect(),
+        SISTEMA_ESCRITA.iter().filter(|p| !p.ends_with("tmp") && !p.ends_with("shm")).map(Into::into).collect(), None, fixas, vec![]);
     let lim = c.cfg.limites.narrowed(a);
     // with the changes let through, what the command changes in them still goes to the timeline, with undo
     let before = auto.then(|| crate::startup::snapshot(c.peer, c.cfg, &write_roots));

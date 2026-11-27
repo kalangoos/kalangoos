@@ -125,6 +125,64 @@ Limites conhecidos, ainda sem correção (o niri precisa ser recompilado e a ima
   na conexão, não no pid. A regra `exe` ganharia a mesma exigência de não depurável e sem biblioteca estranha que o
   kalangod faz para o núcleo do Remote.
 
+## Portão de confirmação do Kalango Mind: o que a caixa de areia dos agentes nega
+
+O Kalango Mind (`kalango-knowd`) não confia no que o chamador diz para confirmar uma lembrança (nem um campo do pedido, nem
+`isatty`, nem o cgroup, que um processo do mesmo usuário troca sem root). Lembrar cria um item pendente e um código de uso
+único em `$XDG_RUNTIME_DIR/kalango/mind-confirm/<revisão>.token`; só quem lê esse arquivo confirma, e quem deve lê-lo é a
+sessão da pessoa. O que impede um agente de confirmar o próprio pedido é esta caixa de areia:
+
+| O que se nega aos agentes | Onde está no kalangod | O que o impede |
+|---|---|---|
+| `%t/kalango/mind-confirm/` (ler, escrever, listar, mover, apagar, abrir por fd) e o banco `~/.local/share/kalango/mind` | `policy::KALANGO_PROTECTED` (e `dist/kalangod.toml`, que substitui a lista padrão); `%t` é `/run/user/UID` (`policy::expand`) | ferramentas de arquivo (`sandbox::check_path`: recusa pelo lugar, também por `..`, elo ou arquivo que ainda não existe); comandos e conectores (Landlock: `/run` deixa de ser concedido inteiro, `admin::system_read` concede o resto e a pasta fica de fora, mesmo criada depois); guarda eBPF por inode (`guard.rs` procura a pasta de novo a cada segundo, porque ela nasce depois do `kalangod`) |
+| escrita em `/sys/fs/cgroup` (criar pasta em `app.slice` e escrever o pid em `cgroup.procs`) | já negado: o Landlock de todo comando, navegador e conector só concede escrita em `/tmp`, `/dev/null` e nas pastas de trabalho; `/sys` é só leitura | Landlock (negação de escrita) |
+| D-Bus do gerenciador de usuário do systemd (`StartTransientUnit`, `systemctl --user`) e `systemd-run` | já negado: nenhum soquete local fora dos que o manifesto de um conector nomeia (Landlock ABI 9, `ResolveUnix` e escopo de soquetes abstratos; em kernel mais antigo, seccomp sem `AF_UNIX`) | Landlock + seccomp |
+| um caminho para `confirmar` | o `kalangod` não tem ferramenta do Mind (as `conhecimento.*` são a P2 e só terão `remember`/`search`/`show` pelo escopo do chamador) | catálogo de ferramentas (teste) |
+
+O que fica aberto, de propósito e dito:
+
+- **Um processo do mesmo usuário fora de toda caixa de areia continua sendo a própria pessoa para o sistema.** O portão só
+  vale para o que o `kalangod` põe na caixa de areia (as tarefas, os conectores e os navegadores dos agentes). Um agente que
+  consiga rodar fora dela (por um erro nosso, ou por um programa que a própria pessoa lançou para ele) lê o código.
+- **O `/etc/kalango/kalangod.toml` substitui a lista padrão** (`Config::load` não a mescla) e o pacote não o atualiza numa
+  máquina que já o tem. Por isso o `kalangod` acrescenta sempre `~/.local/share/kalango/mind` e `%t/kalango/mind-confirm` à lista
+  carregada (e avisa no log de partida quando o arquivo não as tinha); as demais linhas novas de uma versão continuam
+  dependendo de o arquivo as ter. Para ter as duas no arquivo: acrescentar `"~/.local/share/kalango/mind"` e
+  `"%t/kalango/mind-confirm"` a `protected_paths`.
+- `kalango/protegidas` devolve `%t` já expandido para quem chama (o painel de privacidade mostra o lugar real).
+- **`%t` é `/run/user/UID` fixo** na política (`policy::runtime_dir`), nas ferramentas de arquivo, no Landlock de comandos e na
+  guarda eBPF. Uma sessão com `XDG_RUNTIME_DIR` diferente disso fica fora de cobertura (só o conector soma o `XDG_RUNTIME_DIR` do
+  próprio processo). O logind faz `/run/user/UID` em toda sessão do KalangoOS.
+- A sondagem da guarda eBPF a cada 1 s (e a pasta nascendo depois do `kalangod`) **só se prova na VM**: nenhum teste daqui roda
+  como root com o LSM `bpf`.
+- A janela entre a pasta ser criada e a guarda eBPF conhecê-la (até um segundo). O Landlock e as ferramentas de arquivo não
+  têm essa janela (valem pelo lugar). Fecha de vez se o serviço criar a pasta ao iniciar a sessão.
+- Os nomes na pasta (ids das revisões, não códigos) ainda podem ser listados por um comando quando a guarda eBPF está
+  desligada: a regra de listar de uma pasta vale para as de baixo no Landlock. O conteúdo não.
+- `/etc` segue concedido inteiro para leitura (não dá para recortá-lo sem perder seus elos); o que há nele de protegido é do
+  root.
+- A guarda eBPF e o Landlock real em kernel de produção (e o `%t` com o `XDG_RUNTIME_DIR` de verdade) precisam da prova na
+  VM: veja a lista na descrição do pull request. (`KALANGOD_RUNTIME_BASE` só existe para a suíte de testes mover o `%t`
+  para dentro da casa de teste; o serviço de produção usa `/run/user`.)
+
+**O que o CI prova e o que não prova.** O CI roda `cargo test -p kalangod` num runner sem sessão de usuário. Sem depender do host
+(provado no CI): `the_landlock_assembly_leaves_out_the_mind_confirmation_codes` (a montagem única `admin::agent_landlock` corta
+`/run` em volta da pasta, pelo lugar) e `a_command_and_a_connector_build_their_rules_only_through_the_assembly` (um teste de
+fonte: `task_run` e `conector::spawn` não montam `Landlock` nem usam a lista do sistema por conta própria; reverter qualquer um
+dos dois, ou a montagem, derruba um dos dois testes), mais as ferramentas de arquivo (`sandbox.rs`), a lista padrão e o toml
+(`policy.rs`) e a expansão da guarda (`guard.rs`). **Só provado no host/VM** (pulam no CI, e com `KALANGOD_REQUIRE_HOST_TESTS=1`
+a falta do host é falha): a leitura real de um comando e de um conector com `%t` sob `/run/user/UID`, o escape de cgroup e o
+D-Bus do gerenciador de usuário; o comando exato é `crates/kalangod/vm/portao-mind.sh`. **Só provado na VM, como root**:
+a guarda eBPF (o LSM `bpf`), a sondagem de 1 s da pasta recém-criada e o Mind real criando o token.
+
+Testes (`crates/kalangod`): `agent_file_tools_cannot_reach_the_mind_confirmation_codes`,
+`an_agent_command_cannot_read_or_forge_the_mind_confirmation_codes`, `a_command_cannot_move_itself_to_another_cgroup`,
+`a_command_cannot_ask_the_user_manager_to_start_a_unit`, `kalangod_exposes_no_path_for_an_agent_to_confirm_the_mind`
+(`tests/mcp.rs`), e as de unidade `a_command_cannot_read_the_mind_confirmation_codes_outside_its_home` (`mcp.rs`, com `%t` de verdade fora da casa),
+`a_connector_cannot_read_the_mind_confirmation_codes` (`tests/conectores.rs`, só onde há systemd de usuário), `the_connector_protects_the_codes_in_its_own_runtime_folder` (`conector.rs`, o `XDG_RUNTIME_DIR` do conector), `the_landlock_assembly_leaves_out_the_mind_confirmation_codes` e `a_command_and_a_connector_build_their_rules_only_through_the_assembly` (`tools/system_read_tests.rs`), `the_mind_confirmation_codes_are_out_of_reach` (`sandbox.rs`),
+`the_mind_confirmation_folder_is_protected_by_default_and_in_the_installed_config` (`policy.rs`) e
+`the_guard_expands_the_runtime_folder_for_every_user` (`guard.rs`) e `an_old_configuration_file_still_protects_the_mind_folders` (`policy.rs`).
+
 ## Processo
 
 - Divulgação responsável em `kalangoos.com/seguranca` (a publicar), com resposta em até 5 dias úteis.

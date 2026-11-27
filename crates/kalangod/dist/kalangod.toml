@@ -9,6 +9,9 @@ protected_paths = ["~/.ssh", "~/.gnupg", "~/.local/share/keyrings",
   "~/.local/bin/kalango-virtualdesk", "~/.local/lib/kalango-virtualdesk",
   "~/.local/share/kalango/conversas", "~/.local/share/kalango/modelos", "~/.local/share/kalango/cofre.json",
   "~/.local/share/kalango/memoria.json", "~/.local/share/kalango/memoria.bin", "~/.local/state/kalango",
+  # o Kalango Mind: o banco, e a pasta dos códigos de confirmação (%t = a pasta de execução de quem chama,
+  # /run/user/UID): o que só a sessão da pessoa lê para confirmar o que um agente pediu para lembrar
+  "~/.local/share/kalango/mind", "%t/kalango/mind-confirm",
   "/etc/shadow", "/etc/gshadow"]
 # aprovação presencial: precisa vir de um terminal (ou, quando existir, da tela de aprovação do compositor)
 approval_requires_tty = true

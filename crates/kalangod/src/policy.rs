@@ -231,6 +231,8 @@ fn pontos_padrao() -> usize {
 /// (`conversas/`) or swap the model it thinks with (`modelos/`). The programs that own these files run outside the
 /// agents' cgroup and read them directly. A connector's own data folder (`~/.local/share/kalango/conectores/NAME`)
 /// stays reachable: the connector runs in the agents' cgroup and works there.
+pub const MIND_PROTECTED: &[&str] = &["~/.local/share/kalango/mind", "%t/kalango/mind-confirm"];
+
 pub const KALANGO_PROTECTED: &[&str] = &[
     // the person's Flatpak overrides and settings: a global override (`overrides/global`) stays under every app's own and
     // widens what a creative app that kalangod starts sees (`filesystems=~/.ssh`)
@@ -250,6 +252,15 @@ pub const KALANGO_PROTECTED: &[&str] = &[
     // the agent's memory: read only by the agent runtime itself, never through a tool
     "~/.local/share/kalango/memoria.json",
     "~/.local/share/kalango/memoria.bin",
+    // Kalango Mind: its database (graph, text index, evidence) is reached by agents only through the service's tools
+    // (a file tool that could read it would go around the scopes, one that could write it could plant "confirmed"
+    // knowledge)
+    "~/.local/share/kalango/mind",
+    // the Mind's confirmation codes (`%t` = the caller's `$XDG_RUNTIME_DIR`, `/run/user/UID`): what the person's own
+    // session reads to confirm something an agent asked to remember. An agent that could read one would confirm its
+    // own request. The folder is made when the service first needs it, so the rule goes by its place, not by what is
+    // there now (`startup::carve` and the guard's probe both handle a folder that does not exist yet)
+    "%t/kalango/mind-confirm",
     // the day's token use (against the budget), the permissions' use and the connectors' call records
     "~/.local/state/kalango",
 ];
@@ -360,7 +371,20 @@ impl Config {
 
     pub fn load(path: &Path) -> Result<Config, String> {
         let t = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        toml::from_str(&t).map_err(|e| format!("{}: {e}", path.display()))
+        let mut cfg: Config = toml::from_str(&t).map_err(|e| format!("{}: {e}", path.display()))?;
+        cfg.add_always_protected();
+        Ok(cfg)
+    }
+
+    /// The Mind's folders are always protected, whatever an older `/etc/kalango/kalangod.toml` lists (the file
+    /// replaces the default list, and the installer does not update it): a union, not a replacement.
+    pub fn add_always_protected(&mut self) {
+        for p in MIND_PROTECTED {
+            if !self.protected_paths.iter().any(|x| x == p) {
+                eprintln!("kalangod: {}", kalango_i18n::trf("the configuration did not list {path} as protected: added", &[("path", p.to_string())]));
+                self.protected_paths.push(p.to_string());
+            }
+        }
     }
 }
 
@@ -370,9 +394,26 @@ pub fn expand(p: &str, home: &Path) -> PathBuf {
         home.to_path_buf()
     } else if let Some(rest) = p.strip_prefix("~/") {
         home.join(rest)
+    } else if let Some(rest) = p.strip_prefix("%t/") {
+        runtime_dir(runtime_uid(home)).join(rest)
     } else {
         PathBuf::from(p)
     }
+}
+
+/// The runtime folder of a user (`$XDG_RUNTIME_DIR`): `/run/user/UID`, which logind makes for every session. The base
+/// is `KALANGOD_RUNTIME_BASE` for the test sessions (kalangod's own environment: an agent never sets it).
+pub fn runtime_dir(uid: u32) -> PathBuf {
+    static BASE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| std::env::var_os("KALANGOD_RUNTIME_BASE").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| "/run/user".into()))
+        .join(uid.to_string())
+}
+
+/// Whose runtime folder `%t` means for a caller's home: the home's owner (what the passwd entry's home is by definition),
+/// else the running user.
+fn runtime_uid(home: &Path) -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(home).map(|m| m.uid()).unwrap_or_else(|_| nix::unistd::getuid().as_raw())
 }
 
 /// Normaliza sem tocar o disco: resolve `.` e `..` lexicalmente.
@@ -397,6 +438,45 @@ pub fn is_within(path: &Path, base: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Mind's confirmation codes are in the protected list (the kernel guard, Landlock and the file tools all start from
+    /// it), in the installed configuration file too (which replaces the default list, it does not add to it), and `%t`
+    /// is the runtime folder of the home's owner.
+    #[test]
+    fn the_mind_confirmation_folder_is_protected_by_default_and_in_the_installed_config() {
+        for want in ["%t/kalango/mind-confirm", "~/.local/share/kalango/mind"] {
+            assert!(Config::system_default().protected_paths.iter().any(|p| p == want), "{want} is missing from the default list");
+            let installed = Config::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("dist/kalangod.toml")).unwrap();
+            assert!(installed.protected_paths.iter().any(|p| p == want), "{want} is missing from dist/kalangod.toml");
+        }
+        let home = tempfile::tempdir().unwrap();
+        let uid = nix::unistd::getuid().as_raw();
+        assert_eq!(expand("%t/kalango/mind-confirm", home.path()), runtime_dir(uid).join("kalango/mind-confirm"));
+        assert!(runtime_dir(uid).ends_with(uid.to_string()));
+        // (what is not `%t/` stays as written)
+        assert_eq!(expand("%tmp/x", home.path()), PathBuf::from("%tmp/x"));
+    }
+
+    /// An installed configuration from before the Mind (no lines for it) is still protected: the load adds them.
+    #[test]
+    fn an_old_configuration_file_still_protects_the_mind_folders() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("kalangod.toml");
+        // (the installed file as it was before the Mind: without the two lines)
+        let installed = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("dist/kalangod.toml")).unwrap();
+        let old = installed.replace("\"~/.local/share/kalango/mind\", \"%t/kalango/mind-confirm\",", "");
+        assert_ne!(old, installed);
+        std::fs::write(&f, old).unwrap();
+        let cfg = Config::load(&f).unwrap();
+        for want in MIND_PROTECTED {
+            assert!(cfg.protected_paths.iter().any(|p| p == want), "{want}");
+        }
+        assert!(cfg.protected_paths.iter().any(|p| p == "~/.ssh"));
+        // (and once, when the file already has them)
+        let mut again = cfg.clone();
+        again.add_always_protected();
+        assert_eq!(again.protected_paths, cfg.protected_paths);
+    }
 
     #[test]
     fn levels_are_ordered() {

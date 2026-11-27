@@ -162,6 +162,10 @@ Instalação no sistema:
 
 Três camadas, todas passando:
 
+0. Portão de confirmação do Kalango Mind, o que só existe com host (sessão de usuário com `/run/user/UID`, systemd de usuário,
+   cgroup delegado): `crates/kalangod/vm/portao-mind.sh` (`KALANGOD_REQUIRE_HOST_TESTS=1 cargo test -p kalangod --locked --
+   --include-ignored …`). O CI não os roda. A guarda eBPF com a pasta real e o Mind real são provas manuais da VM: ver
+   `docs/SEGURANCA.md`.
 1. `cargo test -p kalangod`, sem root, com 22 testes:
    - protocolo, arquivos com desfazer, pastas protegidas (inclusive link simbólico e `..`);
    - níveis sistema e total, expiração da concessão, negação, proibição de aprovar o próprio pedido e chamador sem regra recusado;
