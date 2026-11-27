@@ -185,6 +185,8 @@ const ABOUT_A_SECRET: &[&str] = &[
     "ref",
     "store",
     "attempts",
+    "lifetime",
+    "namespace",
     "retries",
     "tries",
     "failures",
@@ -239,7 +241,10 @@ impl Redactor {
             && !self.keeps_number(key, v)
             && !matches!(v, Value::Bool(_) | Value::Null)
             && !text.is_some_and(|t| {
-                mask(t) || json_reference(t.trim(), key) || (describes_a_secret(key) && (!credential_shaped(t) || (time_key(key) && timestamp(t))))
+                mask(t)
+                    || json_reference(t.trim(), key)
+                    || (describes_a_secret(key)
+                        && ((!literal_secret(t) && !t.bytes().any(|c| c.is_ascii_digit())) || (time_key(key) && timestamp(t))))
             })
     }
 
@@ -402,6 +407,7 @@ impl Redactor {
         ranges.extend(self.markup_ranges(t));
         ranges.extend(self.command_ranges(t));
         ranges.extend(cjk_ranges(t));
+        ranges.extend(gha_rejected_ranges(t));
         ranges.extend(scheme_ranges(t));
         ranges.extend(self.name_value_ranges(t));
         ranges.extend(self.code_literal_ranges(t));
@@ -593,7 +599,7 @@ impl Redactor {
                     // (an interpolation, a mask or a placeholder; under a name that is not a password's, text that only
                     // names the secret: `"jwt-secret-name"`, `"X-API-Key"`)
                     let quoted = &s[vs..ve];
-                    if json_reference(quoted, name)
+                    if interpolation_only(quoted)
                         || mask(quoted)
                         || placeholder(quoted)
                         || (!strong && (names_a_secret(quoted) || quoted_prose(quoted)))
@@ -680,7 +686,7 @@ impl Redactor {
             // value goes when it looks like a credential)
             if (masked_unit && !literal_secret(value))
                 || (by_label && !strong && !credential_shaped(value))
-                || (shaped_only && (!literal_secret(value) || (time_key(name) && timestamp(value))))
+                || (shaped_only && (!(literal_secret(value) || hex_key(value)) || (time_key(name) && timestamp(value))))
             {
                 i = ve.max(i + 1);
                 continue;
@@ -895,7 +901,8 @@ impl Redactor {
                     }
                 } else if curl && (w == "-u" || (w.starts_with("-u") && w.contains(':'))) {
                     let (vat, v) = if w == "-u" { value_at(n + 1).unwrap_or((at, "")) } else { (at + 2, &w[2..]) };
-                    if let Some(c) = v.find(':') {
+                    // (`curl -u "$USER:$PASSWORD"` names variables)
+                    if let Some(c) = v.find(':').filter(|c| value_is_literal(v[c + 1..].trim_end_matches(['"', '\'']), "")) {
                         push(vat + c + 1, v.len() - c - 1);
                     }
                 } else if curl && w.starts_with("--user=") {
@@ -1287,7 +1294,7 @@ fn gha_expression_after(c: &str, strict: bool) -> bool {
             let after = c[e + 1..].trim_start();
             let compared = ["==", "!=", "<=", ">=", "<", ">"].iter().any(|op| before.ends_with(op) || after.starts_with(op));
             let argument = calls.last() == Some(&true) && (before.ends_with('(') || before.ends_with(','));
-            if !(compared || argument) || literal_secret(lit) {
+            if !(compared || argument) || gha_secret_literal(lit) {
                 return false;
             }
             if strict && (credential_shaped(lit) || lit.trim().contains(' ') || (!lit.is_empty() && lit.bytes().all(|c| c.is_ascii_digit()))) {
@@ -1303,8 +1310,13 @@ fn gha_expression_after(c: &str, strict: bool) -> bool {
             }
             i += if matches!(op, b"==" | b"!=" | b"<=" | b">=" | b"&&" | b"||") { 2 } else { 1 };
         } else if ch.is_ascii_digit() {
+            let st = i;
             while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'.') {
                 i += 1;
+            }
+            // (after a password's or a PIN's name, a number of four digits or more is the value itself)
+            if strict && i - st >= 4 {
+                return false;
             }
             // (a number glued to letters is a word, not a number)
             if b.get(i).is_some_and(|c| c.is_ascii_alphabetic()) {
@@ -1336,21 +1348,50 @@ fn gha_expression_after(c: &str, strict: bool) -> bool {
 
 /// The spans of the GitHub Actions expressions, `${{ … }}` up to its `}}` on the same line (within 512 bytes).
 fn gha_expressions(s: &str) -> Vec<(usize, usize)> {
-    let mut spans = Vec::new();
+    gha_blocks(s).into_iter().filter(|b| b.2).map(|b| (b.0, b.1)).collect()
+}
+
+/// Every closed `${{ … }}` (up to its `}}` on the same line, within 512 bytes): where it is, and whether it is an
+/// expression (in its context: strictly after a password's or a PIN's name).
+fn gha_blocks(s: &str) -> Vec<(usize, usize, bool)> {
+    let mut blocks = Vec::new();
     let mut from = 0;
     while let Some(p) = s[from..].find("${{").map(|p| p + from) {
         let w = window(s, p + 3, 512);
         let w = &w[..w.find('\n').unwrap_or(w.len())];
         match w.find("}}") {
             // (only an expression is a unit; one that holds a pair or a credential is text the detectors read)
-            Some(e) if gha_expression_after(&w[..e], after_password_name(s, p)) => {
-                spans.push((p, p + 3 + e + 2));
+            Some(e) => {
+                blocks.push((p, p + 3 + e + 2, gha_expression_after(&w[..e], after_password_name(s, p))));
                 from = p + 3 + e + 2;
             }
-            _ => from = p + 3,
+            None => from = p + 3,
         }
     }
-    spans
+    blocks
+}
+
+/// The `${{ … }}` blocks that are not expressions and go whole, wherever they are (after a flag, `Bearer`, in a URL,
+/// glued to another block): the ones after a password's or a PIN's name, and the ones holding a credential-shaped
+/// literal or word (`${{ 'banana2024' }}`, `${{ secrets.X || 'banana2024' }}`, `${{ password=banana2024 }}`).
+fn gha_rejected_ranges(s: &str) -> Vec<(usize, usize)> {
+    gha_blocks(s)
+        .into_iter()
+        .filter(|&(a, e, expression)| !expression && (after_password_name(s, a) || holds_a_credential(&s[a + 3..e - 2])))
+        .map(|(a, e, _)| (a, e))
+        .collect()
+}
+
+/// Whether the content of a block holds a credential-shaped literal (quoted with `'` or `"`) or word.
+fn holds_a_credential(c: &str) -> bool {
+    let quoted = c.split(['\'', '"']).skip(1).step_by(2).any(gha_secret_literal);
+    let words = c.split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))).any(|w| !w.contains('.') && gha_secret_literal(w));
+    quoted || words
+}
+
+/// A literal in an expression that looks like a credential: not a path or a model's name, not a glob (`'**/x.json'`).
+fn gha_secret_literal(lit: &str) -> bool {
+    literal_secret(lit) && !path_or_model(lit) && !lit.contains('*')
 }
 
 /// Whether the `${{` at `p` is the value of a password's or a PIN's name (`password: ${{ … }}`, `PIN=${{ … }}`,
@@ -1528,6 +1569,12 @@ fn quoted_prose(q: &str) -> bool {
         || q.trim_end().ends_with(['.', '!', '?', ':'])
         || q.contains([',', ';']);
     letters >= 3 && marked
+}
+
+/// A key written in hex after a key's label (`api key: 8c1d4e7f…`): sixteen or more hex digits, letters and digits
+/// both. (Outside a label, pure hex is a hash or an id and stays.)
+fn hex_key(v: &str) -> bool {
+    v.len() >= 16 && v.bytes().all(|c| c.is_ascii_hexdigit()) && v.bytes().any(|c| c.is_ascii_digit()) && v.bytes().any(|c| c.is_ascii_alphabetic())
 }
 
 /// A mask in place of a value (`***`, `...`, `xxxx`, `••••`): not a secret.
@@ -2395,6 +2442,7 @@ const MULTI_WORD_LABELS: &[&str] = &[
     "otpcode",
     "tokendeacesso",
     "chavedeapi",
+    "chavedaapi",
     "chavedeacesso",
     "chaveprivada",
     "chavesecreta",
@@ -3075,7 +3123,7 @@ fn phrase_ranges(s: &str) -> Vec<(usize, usize)> {
                 if c > inner
                     && !quoted.contains('\n')
                     && !quoted.starts_with("[REDACTED")
-                    && !json_reference(quoted, if strong { "password" } else { "" })
+                    && !interpolation_only(quoted)
                     && !placeholder(quoted)
                     && !mask(quoted)
                     && (strong || credential_shaped(quoted))
@@ -4668,6 +4716,8 @@ mod tests {
             ("prose", fill("a senha é bolo de cenoura e minha senha do wifi é Kalango2024. my password is correct horse. ")),
             ("braces", fill("TOKEN: ${{ secrets.X }} pw=x1 {{ y }} ${A} $(cat f) ")),
             ("short pairs", fill("pw=x1 ")),
+            // (`pass` names with no space between them: a look-behind for each runs to the start without a bound)
+            ("bare pass", fill("pass=x1pass=")),
             ("markup", format!("{}</x>", fill("<password>abc"))),
             ("flags", fill("mysql -p x --password y docker login -p z | sudo -S curl -u a:b ")),
             ("random", random),
@@ -4946,6 +4996,99 @@ mod tests {
         assert_eq!(r.redact_value(&env, &mut Stats::default())["env"], "[REDACTED:env]");
         let kept = json!({ "password": "${{ secrets.DB_PASSWORD }}" });
         assert_eq!(r.redact_value(&kept, &mut Stats::default()), kept);
+    }
+
+    /// A `${{ … }}` that is not an expression goes whole, wherever it is, when it holds a credential or follows a
+    /// password's or a PIN's name: after a flag, `Bearer`, in a URL, glued to the flag or to another block, a fallback,
+    /// a bare number; nothing of the literal is left.
+    #[test]
+    fn a_block_holding_a_secret_goes_whole_anywhere() {
+        let x = concat!("banana", "2024xyz");
+        for t in [
+            format!("--password ${{{{ '{x}' }}}}"),
+            format!("docker login -u ana -p ${{{{ '{x}' }}}}"),
+            format!("postgres://app:${{{{ '{x}' }}}}@db/x"),
+            format!("Bearer ${{{{ '{x}' }}}}"),
+            format!("--password ${{{{ secrets.X || '{x}' }}}}"),
+            format!("echo ${{{{ '{x}' }}}} | sudo -S ls"),
+            format!("token: ${{{{ format('{{0}}', '{x}') }}}}"),
+            format!("password: ${{{{ 'a' }}}}${{{{ '{x}' }}}}"),
+            format!("password: ${{{{ github.event.inputs.pw }}}}${{{{ '{x}' }}}}"),
+        ] {
+            assert_gone(&t, x);
+        }
+        for (t, gone) in [
+            (format!("mysql -p${{{{ '{x}' }}}}"), "mysql -p[REDACTED]"),
+            (format!("{0} -u ana:${{{{ '{x}' }}}} https://h", concat!("cu", "rl")), concat!("cu", "rl -u ana:[REDACTED] https://h")),
+        ] {
+            assert_eq!(red(&t), gone, "{t}");
+        }
+        for t in ["pin: ${{ 482913 }}", "password: ${{ 12345678 }}"] {
+            assert_gone(t, &t[t.find("{{ ").unwrap() + 3..t.find(" }}").unwrap()]);
+        }
+        // (only a credential's shape makes a word go: `Bearer ${{ X }}`, `${{ secrets.X || 'p@ss!word' }}`; and after a
+        // password's name in a sentence, the whole block)
+        assert_gone(&format!("Bearer ${{{{ {x} }}}}"), x);
+        assert_gone("Bearer ${{ secrets.X || 'p@ss!word' }}", "ss!word");
+        assert_gone("my password is ${{ 12345678 }}", "12345678");
+        // (an invalid block that holds no credential is still not a reference under a secret's name)
+        assert_eq!(red("token: ${{ inputs.x || 'world' }}"), format!("token: {REDACTED}"));
+        assert_eq!(red("token='${{ inputs.x || 'world' }}'"), format!("token='{REDACTED}'"));
+        let r = Redactor::default();
+        assert_eq!(r.redact_value(&json!({ "token": "${{ inputs.x || 'world' }}" }), &mut Stats::default())["token"], REDACTED);
+        assert_gone(&format!("password: |\n  {x}"), x);
+        for ok in
+            ["cache-key: ${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}", "timeout: ${{ 30 }}", "name: ${{ inputs.name || 'world' }}"]
+        {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// Hex after a key's label is a key (`api key: 8c1d…`, `chave da API: 9f8e…`); outside a label, a hash or an id.
+    #[test]
+    fn hex_after_a_key_label_is_a_key() {
+        let hex = concat!("8c1d4e7f", "2a9b3c6d5e0f1a2b");
+        for t in [
+            format!("api key: {hex}"),
+            format!("API key: {hex}"),
+            format!("secret key: {hex}"),
+            format!("chave: {hex}"),
+            format!("chave da API: {}", &hex[..16]),
+        ] {
+            assert_gone(&t, &hex[..16]);
+        }
+        for ok in [
+            "commit 6219cf1a2b3c4d5e6f708192a3b4c5d6e7f80912",
+            "sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "id: 550e8400-e29b-41d4-a716-446655440000",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+    }
+
+    /// The round-6 critic's ordinary texts: a namespace or a lifetime under a secret's name, a method in JSON, a
+    /// password given to curl as a variable.
+    #[test]
+    fn the_round_six_ordinary_texts_stay() {
+        for ok in [
+            "secret_name: db-credentials\nsecret_namespace: production",
+            "refresh_token_rotation = true\naccess_token_lifetime = \"15m\"",
+            "{\"token_endpoint_auth_method\": \"client_secret_basic\"}",
+            "curl -u \"$USER:$PASSWORD\" https://example.com/private",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+        let r = Redactor::default();
+        assert_eq!(r.redact_value(&json!({ "passwordChangedAt": "2024-99-99" }), &mut Stats::default())["passwordChangedAt"], REDACTED);
+    }
+
+    /// The final scan reads a text with its backslash escapes as separators: a pair after a written `\n`, which the
+    /// first pass reads as one word, is seen.
+    #[test]
+    fn the_final_scan_reads_escaped_line_breaks() {
+        let r = Redactor::default();
+        let text = format!("user=ana\\npass={}", concat!("banana", "2024xyz"));
+        assert!(r.scan_plain_text(&text) > 0, "{text}");
     }
 
     /// Code and configuration that name a secret without holding one (the critic's false positives).
