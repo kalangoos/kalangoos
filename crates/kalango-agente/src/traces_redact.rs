@@ -239,7 +239,7 @@ impl Redactor {
             && !self.keeps_number(key, v)
             && !matches!(v, Value::Bool(_) | Value::Null)
             && !text.is_some_and(|t| {
-                mask(t) || interpolation_only(t.trim()) || (describes_a_secret(key) && (!credential_shaped(t) || (time_key(key) && timestamp(t))))
+                mask(t) || json_reference(t.trim(), key) || (describes_a_secret(key) && (!credential_shaped(t) || (time_key(key) && timestamp(t))))
             })
     }
 
@@ -525,6 +525,14 @@ impl Redactor {
             while vs < b.len() && matches!(b[vs], b' ' | b'\t') {
                 vs += 1;
             }
+            // (a YAML block, `password: |`: the value is the next line)
+            if colon {
+                let ve0 = vs + b[vs..].iter().take_while(|c| matches!(c, b'|' | b'>' | b'-' | b'+')).count();
+                if matches!(&s[vs..ve0], "|" | ">" | "|-" | ">-" | "|+" | ">+") && s[ve0..].trim_start_matches([' ', '\t']).starts_with('\n') {
+                    let next = ve0 + s[ve0..].find('\n').unwrap_or(0) + 1;
+                    vs = next + s[next.min(s.len())..].len() - s[next.min(s.len())..].trim_start_matches([' ', '\t']).len();
+                }
+            }
             // (a masked `${{ … }}` is the value: alone, nothing to cut; with a word glued to it, `${{ x }}banana2024`,
             // that word when it looks like a credential, `${{ x }}-latest` is not one)
             let stars = b[vs..].iter().take_while(|c| **c == b'*').count();
@@ -564,8 +572,18 @@ impl Redactor {
                     while ve < b.len() && b[ve] != b'\n' && !(b[ve] == q && slashes_before(ve) == depth) {
                         ve += 1
                     }
+                    // (an expression in the quotes may hold the same quote: `'${{ x == 'y' }}'` runs to its `}}`)
+                    if s[vs..].starts_with("${{") {
+                        let line = window(s, vs, 512);
+                        let line = &line[..line.find('\n').unwrap_or(line.len())];
+                        if let Some(e) = line.find("}}").filter(|e| vs + e + 2 > ve) {
+                            ve = vs + e + 2;
+                        }
+                    }
                     if ve < b.len() && b[ve] == q {
                         ve -= depth;
+                    } else if s[vs..ve].starts_with("${{") && s[vs..ve].ends_with("}}") {
+                        // (the expression ends the value)
                     } else if s[vs..ve].trim().is_empty() || s[vs..ve].starts_with([')', ' ', ',', ';', '\t']) {
                         // (a quote that never closes, followed by nothing like a value, ends the string that holds the
                         // name: `input('Password: ')`)
@@ -575,7 +593,7 @@ impl Redactor {
                     // (an interpolation, a mask or a placeholder; under a name that is not a password's, text that only
                     // names the secret: `"jwt-secret-name"`, `"X-API-Key"`)
                     let quoted = &s[vs..ve];
-                    if interpolation_only(quoted)
+                    if json_reference(quoted, name)
                         || mask(quoted)
                         || placeholder(quoted)
                         || (!strong && (names_a_secret(quoted) || quoted_prose(quoted)))
@@ -1335,14 +1353,52 @@ fn gha_expressions(s: &str) -> Vec<(usize, usize)> {
     spans
 }
 
-/// Whether the `${{` at `p` is the value of a password's or a PIN's name on its line (`password: ${{ … }}`,
-/// `PIN=${{ … }}`), read 64 bytes back.
+/// Whether the `${{` at `p` is the value of a password's or a PIN's name (`password: ${{ … }}`, `PIN=${{ … }}`,
+/// `password: "${{ … }}"`, `password: |` and the block on the next line, `my password is ${{ … }}`), read 128 bytes
+/// back.
 fn after_password_name(s: &str, p: usize) -> bool {
-    let before = window_back(s, p, 64);
-    let line = before.rsplit('\n').next().unwrap_or("").trim_end();
-    let Some(head) = line.strip_suffix([':', '=']).map(str::trim_end) else { return false };
+    let before = window_back(s, p, 128);
+    let mut lines = before.rsplit('\n');
+    // (quotes and spaces between the separator and `${{`: `password: "${{ … }}"`, `password='${{ … }}'`)
+    let mut line = lines.next().unwrap_or("").trim_end_matches([' ', '\t', '"', '\'', '`']);
+    // (alone on its line, the value of the line before: `password: |` then `  ${{ … }}`)
+    if line.is_empty() {
+        let prev = lines.next().unwrap_or("").trim_end().trim_end_matches(['-', '+']);
+        line = prev.strip_suffix(['|', '>']).map_or(prev, str::trim_end);
+    }
+    // (a sentence: a verb after the name, `my password is ${{ … }}`)
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.len() >= 2 && PHRASE_VERBS.contains(&words[words.len() - 1].to_lowercase().as_str()) {
+        return words[..words.len() - 1].iter().rev().take(3).any(|w| password_name(w.trim_matches(|c: char| !c.is_alphanumeric())));
+    }
+    let Some(head) = line.strip_suffix([':', '=']).map(|h| h.trim_end().trim_end_matches(['"', '\''])) else { return false };
     let name = head.rsplit(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))).next().unwrap_or("");
+    password_name(name)
+}
+
+/// A password's or a PIN's name (`password`, `senha`, `db_pass`, `userPin`): an expression after it is checked strictly.
+fn password_name(name: &str) -> bool {
     password_label(name) || matches!(suffix_key(name), Some("pin" | "pwd" | "pass" | "pw"))
+}
+
+/// A JSON string that only refers to something else (see [`interpolation_only`]); under a password's or a PIN's name,
+/// each `${{ … }}` in it is checked strictly.
+fn json_reference(t: &str, key: &str) -> bool {
+    if !interpolation_only(t) {
+        return false;
+    }
+    if !password_name(key) {
+        return true;
+    }
+    let mut from = 0;
+    while let Some(p) = t[from..].find("${{").map(|p| p + from) {
+        let Some(e) = t[p + 3..].find("}}").map(|e| p + 3 + e) else { return false };
+        if !gha_expression_after(&t[p + 3..e], true) {
+            return false;
+        }
+        from = e + 2;
+    }
+    true
 }
 
 /// At most `n` bytes of `s` before `at` (cut on a character).
@@ -1392,10 +1448,15 @@ fn outside_units(t: &str, ranges: Vec<(usize, usize)>, units: &[(usize, usize)])
 
 /// A value of the environment made only of references (`{"TOKEN": "${{ secrets.X }}"}`), which stays.
 fn only_references(v: &Value) -> bool {
+    references_under(v, "")
+}
+
+/// [`only_references`] with the key the value is under (a password's name checks its expressions strictly).
+fn references_under(v: &Value, key: &str) -> bool {
     match v {
-        Value::String(t) => interpolation_only(t.trim()),
-        Value::Object(o) => !o.is_empty() && o.values().all(only_references),
-        Value::Array(a) => !a.is_empty() && a.iter().all(only_references),
+        Value::String(t) => json_reference(t.trim(), key),
+        Value::Object(o) => !o.is_empty() && o.iter().all(|(k, x)| references_under(x, k)),
+        Value::Array(a) => !a.is_empty() && a.iter().all(|x| references_under(x, key)),
         _ => false,
     }
 }
@@ -3014,7 +3075,7 @@ fn phrase_ranges(s: &str) -> Vec<(usize, usize)> {
                 if c > inner
                     && !quoted.contains('\n')
                     && !quoted.starts_with("[REDACTED")
-                    && !interpolation_only(quoted)
+                    && !json_reference(quoted, if strong { "password" } else { "" })
                     && !placeholder(quoted)
                     && !mask(quoted)
                     && (strong || credential_shaped(quoted))
@@ -4767,6 +4828,8 @@ mod tests {
         let r = Redactor::default();
         let v = json!({ "password": format!("${{{{ '{pw}' }}}}") });
         assert_eq!(r.redact_value(&v, &mut Stats::default())["password"], REDACTED);
+        let v = json!({ "token": format!("${{{{ '{pw}' }}}}") });
+        assert_eq!(r.redact_value(&v, &mut Stats::default())["token"], REDACTED, "under any secret's name");
         for ok in [
             "TOKEN: ${{ secrets.GITHUB_TOKEN }}",
             "password: ${{ format('{0}', secrets.X) }}",
@@ -4850,6 +4913,39 @@ mod tests {
         ] {
             assert_eq!(red(ok), ok, "{ok}");
         }
+    }
+
+    /// The strict check of an expression after a password's or PIN's name holds whatever stands between the name and
+    /// `${{`: quotes, spaces, a JSON key, a YAML block on the next line, and a JSON value under such a key.
+    #[test]
+    fn the_strict_check_follows_the_name_through_quotes_and_lines() {
+        let code = concat!("4829", "13");
+        for t in [
+            format!("password: \"${{{{ github.actor == '{code}' }}}}\""),
+            format!("password='${{{{ github.actor == '{code}' }}}}'"),
+            format!("password = ${{{{ github.actor == '{code}' }}}}"),
+            format!("\"password\": \"${{{{ github.actor == '{code}' }}}}\""),
+            format!("password: |\n  ${{{{ github.actor == '{code}' }}}}"),
+            format!("PIN: >\n    ${{{{ github.actor == '{code}' }}}}"),
+            format!("my password is \"${{{{ github.actor == '{code}' }}}}\""),
+        ] {
+            assert_gone(&t, code);
+        }
+        let r = Redactor::default();
+        let v = json!({ "password": format!("${{{{ github.actor == '{code}' }}}}") });
+        assert_eq!(r.redact_value(&v, &mut Stats::default())["password"], REDACTED);
+        for ok in [
+            "password: \"${{ secrets.DB_PASSWORD }}\"",
+            "\"password\": \"${{ secrets.DB_PASSWORD }}\"",
+            "password: |\n  ${{ secrets.DB_PASSWORD }}",
+            "token: \"${{ github.event_name == 'push' }}\"",
+        ] {
+            assert_eq!(red(ok), ok, "{ok}");
+        }
+        let env = json!({ "env": { "PASSWORD": format!("${{{{ github.actor == '{code}' }}}}") } });
+        assert_eq!(r.redact_value(&env, &mut Stats::default())["env"], "[REDACTED:env]");
+        let kept = json!({ "password": "${{ secrets.DB_PASSWORD }}" });
+        assert_eq!(r.redact_value(&kept, &mut Stats::default()), kept);
     }
 
     /// Code and configuration that name a secret without holding one (the critic's false positives).
