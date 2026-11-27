@@ -45,22 +45,29 @@ pub fn bpf_lsm_active() -> bool {
     std::fs::read_to_string("/sys/kernel/security/lsm").map(|s| s.trim().split(',').any(|x| x == "bpf")).unwrap_or(false)
 }
 
-/// Casas dos usuários (para expandir `~` das pastas protegidas para todos eles).
-fn homes() -> Vec<PathBuf> {
+/// (uid, casa) dos usuários (para expandir `~` e `%t` das pastas protegidas para todos eles).
+fn users() -> Vec<(u32, PathBuf)> {
     std::fs::read_to_string("/etc/passwd").unwrap_or_default().lines().filter_map(|l| {
         let f: Vec<&str> = l.split(':').collect();
         let uid: u32 = f.get(2)?.parse().ok()?;
         let h = PathBuf::from(f.get(5)?);
-        (uid == 0 || (1000..60000).contains(&uid)).then_some(h)
+        (uid == 0 || (1000..60000).contains(&uid)).then_some((uid, h))
     }).collect()
 }
 
 pub fn expand_all(patterns: &[String]) -> Vec<PathBuf> {
-    let hs = homes();
+    expand_for(patterns, &users())
+}
+
+/// `~` is each user's home and `%t` each user's runtime folder (`/run/user/UID`, `policy::runtime_dir`): the folder of
+/// the Mind's confirmation codes lives there, and is made after kalangod starts, so it is looked for again.
+fn expand_for(patterns: &[String], users: &[(u32, PathBuf)]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for p in patterns {
         if p == "~" || p.starts_with("~/") {
-            out.extend(hs.iter().map(|h| crate::policy::expand(p, h)));
+            out.extend(users.iter().map(|(_, h)| crate::policy::expand(p, h)));
+        } else if let Some(rest) = p.strip_prefix("%t/") {
+            out.extend(users.iter().map(|(uid, _)| crate::policy::runtime_dir(*uid).join(rest)));
         } else {
             out.push(PathBuf::from(p));
         }
@@ -82,6 +89,9 @@ impl Guarda {
     /// Descobre como o kernel identifica cada pasta protegida: abre a pasta com a sonda ligada e lê o evento
     /// (o par dispositivo/inode do superbloco, que em btrfs e overlay difere do st_dev do stat()).
     fn probe(&mut self, rb: &mut RingBuf<aya::maps::MapData>, paths: &[PathBuf], timeline: &Timeline) -> Result<usize, String> {
+        if !paths.iter().any(|p| p.exists()) {
+            return Ok(0);
+        }
         let mut want = std::collections::HashMap::new();
         self.config(2, std::process::id() as u64)?;
         for p in paths {
@@ -177,6 +187,7 @@ fn start_inner(patterns: Vec<String>, timeline: Arc<Timeline>) -> Result<(), Str
         let fd = rb.as_raw_fd();
         let mut last = std::time::Instant::now();
         let mut cg = agentes;
+        let runtime = expand_all(&patterns.iter().filter(|p| p.starts_with("%t/")).cloned().collect::<Vec<_>>());
         loop {
             let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
             unsafe { libc::poll(&mut pfd, 1, 1000) };
@@ -187,6 +198,10 @@ fn start_inner(patterns: Vec<String>, timeline: Arc<Timeline>) -> Result<(), Str
                     }
                 }
             }
+            // the folders in the runtime area (the Mind's confirmation codes) appear, and are made again with a new inode,
+            // while kalangod runs: looked for every second (a stat and an open each), so the time one is open to an
+            // agent before the kernel knows it is as short as this loop can make it
+            let _ = g.probe(&mut rb, &runtime, &timeline);
             if last.elapsed().as_secs() >= 15 {
                 last = std::time::Instant::now();
                 // pastas protegidas criadas depois (ex.: ~/.ssh de um usuário novo) e cgroup recriado
@@ -201,4 +216,23 @@ fn start_inner(patterns: Vec<String>, timeline: Arc<Timeline>) -> Result<(), Str
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The kernel guard is told every user's confirmation-code folder, whether it exists yet or not (the probe looks
+    /// again every second), and the person's home folders as before.
+    #[test]
+    fn the_guard_expands_the_runtime_folder_for_every_user() {
+        let users = vec![(0, PathBuf::from("/root")), (1000, PathBuf::from("/home/ana")), (1001, PathBuf::from("/home/bia"))];
+        let got = expand_for(&["%t/kalango/mind-confirm".into(), "~/.ssh".into(), "/etc/shadow".into()], &users);
+        let run = |u: u32| crate::policy::runtime_dir(u).join("kalango/mind-confirm");
+        for u in [0, 1000, 1001] {
+            assert!(got.contains(&run(u)), "{got:?}");
+        }
+        assert!(got.contains(&PathBuf::from("/home/ana/.ssh")) && got.contains(&PathBuf::from("/etc/shadow")));
+        assert_eq!(got.len(), 7);
+    }
 }

@@ -606,6 +606,33 @@ mod path_tests {
         assert!(check_change_path("~/.local/share/kalango/conectores/relogio/estado.json", &peer, &allowed, &protected).is_ok());
     }
 
+    /// The Mind's confirmation codes (`%t/kalango/mind-confirm`) are what the person's session reads to confirm what an
+    /// agent asked to remember. Every file tool (read, write, list, change, move) is refused there — even for a caller
+    /// allowed to all of `/run`, and by a `..`, by a link (also dangling) or for a file that does not exist yet — and the
+    /// folders around it still work.
+    #[test]
+    fn the_mind_confirmation_codes_are_out_of_reach() {
+        let (_d, peer, _, protected) = setup();
+        let allowed: Vec<String> = vec!["~".into(), "/run".into()];
+        let run = crate::policy::runtime_dir(nix::unistd::getuid().as_raw());
+        let dir = run.join("kalango/mind-confirm");
+        for raw in [dir.display().to_string(), dir.join("0f3c.token").display().to_string(), dir.join("sub/outro").display().to_string(),
+            run.join("kalango/../kalango/mind-confirm/0f3c.token").display().to_string(), "%t/kalango/mind-confirm/0f3c.token".replace("%t", &run.display().to_string())] {
+            assert!(refused(&raw, &peer, &allowed, &protected), "{raw} should be refused");
+        }
+        // moving or deleting the folder that holds it would carry it somewhere unprotected
+        assert!(check_change_path(&run.join("kalango").display().to_string(), &peer, &allowed, &protected).is_err());
+        // a link in the home to it, and one to a file there that does not exist yet
+        let h = peer.home.clone();
+        symlink(&dir, h.join("Documentos/codigos")).unwrap();
+        symlink(dir.join("novo.token"), h.join("Documentos/novo")).unwrap();
+        assert!(refused("~/Documentos/codigos/0f3c.token", &peer, &allowed, &protected));
+        assert!(refused("~/Documentos/novo", &peer, &allowed, &protected));
+        // the rest of the runtime folder is not the Mind's
+        assert!(check_path(&run.join("kalango/know.sock").display().to_string(), &peer, &allowed, &protected).is_ok());
+        assert!(check_path(&run.join("outra-coisa").display().to_string(), &peer, &allowed, &protected).is_ok());
+    }
+
     #[test]
     fn a_link_into_the_settings_is_refused_even_dangling() {
         let (_d, peer, allowed, protected) = setup();

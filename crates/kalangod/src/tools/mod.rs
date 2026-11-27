@@ -1,5 +1,7 @@
 //! Ferramentas expostas pelo MCP do sistema. Cada uma declara nível, efeito e se é reversível (o contrato).
 
+#[cfg(test)]
+mod system_read_tests;
 pub mod admin;
 pub mod arquivos;
 pub mod importar;

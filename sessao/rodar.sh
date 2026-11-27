@@ -25,7 +25,7 @@ mkdir -p "$T/raiz/etc"
 cat > "$T/kalangod.toml" <<CFG
 socket = "$T/mcp.sock"
 state_dir = "$T/estado"
-protected_paths = ["~/.ssh", "~/.config/kalango", "~/.config/kalango-remote", "~/.local/share/kalango/fluxos", "~/.local/share/kalango/virtualdesk", "~/.local/bin/kalango-virtualdesk", "~/.local/lib/kalango-virtualdesk", "~/.local/share/kalango/conversas", "~/.local/share/kalango/modelos", "~/.local/share/kalango/cofre.json", "~/.local/share/kalango/memoria.json", "~/.local/share/kalango/memoria.bin", "~/.local/state/kalango"]
+protected_paths = ["~/.ssh", "~/.config/kalango", "~/.config/kalango-remote", "~/.local/share/kalango/fluxos", "~/.local/share/kalango/virtualdesk", "~/.local/bin/kalango-virtualdesk", "~/.local/lib/kalango-virtualdesk", "~/.local/share/kalango/conversas", "~/.local/share/kalango/modelos", "~/.local/share/kalango/cofre.json", "~/.local/share/kalango/memoria.json", "~/.local/share/kalango/memoria.bin", "~/.local/state/kalango", "~/.local/share/kalango/mind", "%t/kalango/mind-confirm"]
 approval_requires_tty = false
 approval_timeout_s = 120
 total_grant_s = 900

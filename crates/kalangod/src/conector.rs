@@ -17,8 +17,8 @@
 //! registro são os mesmos.
 
 use kalango_i18n::{tr, trf};
-use crate::limits::{self, Landlock, Limits, Pedido, Seccomp};
-use crate::tools::admin::{SISTEMA_ESCRITA, SISTEMA_LEITURA};
+use crate::limits::{self, Limits, Pedido, Seccomp};
+use crate::tools::admin::SISTEMA_ESCRITA;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
@@ -213,6 +213,13 @@ fn startup_write(escrita: &[PathBuf], startup: &[PathBuf]) -> Option<(PathBuf, P
     })
 }
 
+/// A protected `%t/…` folder as this session's `$XDG_RUNTIME_DIR` names it (besides `/run/user/UID`).
+fn session_runtime_variant(p: &str, xdg: Option<PathBuf>) -> Option<PathBuf> {
+    let rest = p.strip_prefix("%t/")?;
+    let rt = xdg.filter(|r| r.is_absolute())?;
+    Some(crate::policy::normalize(&rt.join(rest)))
+}
+
 pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
     let sockets = check_sockets(m)?;
     let (dados, registro) = paths(&m.nome);
@@ -221,7 +228,7 @@ pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
     let pasta = m.pasta.as_deref().map(expand);
-    let mut leitura: Vec<PathBuf> = SISTEMA_LEITURA.iter().map(Into::into).collect();
+    let mut leitura: Vec<PathBuf> = Vec::new();
     leitura.extend(pasta.iter().cloned());
     leitura.extend(m.leitura.iter().map(|p| expand(p)));
     // /tmp não é compartilhado: cada conector tem o próprio (TMPDIR na pasta de dados)
@@ -239,6 +246,8 @@ pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
                 protegidas.push(crate::policy::normalize(&xdg(var, &prefix[2..]).join(rest)));
             }
         }
+        // (the runtime folder as this session names it, besides /run/user/UID)
+        protegidas.extend(session_runtime_variant(p, std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)));
     }
     protegidas.push(crate::cofre::file());
     for p in leitura.iter().chain(&escrita) {
@@ -275,7 +284,7 @@ pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
         ambiente.insert(k.clone(), crate::cofre::resolve(v)?);
     }
     let isolamento = json!({
-        "leitura": leitura, "escrita": escrita, "sockets": sockets,
+        "leitura": crate::tools::admin::system_read_roots().into_iter().chain(leitura.iter().cloned()).collect::<Vec<_>>(), "escrita": escrita, "sockets": sockets,
         "rede": match &portas { Some(p) if p.is_empty() => json!("nenhuma"), Some(p) => json!({"portas_tcp": p}), None => json!("livre") },
         "limites": m.limites, "ambiente": ambiente.keys().collect::<Vec<_>>(), "registro": registro,
     });
@@ -285,11 +294,12 @@ pub fn spawn(m: &Manifesto) -> Result<Rodando, String> {
     if lim.tempo_s == 0 {
         lim.tempo_s = 365 * 24 * 3600; // conector é de longa duração: sem prazo, salvo se declarado
     }
+    // (what it reads of the system, cut around the protected folders inside it: the Mind's confirmation codes)
     let prep = limits::prepare_command(Pedido {
         programa: &m.comando, argumentos: &m.argumentos, uid, gid, limites: lim,
         // (no local sockets but its own and the ones the manifest names: on Landlock ABI 9 the kernel keeps it to them,
         // on older kernels it gets none — see `check_sockets` and limits.rs)
-        landlock: Some(Landlock { leitura, escrita, listar: vec![], portas, fixas: vec![], sockets: sockets.clone() }), seccomp: Some(Seccomp { sem_rede: !m.rede, sem_unix: true }), ambiente: Some(ambiente),
+        landlock: Some(crate::tools::admin::agent_landlock(&protegidas, leitura, vec![], escrita, portas, vec![], sockets.clone())), seccomp: Some(Seccomp { sem_rede: !m.rede, sem_unix: true }), ambiente: Some(ambiente),
         pasta: Some(pasta.unwrap_or(dados)), dry_run: false, tmp_privado: false, extra: vec![],
     }, "kalango-conector")?;
     let mut cmd = prep.cmd;
@@ -555,6 +565,18 @@ pub fn run(path: &Path) -> Result<i32, String> {
 
 #[cfg(test)]
 mod startup_tests {
+    use super::session_runtime_variant;
+    use std::path::PathBuf;
+
+    /// The connector host also protects the Mind's codes where its own `XDG_RUNTIME_DIR` puts them.
+    #[test]
+    fn the_connector_protects_the_codes_in_its_own_runtime_folder() {
+        let got = session_runtime_variant("%t/kalango/mind-confirm", Some("/run/user/4242".into()));
+        assert_eq!(got, Some(PathBuf::from("/run/user/4242/kalango/mind-confirm")));
+        assert_eq!(session_runtime_variant("~/.ssh", Some("/run/user/4242".into())), None);
+        assert_eq!(session_runtime_variant("%t/kalango/mind-confirm", Some("relativo".into())), None);
+        assert_eq!(session_runtime_variant("%t/kalango/mind-confirm", None), None);
+    }
     use super::startup_write;
 
     /// A manifest's write folder may not be, hold or lead to a startup path (also through a link, also dangling).

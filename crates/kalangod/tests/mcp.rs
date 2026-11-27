@@ -87,7 +87,7 @@ allowed_paths = ["{area}"]
     }
     std::fs::create_dir_all(area.join("Documentos")).unwrap();
     std::fs::write(&cfg_path, cfg).unwrap();
-    let child = Command::new(BIN).env("LANGUAGE", "pt_BR").envs(env.iter().copied()).args(["servir", "--config", cfg_path.to_str().unwrap()]).spawn().unwrap();
+    let child = Command::new(BIN).env("LANGUAGE", "pt_BR").envs(env.iter().map(|(k, v)| (*k, v.replace("@AREA@", &area.display().to_string())))).args(["servir", "--config", cfg_path.to_str().unwrap()]).spawn().unwrap();
     for _ in 0..100 {
         if sock.exists() {
             break;
@@ -1225,6 +1225,288 @@ fn a_command_cannot_start_anything_outside_its_cgroup() {
     assert!(out.contains("socketpair True") && out.contains("inet ok"), "{out}");
 }
 
+
+// ---------------------------------------------------------------------------------------------------------------
+// The Kalango Mind's confirmation gate (the Mind's docs/PATCH-KALANGOOS.md, section 2): what the agents' sandbox denies
+// so that an agent cannot read the confirmation code the person's session reads, nor leave its sandbox to do it as the
+// person. `%t` (the runtime folder) is made a folder of the test's own with KALANGOD_RUNTIME_BASE.
+
+/// kalangod with the Mind's folders protected as in the installed configuration, the runtime base inside the test's
+/// home (Landlock lets a command read the home, so a denial there is the rule's, not the place's).
+fn start_mind_gate() -> Daemon {
+    start_in(Some(Path::new(env!("CARGO_TARGET_TMPDIR"))), true, "", |cfg| {
+        cfg.replace("/segredo\"]", "/segredo\", \"%t/kalango/mind-confirm\", \"~/.local/share/kalango/mind\"]")
+    }, &[("KALANGOD_RUNTIME_BASE", "@AREA@/exec")])
+}
+
+/// (the codes folder, a file next to it that is not the Mind's) in the test's runtime folder
+fn mind_places(d: &Daemon) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::MetadataExt;
+    let uid = std::fs::metadata(&d.area).unwrap().uid();
+    let kalango = d.area.join("exec").join(uid.to_string()).join("kalango");
+    std::fs::create_dir_all(&kalango).unwrap();
+    std::fs::write(kalango.join("outro.txt"), "visivel").unwrap();
+    (kalango.join("mind-confirm"), kalango.join("outro.txt"))
+}
+
+fn make_codes(dir: &Path, content: &str) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let t = dir.join("0f3c.token");
+    std::fs::write(&t, content).unwrap();
+    std::fs::set_permissions(&t, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    t
+}
+
+/// The configuration kalangod runs with lists the folders (`%t` as written), and the file tools of an agent (read,
+/// list, write, move, trash) are refused in the codes folder, in the Mind's database, and by a path through `..`, while
+/// the neighbouring file of the runtime folder and the person's own folders still work.
+#[test]
+fn agent_file_tools_cannot_reach_the_mind_confirmation_codes() {
+    let d = start_mind_gate();
+    let mut c = Client::new(&d.sock);
+    let (dir, outro) = mind_places(&d);
+    let listed = c.rpc("kalango/protegidas", json!({})).to_string();
+    assert!(listed.contains(&dir.display().to_string()) && !listed.contains("%t"), "{listed}");
+    let content = format!("valor-{}", 8841);
+    let token = make_codes(&dir, &content);
+    let db = d.area.join(".local/share/kalango/mind");
+    std::fs::create_dir_all(&db).unwrap();
+    std::fs::write(db.join("mind.db"), "banco").unwrap();
+    // (control: what is next to it is read)
+    let r = c.call("arquivos.ler", json!({"caminho": outro}));
+    assert_ne!(r["isError"], true, "{r}");
+    assert!(r.to_string().contains("visivel"), "{r}");
+    let via_dots = dir.parent().unwrap().join("../kalango/mind-confirm/0f3c.token");
+    let docs = d.area.join("Documentos");
+    for (tool, args) in [
+        ("arquivos.ler", json!({"caminho": token})),
+        ("arquivos.ler", json!({"caminho": via_dots})),
+        ("arquivos.listar", json!({"caminho": dir})),
+        ("arquivos.escrever", json!({"caminho": dir.join("forjado.token"), "conteudo": "x"})),
+        ("arquivos.mover", json!({"de": token, "para": docs.join("roubado")})),
+        ("arquivos.mover", json!({"de": docs.join("nada"), "para": dir.join("entrou")})),
+        ("arquivos.lixeira", json!({"caminho": token})),
+        ("arquivos.ler", json!({"caminho": db.join("mind.db")})),
+        ("arquivos.escrever", json!({"caminho": db.join("planta.db"), "conteudo": "x"})),
+    ] {
+        let r = c.call(tool, args.clone());
+        assert_eq!(r["isError"], true, "{tool} {args} should be refused: {r}");
+        assert!(!r.to_string().contains(&content), "{r}");
+    }
+    assert_eq!(std::fs::read_to_string(&token).unwrap(), content, "the code is still there, untouched");
+    assert!(!dir.join("forjado.token").exists() && !dir.join("entrou").exists() && !docs.join("roubado").exists() && !db.join("planta.db").exists());
+    // the person's own files are still served
+    std::fs::write(docs.join("nota.txt"), "oi").unwrap();
+    assert_ne!(c.call("arquivos.ler", json!({"caminho": docs.join("nota.txt")}))["isError"], true);
+}
+
+/// A command an agent runs (Landlock and the cut of the folders it reads) cannot read, write, move or link the
+/// codes, also when the folder is made again with a new inode and when it is made while the command runs; the
+/// neighbouring file is read in the same command.
+#[test]
+fn an_agent_command_cannot_read_or_forge_the_mind_confirmation_codes() {
+    let d = start_mind_gate();
+    let mut c = Client::new(&d.sock);
+    let (dir, outro) = mind_places(&d);
+    let content = format!("valor-{}", 5530);
+    let token = make_codes(&dir, &content);
+    let docs = d.area.join("Documentos");
+    let sh = |c: &mut Client, script: &str| c.call("tarefas.executar", json!({"programa": "sh", "argumentos": ["-c", script], "pasta": docs}));
+    let (t, o, k) = (token.display(), outro.display(), dir.display());
+    // (control: the neighbouring file is read, so the denials below are the codes folder's)
+    let r = sh(&mut c, &format!("cat {o}"));
+    assert_eq!(r["structuredContent"]["codigo"], 0, "{r}");
+    assert!(r["structuredContent"]["saida"].as_str().unwrap().contains("visivel"), "{r}");
+    for script in [format!("cat {t}"), format!("python3 -c \"import os; os.read(os.open('{t}', os.O_RDONLY), 99)\""),
+        format!("echo forjado > {k}/forjado.token"), format!("echo 1 > {t}"), format!("mv {k} {k}-movida"), format!("mv {t} ."),
+        format!("ln {t} ."), format!("ln -s {t} elo && cat elo"), format!("rm {t}")] {
+        let r = sh(&mut c, &script);
+        assert_ne!(r["structuredContent"]["codigo"], 0, "`{script}` should fail: {r}");
+        assert!(!r.to_string().contains(&content), "{script}: {r}");
+    }
+    // (Landlock's rule to list a folder covers the folders below it, so the names in the codes folder may still be listed
+    // when the kernel guard (eBPF) is off; a name is a review's id, which is no code: the content is what stays out)
+    let r = sh(&mut c, &format!("ls {k}"));
+    assert!(!r.to_string().contains(&content), "{r}");
+    assert_eq!(std::fs::read_to_string(&token).unwrap(), content);
+    assert!(!dir.join("forjado.token").exists() && !docs.join("0f3c.token").exists());
+    // the folder made again (a new inode, a new code): the rule goes by the place
+    std::fs::remove_dir_all(&dir).unwrap();
+    let token2 = make_codes(&dir, &format!("valor-{}", 7002));
+    let r = sh(&mut c, &format!("cat {}", token2.display()));
+    assert_ne!(r["structuredContent"]["codigo"], 0, "{r}");
+    assert!(!r.to_string().contains("7002"), "{r}");
+    // made while the command runs (the service makes it when it first needs it)
+    std::fs::remove_dir_all(&dir).unwrap();
+    let later = dir.clone();
+    let maker = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(800));
+        make_codes(&later, &format!("valor-{}", 9917));
+    });
+    let r = sh(&mut c, &format!("sleep 2; cat {t}; echo fim"));
+    maker.join().unwrap();
+    assert!(!r.to_string().contains("9917"), "{r}");
+    assert!(r.to_string().contains("fim"), "{r}");
+}
+
+/// The part of the gate the home cannot show: with `%t` really outside the caller's home (under `/run`, which a command
+/// reads whole in `SISTEMA_LEITURA`), only the cut of `admin::agent_landlock` keeps a command off the codes. Falls on a host (the CI skips it) if the
+/// command's Landlock goes back to the whole of `/run`. The runtime base is a folder of the test's own under
+/// `/run/user/UID` (never the real `kalango/mind-confirm` of the session).
+#[test]
+fn a_command_cannot_read_the_mind_confirmation_codes_outside_its_home() {
+    let uid = nix::unistd::getuid().as_raw();
+    let base = Path::new("/run/user").join(uid.to_string());
+    if !base.is_dir() {
+        host_test_unavailable("no /run/user/UID");
+        return;
+    }
+    let hold = tempfile::Builder::new().prefix("kalango-teste-").tempdir_in(&base).unwrap();
+    let rt = hold.path().to_path_buf();
+    let d = start_in(Some(Path::new(env!("CARGO_TARGET_TMPDIR"))), true, "", |cfg| cfg.replace("/segredo\"]", "/segredo\", \"%t/kalango/mind-confirm\"]"),
+        &[("KALANGOD_RUNTIME_BASE", rt.to_str().unwrap())]);
+    let mut c = Client::new(&d.sock);
+    let kalango = rt.join(uid.to_string()).join("kalango");
+    std::fs::create_dir_all(&kalango).unwrap();
+    std::fs::write(kalango.join("outro.txt"), "visivel").unwrap();
+    let content = format!("valor-{}", 4417);
+    let token = make_codes(&kalango.join("mind-confirm"), &content);
+    let docs = d.area.join("Documentos");
+    let sh = |c: &mut Client, script: &str| c.call("tarefas.executar", json!({"programa": "sh", "argumentos": ["-c", script], "pasta": docs}));
+    // control: the neighbour in the same runtime folder is read through the very same `/run` grant
+    let r = sh(&mut c, &format!("cat {}", kalango.join("outro.txt").display()));
+    assert_eq!(r["structuredContent"]["codigo"], 0, "control: {r}");
+    assert!(r.to_string().contains("visivel"), "{r}");
+    let r = sh(&mut c, &format!("cat {}", token.display()));
+    assert_ne!(r["structuredContent"]["codigo"], 0, "{r}");
+    assert!(!r.to_string().contains(&content), "{r}");
+    // made again while it runs
+    std::fs::remove_dir_all(kalango.join("mind-confirm")).unwrap();
+    let later = kalango.join("mind-confirm");
+    let maker = std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(800)); make_codes(&later, "valor-6603"); });
+    let r = sh(&mut c, &format!("sleep 2; cat {}; echo fim", token.display()));
+    maker.join().unwrap();
+    assert!(r.to_string().contains("fim") && !r.to_string().contains("6603"), "{r}");
+}
+
+/// No tool of kalangod gives an agent a way to confirm the Mind's items: nothing in the catalogue is named for the
+/// Mind's confirmation, and none of its descriptions or schemas points at the confirmation folder. (The Mind's own
+/// tools for agents, `conhecimento.*`, are a later phase; their catalogue has no confirmation either.)
+#[test]
+fn kalangod_exposes_no_path_for_an_agent_to_confirm_the_mind() {
+    let d = start_mind_gate();
+    let mut c = Client::new(&d.sock);
+    let list = c.rpc("tools/list", json!({}));
+    let tools = list["result"]["tools"].as_array().expect("tools/list");
+    assert!(!tools.is_empty());
+    for t in tools {
+        let name = t["name"].as_str().unwrap_or("");
+        let text = t.to_string().to_lowercase();
+        assert!(!text.contains("mind-confirm") && !text.contains("kalango-mind"), "{name} points at the Mind's confirmation");
+        assert!(!((name.starts_with("conhecimento.") || name.starts_with("mind.") || name.starts_with("memoria.")) && name.contains("confirm")), "{name}");
+    }
+}
+
+/// A test that needs the host (a delegated cgroup, the user's systemd, `/run/user/UID`) cannot run here. With
+/// `KALANGOD_REQUIRE_HOST_TESTS=1` that is a failure, not a silent pass; without it, a visible line says it did not run.
+fn host_test_unavailable(why: &str) -> bool {
+    assert!(std::env::var("KALANGOD_REQUIRE_HOST_TESTS").as_deref() != Ok("1"), "KALANGOD_REQUIRE_HOST_TESTS=1 and the host cannot run this test: {why}");
+    eprintln!("SKIPPED (needs the host/VM, it proved nothing here): {why}");
+    true
+}
+
+/// Where the user's delegated cgroup folder is (`.../user@UID.service/app.slice`), if this session has one.
+fn app_slice_dir() -> Option<PathBuf> {
+    let cg = std::fs::read_to_string("/proc/self/cgroup").ok()?.lines().find_map(|l| l.strip_prefix("0::").map(str::to_string))?;
+    let i = cg.find("/app.slice")? + "/app.slice".len();
+    Some(PathBuf::from(format!("/sys/fs/cgroup{}", &cg[..i])))
+}
+
+/// An agent's command cannot do what a same-user process does to leave `kalango-agentes.slice`: make a folder in
+/// `app.slice` and write its pid in `cgroup.procs` (no root needed). Control: the test itself, outside the sandbox,
+/// can (a `sleep` of its own is moved); without the control (no delegated cgroup here) the test says so and stops: it
+/// needs the VM then.
+#[test]
+#[ignore = "precisa de VM/cgroup delegado"]
+fn a_command_cannot_move_itself_to_another_cgroup() {
+    let Some(app) = app_slice_dir() else { host_test_unavailable("no delegated cgroup in this session"); return };
+    let ctl = app.join(format!("kalango-fuga-ctl-{}", std::process::id()));
+    if std::fs::create_dir(&ctl).is_err() {
+        host_test_unavailable(&format!("this session cannot make a cgroup in {}", app.display()));
+        return;
+    }
+    let mut sleeper = Command::new("sleep").arg("30").spawn().unwrap();
+    let control = std::fs::write(ctl.join("cgroup.procs"), sleeper.id().to_string());
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+    for _ in 0..50 {
+        if std::fs::remove_dir(&ctl).is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if control.is_err() {
+        host_test_unavailable(&format!("this session cannot move a process between cgroups ({control:?})"));
+        return;
+    }
+    let d = start_startup();
+    let mut c = Client::new(&d.sock);
+    std::fs::create_dir_all(d.area.join("docs")).unwrap();
+    let mine = app.join(format!("kalango-fuga-{}", std::process::id()));
+    let pre = app.join(format!("kalango-fuga-pre-{}", std::process::id()));
+    std::fs::create_dir(&pre).unwrap();
+    let script = format!("mkdir {mine} 2>&1; echo mkdir=$?; echo $$ > {mine}/cgroup.procs 2>&1; echo move=$?; echo $$ > {pre}/cgroup.procs 2>&1; echo moveto=$?; \
+        echo $$ > {app}/cgroup.procs 2>&1; echo moveapp=$?; cat /proc/self/cgroup", mine = mine.display(), pre = pre.display(), app = app.display());
+    let r = c.call("tarefas.executar", json!({"programa": "sh", "argumentos": ["-c", script], "pasta": d.area.join("docs")}));
+    let out = r["structuredContent"]["saida"].as_str().unwrap_or("").to_string();
+    let made = mine.exists();
+    let _ = std::fs::remove_dir(&mine);
+    let _ = std::fs::remove_dir(&pre);
+    assert!(!made, "a cgroup folder was made from inside the sandbox: {out}");
+    for step in ["mkdir=0", "move=0", "moveto=0", "moveapp=0"] {
+        assert!(!out.contains(step), "{step}: {out}");
+    }
+    assert!(out.contains("moveto=") && out.contains("kalango-agentes.slice"), "the command ran, and stayed in the agents' slice: {out}");
+}
+
+/// An agent's command cannot reach the user manager's D-Bus (`StartTransientUnit`) nor use `systemctl --user` or
+/// `systemd-run`: nothing it asks for runs outside its cgroup as the person. Control: the same call from the test (the
+/// person) starts the unit.
+#[test]
+#[ignore = "precisa de VM/systemd de usuário"]
+fn a_command_cannot_ask_the_user_manager_to_start_a_unit() {
+    if !has_user_systemd() || Command::new("busctl").arg("--version").output().is_err() {
+        host_test_unavailable("no user systemd or busctl in this session");
+        return;
+    }
+    let call = |unit: &str| format!("busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager StartTransientUnit \
+        'ssa(sv)a(sa(sv))' {unit}.service fail 2 Description s x ExecStart 'a(sasb)' 1 /usr/bin/sleep 2 sleep 300 false 0");
+    let active = |unit: &str| Command::new("systemctl").args(["--user", "is-active", &format!("{unit}.service")]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let stop = |unit: &str| { let _ = Command::new("systemctl").args(["--user", "stop", &format!("{unit}.service")]).output(); };
+    let pid = std::process::id();
+    let (ctl, bus, run, ctlsh) = (format!("kalango-dbus-ctl-{pid}"), format!("kalango-dbus-{pid}"), format!("kalango-dbus-run-{pid}"), format!("kalango-dbus-sh-{pid}"));
+    // control, from outside the sandbox
+    let r = Command::new("sh").args(["-c", &call(&ctl)]).output().unwrap();
+    let controlled = r.status.success() && active(&ctl) == "active";
+    stop(&ctl);
+    assert!(controlled, "the person's own call must work (control): {}", String::from_utf8_lossy(&r.stderr));
+    let d = start_startup();
+    let mut c = Client::new(&d.sock);
+    std::fs::create_dir_all(d.area.join("docs")).unwrap();
+    let script = format!("{}; echo busctl=$?; systemd-run --user --unit={run} sleep 300; echo run=$?; systemctl --user start {ctlsh}.service; echo systemctl=$?; \
+        systemd-run --user --scope sleep 1; echo scope=$?", call(&bus));
+    let r = c.call("tarefas.executar", json!({"programa": "sh", "argumentos": ["-c", script], "pasta": d.area.join("docs")}));
+    let out = r["structuredContent"]["saida"].as_str().unwrap_or("").to_string();
+    let seen: Vec<String> = [&bus, &run].iter().map(|u| active(u)).collect();
+    stop(&bus);
+    stop(&run);
+    assert!(seen.iter().all(|s| s != "active"), "a unit started outside the sandbox: {seen:?} {out}");
+    for step in ["busctl=0", "run=0", "systemctl=0", "scope=0"] {
+        assert!(!out.contains(step), "{step}: {out}");
+    }
+    assert!(out.contains("busctl=") && out.contains("scope="), "the command ran: {out}");
+}
 
 /// VirtualDesk copying a file out of a machine writes it into a staging file no agent reaches; kalangod then puts it
 /// in place without following links: a folder of the destination turned into a link to autostart meanwhile (the

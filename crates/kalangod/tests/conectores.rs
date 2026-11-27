@@ -56,7 +56,10 @@ struct Ponte {
 
 impl Ponte {
     fn new(casa: &Casa, manifesto: &Path) -> Ponte {
-        let mut child = casa.cmd(&["conector", "rodar", manifesto.to_str().unwrap()]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        Ponte::with_env(casa, manifesto, &[])
+    }
+    fn with_env(casa: &Casa, manifesto: &Path, env: &[(&str, &str)]) -> Ponte {
+        let mut child = casa.cmd(&["conector", "rodar", manifesto.to_str().unwrap()]).envs(env.iter().copied()).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
         let r = BufReader::new(child.stdout.take().unwrap());
         let mut p = Ponte { child, r, n: 0 };
         assert!(p.rpc("initialize", json!({"protocolVersion": "2025-06-18"})).get("result").is_some());
@@ -255,6 +258,36 @@ fn a_connector_cannot_reach_the_session_bus_nor_run_systemd() {
     assert!(!out.contains("CONECTOU") && out.matches("recusado").count() == 2, "{out}");
     let (_, out) = p.call("executar", json!({"programa": ["/bin/sh", "-c", format!("XDG_RUNTIME_DIR=/run/user/{uid} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus systemd-run --user --quiet --scope /bin/true 2>&1; echo codigo=$?")]}));
     assert!(out.contains("codigo=") && !out.contains("codigo=0"), "systemd-run --user must fail: {out}");
+}
+
+/// A connector's Landlock is built from the system folders it reads cut around the Mind's confirmation codes
+/// (`admin::system_read(&protegidas)` in `conector::spawn`): `/run` is not granted whole. Here `%t` is a folder of the
+/// test's own under `/run/user/UID` (`KALANGOD_RUNTIME_BASE`; `XDG_RUNTIME_DIR` is left alone, the host needs it to
+/// find the user's systemd); the neighbouring file is read in the same connector (control). The `XDG_RUNTIME_DIR`
+/// variant is a unit test in `conector.rs`. Falls on a host if the connector's grants go back to the whole of `/run` (the CI has no user systemd and skips it: see `tools/system_read_tests.rs`).
+#[test]
+fn a_connector_cannot_read_the_mind_confirmation_codes() {
+    let uid = nix::unistd::getuid().as_raw();
+    let base = PathBuf::from(format!("/run/user/{uid}"));
+    // (a connector starts under the user's systemd, as in the tests above; where there is none this proves nothing, and
+    // `conector.rs` has the unit test of the same wiring)
+    if !base.is_dir() || !user_systemd() {
+        assert!(std::env::var("KALANGOD_REQUIRE_HOST_TESTS").as_deref() != Ok("1"), "KALANGOD_REQUIRE_HOST_TESTS=1 and there is no {} or no user systemd", base.display());
+        eprintln!("SKIPPED (needs the host/VM, it proved nothing here): no {} or no user systemd", base.display());
+        return;
+    }
+    let policy = tempfile::Builder::new().prefix("kalango-teste-").tempdir_in(&base).unwrap();
+    let dir = policy.path().join(uid.to_string()).join("kalango");
+    std::fs::create_dir_all(dir.join("mind-confirm")).unwrap();
+    let content = format!("valor-{}", 3301);
+    std::fs::write(dir.join("mind-confirm/0f3c.token"), &content).unwrap();
+    std::fs::write(dir.join("outro.txt"), "visivel").unwrap();
+    let casa = Casa::new();
+    let m = casa.manifesto("");
+    let mut p = Ponte::with_env(&casa, &m, &[("KALANGOD_RUNTIME_BASE", policy.path().to_str().unwrap())]);
+    let (_, out) = p.call("executar", json!({"programa": ["/bin/sh", "-c", format!("cat {d}/outro.txt; echo; cat {d}/mind-confirm/0f3c.token 2>&1; echo codigo=$?", d = dir.display())]}));
+    assert!(out.contains("visivel"), "control (the neighbour is read): {out}");
+    assert!(!out.contains(&content) && !out.contains("codigo=0"), "{out}");
 }
 
 /// A socket the connector needs (a database's) is declared in its manifest, by the person, and it is the only other
