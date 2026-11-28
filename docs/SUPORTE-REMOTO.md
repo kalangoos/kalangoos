@@ -200,3 +200,17 @@ O modelo de fluxo (pergunta a máquina → consulta → agente resume → outro 
 A lista de leitura é de texto livre validado por formas. O mesmo desenho das ações (consultas com nome e argumentos
 tipados, a linha montada pelo `kalangod`: "espaço em disco", "serviços com falha", "últimas N linhas do log do serviço X")
 reduziria a superfície de leitura. Não foi feito agora: a lista atual foi considerada suficiente.
+
+## O que falta nesta branch (`suporte-remoto-executar`)
+
+Esta branch guarda o `remoto.executar` por ações nomeadas, separado da PR da consulta porque ainda não está pronto:
+
+* **A tela de aprovação não mostra o cartão.** `kalango-aprovacao` só lê o `reason` para ferramentas de plataforma
+  (`is_platform_tool`); para `remoto.executar` ela imprime os argumentos crus em ordem alfabética. A ação em palavras, a
+  linha exata, o host e o usuário, o aviso "o agente leu a saída de máquinas" e o motivo marcado como "palavras do agente"
+  **não chegam à pessoa**: as frases "O `kalangod` abre a tela de aprovação com ..." acima descrevem o que o `kalangod`
+  monta, não o que a tela hoje exibe. Falta o **desenho** (FigCraft) e depois o código da tela.
+* **A máquina na contaminação.** `suporte::taint` confere ação, serviço e dias, mas não a máquina (`maquina`).
+* **Mutações sem teste** (a lista da consulta está na outra branch): a regra de contaminação no motor e o aviso de leitura
+  precisam de testes que derrubem uma mutação.
+* A validação das ações no Remote (cópia byte a byte) segue pendente.
