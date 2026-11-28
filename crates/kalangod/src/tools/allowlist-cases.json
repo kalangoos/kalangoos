@@ -18,7 +18,6 @@
 "ip -br link",
 "ss -tulpn",
 "ss -tuln",
-"ps aux",
 "cat /etc/os-release",
 "cat /etc/hostname",
 "apt list --upgradable",
@@ -32,8 +31,6 @@
 "systemctl list-units --failed --no-pager",
 "journalctl -u nginx -n 50 --no-pager",
 "journalctl -u nginx.service -n 500",
-"journalctl -n 20 --no-pager",
-"journalctl -p err -n 100 --no-pager",
 "journalctl -n 30 -u sshd -p warning",
 "du -sh /var/log",
 "du -sh /home/ana/projetos",
@@ -45,8 +42,7 @@
 "ls -a /tmp",
 "ls -1 /opt",
 "tail -n 50 /var/log/syslog",
-"tail -n 1 /var/log/nginx/error.log",
-"tail -n 500 /var/log/auth.log"
+"tail -n 1 /var/log/nginx/error.log"
 ],
 "denied": [
 "rm -rf /tmp/x",
@@ -373,6 +369,24 @@
 "df\u00a0-h",
 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 "uptime aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-"ls -la /aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+"ls -la /aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+"ps aux",
+"ps",
+"tail -n 500 /var/log/auth.log",
+"tail -n 50 /var/log/secure",
+"tail -n 50 /var/log/btmp",
+"tail -n 50 /var/log/wtmp",
+"tail -n 50 /var/log/lastlog",
+"tail -n 5 /var/log/audit/audit.log",
+"tail -n 5 /var/log/sudo.log",
+"tail -n 5 /var/log/keyrings/x",
+"tail -n 5 /var/log/AUTH.LOG",
+"journalctl -n 20 --no-pager",
+"journalctl -p err -n 100 --no-pager",
+"journalctl -n 50",
+"ls /home/ana/.local/share/keyrings",
+"du -sh /home/ana/.local/share/keyrings",
+"ls /home/ana/.gnome2/keyrings",
+"ls /var/lib/gnome-keyring"
 ]
 }

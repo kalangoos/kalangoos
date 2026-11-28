@@ -37,7 +37,6 @@ pub fn check(cmd: &str) -> Result<(), String> {
         "uname" => matches!(args, ["-a"] | ["-r"] | []),
         "ip" => matches!(args, ["-br", "addr"] | ["-br", "link"]),
         "ss" => matches!(args, ["-tulpn"] | ["-tuln"]),
-        "ps" => matches!(args, ["aux"]),
         "cat" => matches!(args, ["/etc/os-release"] | ["/etc/hostname"]),
         "apt" => matches!(args, ["list", "--upgradable"]),
         "systemctl" => systemctl(args),
@@ -99,7 +98,8 @@ fn journalctl(args: &[&str]) -> bool {
             _ => return false,
         }
     }
-    lines
+    // a unit is required: the whole journal holds what other programs logged, secrets typed on a command line included
+    unit && lines
 }
 
 fn ls(args: &[&str]) -> bool {
@@ -127,7 +127,7 @@ pub fn path_ok(p: &str) -> bool {
         return false;
     }
     let lower: Vec<String> = parts.iter().map(|c| c.to_ascii_lowercase()).collect();
-    let secret_dir = |c: &str| matches!(c, ".ssh" | ".gnupg" | ".aws" | ".kube" | ".docker" | ".config" | "secrets" | "private" | ".password-store");
+    let secret_dir = |c: &str| matches!(c, ".ssh" | ".gnupg" | ".aws" | ".kube" | ".docker" | ".config" | "secrets" | "private" | ".password-store" | "keyrings" | ".gnome2" | "gnome-keyring" | ".mozilla" | ".thunderbird");
     let secret_file = |c: &str| {
         c.starts_with("id_")
             || c.starts_with(".env")
@@ -155,8 +155,16 @@ pub fn path_ok(p: &str) -> bool {
     }
 }
 
+/// Logs of logins and of what people type (usernames with passwords by mistake, sudo lines, audit records).
+fn log_holds_secrets(f: &str) -> bool {
+    let lower = f.to_ascii_lowercase();
+    lower.split('/').any(|c| {
+        ["auth.log", "secure", "btmp", "wtmp", "lastlog", "faillog", "sudo.log", "audit", "keyrings"].iter().any(|n| c == *n || (c.starts_with(n) && c[n.len()..].starts_with(['.', '-'])))
+    })
+}
+
 fn log_file_ok(f: &str) -> bool {
-    path_ok(f) && f.starts_with("/var/log/") && f.len() > "/var/log/".len() && !f.ends_with('/')
+    path_ok(f) && f.starts_with("/var/log/") && f.len() > "/var/log/".len() && !f.ends_with('/') && !log_holds_secrets(f)
 }
 
 #[cfg(test)]
