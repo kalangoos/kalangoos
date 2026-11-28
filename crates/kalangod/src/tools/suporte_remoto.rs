@@ -590,11 +590,9 @@ mod tests {
         assert_eq!(by("remoto.consultar").effect, Effect::Leitura);
         assert!(t.iter().all(|t| t.name != "remoto.executar"), "changing a machine is not in this tool set");
         assert_eq!(t.len(), 2);
-        for n in ["remoto.consultar"] {
-            let sch = (by(n).schema)();
-            assert_eq!(sch["additionalProperties"], json!(false));
-            assert!(sch["required"].as_array().unwrap().iter().any(|r| r == "maquina"));
-        }
+        let sch = (by("remoto.consultar").schema)();
+        assert_eq!(sch["additionalProperties"], json!(false));
+        assert!(sch["required"].as_array().unwrap().iter().any(|r| r == "maquina"));
     }
 
     /// The allowlist and its cases are the same bytes as Kalango Remote's copy (set `KALANGO_REMOTE_REPO` to the
