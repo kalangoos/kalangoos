@@ -15,6 +15,7 @@ pub mod plataforma;
 pub mod plataforma_contrato;
 pub mod flow_draft;
 pub mod maquinas;
+pub mod suporte_remoto;
 pub mod web;
 pub mod tela;
 pub mod craft;
@@ -78,6 +79,7 @@ pub fn all() -> Vec<Tool> {
     v.extend(plataforma::tools());
     v.extend(craft::tools());
     v.extend(gatilho_internet::tools());
+    v.extend(suporte_remoto::tools());
     v
 }
 
@@ -219,6 +221,7 @@ pub fn precheck(state_dir: &std::path::Path, peer: &Peer, name: &str, args: &Val
     match name {
         "gpu.vfio_reservar" => gpu::precheck(args),
         n if n.starts_with("vm.") => maquinas::precheck(state_dir, peer, n, args),
+        "remoto.consultar" => suporte_remoto::precheck(peer, name, args),
         _ => Ok(()),
     }
 }

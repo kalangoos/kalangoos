@@ -95,7 +95,7 @@ fn answer_rule(language: &str) -> String {
 /// Turns in a row where every call failed: the agent is going in circles (stop and ask the person).
 const MAX_FAILED_TURNS: usize = 3;
 /// Tools the engine never offers: they exist for kalangod's own undo.
-pub(crate) const INTERNAL: &[&str] = &["arquivos.restaurar", "arquivos.apagar_criado", "agentes.apagar_criado"];
+pub(crate) const INTERNAL: &[&str] = &["arquivos.restaurar", "arquivos.apagar_criado", "agentes.apagar_criado", "remoto.maquinas", "remoto.consultar"];
 
 /// Domains of the tools and the words of a request that bring them in (pt and en). A small model chooses
 /// better among a dozen tools than among fifty.
@@ -940,7 +940,18 @@ impl Agent {
         // calculator, plan and question tools of the other notes below are not offered (a small model proposes the
         // connection better with nothing else to pick, and no note names a tool that is not there).
         let mut remote_only = false;
-        if crate::remote::wanted(&lower) {
+        // remote support (`remoto.maquinas`, `remoto.consultar`): only for a request about a machine to
+        // look at, and then alone, with a note and examples (the tools are kept out of every other request)
+        if crate::suporte::wanted(&lower) {
+            let support: Vec<Tool> = self.tools.iter().filter(|t| crate::suporte::TOOLS.contains(&t.name.as_str()) && permissoes::get(t) != Perm::Never && !self.desligada(t)).cloned().collect();
+            if support.iter().any(|t| t.name == crate::suporte::CONSULT) {
+                let nota = crate::suporte::note(&api_name);
+                self.messages[0]["content"] = json!(format!("{}\n\n{nota}", self.messages[0]["content"].as_str().unwrap_or("")));
+                offered = support;
+                remote_only = true;
+            }
+        }
+        if !remote_only && crate::remote::wanted(&lower) {
             let t = crate::remote::tool();
             if permissoes::get(&t) != Perm::Never && !self.desligada(&t) {
                 let nota = trf_model("To connect to another computer call {tool} now, with the computer's name as the person said it (\"notebook da mãe\" is a name: do not ask for another); it shows them a plan and only a click of theirs connects. Never connect any other way, never invent an address, and say plainly if they decline.", &[("tool", api_name(crate::remote::TOOL))]);
