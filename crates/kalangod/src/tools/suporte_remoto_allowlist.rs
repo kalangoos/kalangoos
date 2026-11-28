@@ -53,15 +53,9 @@ pub fn check(cmd: &str) -> Result<(), String> {
     }
 }
 
-/// The services support may act on (kalangod's `remoto.executar`, by their plain name).
-pub const SERVICES: &[&str] = &[
-    "nginx", "apache2", "httpd", "caddy", "php-fpm", "postgresql", "mysql", "mariadb", "redis-server", "redis", "mongod", "memcached", "docker", "containerd", "cups", "smbd", "nmbd", "bluetooth", "cron", "crond", "rsyslog",
-    "unattended-upgrades", "chrony", "ntp",
-];
-
-/// The services whose journal and status an agent may READ: the list above without what logs other programs' command
-/// lines or login sessions (`cron`/`crond` log the commands of every job, `rsyslog` relays everyone's lines). `ssh`,
-/// `sshd`, `systemd-logind`, `sudo`, `auditd` and session scopes are in neither list.
+/// The services whose journal and status an agent may READ: common maintenance services, without the ones that log other
+/// programs' command lines or login sessions (`cron`/`crond` log the commands of every job, `rsyslog` relays everyone's
+/// lines). `ssh`, `sshd`, `systemd-logind`, `sudo`, `auditd` and session scopes are not in it.
 pub const LOG_SERVICES: &[&str] = &[
     "nginx", "apache2", "httpd", "caddy", "php-fpm", "postgresql", "mysql", "mariadb", "redis-server", "redis", "mongod", "memcached", "docker", "containerd", "cups", "smbd", "nmbd", "bluetooth", "unattended-upgrades", "chrony", "ntp",
 ];

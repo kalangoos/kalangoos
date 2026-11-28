@@ -221,7 +221,7 @@ pub fn precheck(state_dir: &std::path::Path, peer: &Peer, name: &str, args: &Val
     match name {
         "gpu.vfio_reservar" => gpu::precheck(args),
         n if n.starts_with("vm.") => maquinas::precheck(state_dir, peer, n, args),
-        "remoto.consultar" | "remoto.executar" => suporte_remoto::precheck(peer, name, args),
+        "remoto.consultar" => suporte_remoto::precheck(peer, name, args),
         _ => Ok(()),
     }
 }

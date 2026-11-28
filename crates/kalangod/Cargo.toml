@@ -13,6 +13,7 @@ toml = "0.8"
 nix = { version = "0.29", features = ["socket", "user", "fs", "signal", "process", "mount", "sched", "dir"] }
 landlock = "0.4"
 libc = "0.2"
+unicode-normalization = "0.1"
 seccompiler = "0.5"
 aya = { version = "0.13", default-features = false }
 # conectores remotos (MCP por HTTP) e OAuth com PKCE
