@@ -30,8 +30,8 @@
 "systemctl --failed --no-pager",
 "systemctl list-units --failed --no-pager",
 "journalctl -u nginx -n 50 --no-pager",
+"journalctl -n 30 -u postgresql -p warning",
 "journalctl -u nginx.service -n 500",
-"journalctl -n 30 -u sshd -p warning",
 "du -sh /var/log",
 "du -sh /home/ana/projetos",
 "ls",
@@ -41,7 +41,6 @@
 "ls -lah /var/www",
 "ls -a /tmp",
 "ls -1 /opt",
-"tail -n 50 /var/log/syslog",
 "tail -n 1 /var/log/nginx/error.log"
 ],
 "denied": [
@@ -387,6 +386,24 @@
 "ls /home/ana/.local/share/keyrings",
 "du -sh /home/ana/.local/share/keyrings",
 "ls /home/ana/.gnome2/keyrings",
-"ls /var/lib/gnome-keyring"
+"ls /var/lib/gnome-keyring",
+"journalctl -n 30 -u sshd -p warning",
+"journalctl -u ssh -n 50",
+"journalctl -u sshd.service -n 50 --no-pager",
+"journalctl -u systemd-logind -n 50",
+"journalctl -u sudo -n 50",
+"journalctl -u su -n 5",
+"journalctl -u auditd -n 5",
+"journalctl -u session-3.scope -n 5",
+"journalctl -u user@1000.service -n 5",
+"journalctl -u gdm -n 5",
+"systemctl status sshd",
+"systemctl status ssh.service",
+"systemctl status systemd-logind --no-pager",
+"tail -n 50 /var/log/syslog",
+"tail -n 50 /var/log/syslog.1",
+"tail -n 50 /var/log/messages",
+"tail -n 50 /var/log/kern.log",
+"tail -n 5 /var/log/daemon.log"
 ]
 }

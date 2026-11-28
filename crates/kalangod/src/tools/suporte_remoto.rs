@@ -108,35 +108,8 @@ pub fn check_act(cmd: &str) -> Result<(), String> {
 /// NOT make a stop harmless: stopping `docker`, `postgresql` or `nginx` takes that service (and what runs on it) down,
 /// and nothing here undoes it; that is why the person approves the exact command. A name is matched whole, as `NAME`
 /// or `NAME.service`: no templates (`@`), no other unit types.
-const ACT_SERVICES: &[&str] = &[
-    "nginx",
-    "apache2",
-    "httpd",
-    "caddy",
-    "php-fpm",
-    "postgresql",
-    "mysql",
-    "mariadb",
-    "redis-server",
-    "redis",
-    "mongod",
-    "memcached",
-    "docker",
-    "containerd",
-    "cups",
-    "smbd",
-    "nmbd",
-    "bluetooth",
-    "cron",
-    "crond",
-    "rsyslog",
-    "unattended-upgrades",
-    "chrony",
-    "ntp",
-];
-
 fn act_unit_ok(u: &str) -> bool {
-    ACT_SERVICES.contains(&u.strip_suffix(".service").unwrap_or(u))
+    allowlist::service_ok(u)
 }
 
 /// The packages support may install: a closed list of common tools and the packages of the services above. A name
@@ -385,7 +358,7 @@ fn remote_with(peer: &Peer, args: &[&str], exe: &Path, deadline: Duration) -> Re
     }
     let (stdout, stderr) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
     let line = String::from_utf8_lossy(&stdout);
-    serde_json::from_str(line.trim()).map_err(|_| trf("Kalango Remote did not answer: {e}", &[("e", clean(&String::from_utf8_lossy(&stderr), 200))]))
+    serde_json::from_str(line.trim()).map_err(|_| trf("Kalango Remote did not answer: {e}", &[("e", clean(&scrub(&String::from_utf8_lossy(&stderr)), 200))]))
 }
 
 fn list(peer: &Peer) -> Result<Vec<Value>, String> {
@@ -478,13 +451,26 @@ fn approval_text(m: &Value, args: &Value, read_output: bool) -> Result<String, S
 /// fixed shape): the read-only list also keeps the usual sources of secrets out.
 fn scrub(text: &str) -> String {
     const MARKS: &[&str] = &["password", "passwd", "secret", "token", "api_key", "api-key", "apikey", "authorization:", "bearer ", "private key", "credential", "passphrase"];
-    text.lines()
-        .map(|l| {
-            let lower = l.to_ascii_lowercase();
-            if MARKS.iter().any(|m| lower.contains(m)) { tr("[line hidden: it may hold a secret]").to_string() } else { l.to_string() }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let hidden = tr("[line hidden: it may hold a secret]").to_string();
+    let mut in_block = false;
+    let mut out = Vec::new();
+    for l in text.lines() {
+        // a block between BEGIN and END markers (a PEM key, a certificate request, a PGP block) goes whole, ends included
+        if l.contains("-----BEGIN") {
+            in_block = true;
+        }
+        let lower = l.to_ascii_lowercase();
+        let long_blob = l.len() >= 64 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=_-".contains(&b));
+        if in_block || long_blob || MARKS.iter().any(|m| lower.contains(m)) {
+            out.push(hidden.clone());
+        } else {
+            out.push(l.to_string());
+        }
+        if l.contains("-----END") {
+            in_block = false;
+        }
+    }
+    out.join("\n")
 }
 
 static READ_FROM: Mutex<Option<HashMap<(u32, String), Instant>>> = Mutex::new(None);
@@ -520,13 +506,12 @@ fn run(c: &Ctx, a: &Value, profile: &str, max: usize) -> Result<Out, String> {
     let r = remote(c.peer, &["ssh-run", "--machine", id, "--profile", profile, "--timeout", &timeout, "--max-output", "65536", "--", cmd])?;
     if let Some(e) = r["error"].as_object() {
         let code = e.get("code").and_then(Value::as_str).unwrap_or("error");
-        let msg = clean(e.get("message").and_then(Value::as_str).unwrap_or(""), 300);
+        let msg = clean(&scrub(e.get("message").and_then(Value::as_str).unwrap_or("")), 300);
         return Err(format!("{code}: {msg}"));
     }
     let code = r["exit_code"].as_i64();
-    if profile == "consult" {
-        note_read(c.peer, id);
-    }
+    // (whatever the profile, what the machine printed goes back to the agent)
+    note_read(c.peer, id);
     let scrubbed = |v: &Value| json!(scrub(v.as_str().unwrap_or("")));
     let value = json!({
         "machine": id,
@@ -910,10 +895,10 @@ mod tests {
 
     #[test]
     fn a_secret_looking_line_never_reaches_the_agent() {
-        let out = scrub("Filesystem Size\nDB_PASSWORD=hunter2\nAuthorization: Bearer abc\n-----BEGIN PRIVATE KEY-----\nplain line");
+        let out = scrub(&format!("Filesystem Size\nDB_PASSWORD=hunter2\nAuthorization: Bearer abc\n-----{} PRIVATE KEY-----\nMIIEvQIBADANBgkq\n-----{} PRIVATE KEY-----\nplain line", "BEGIN", "END"));
         assert!(!out.contains("hunter2") && !out.contains("abc") && !out.contains("PRIVATE"), "{out}");
         assert!(out.contains("Filesystem Size") && out.contains("plain line"));
-        assert_eq!(out.lines().count(), 5);
+        assert_eq!(out.lines().count(), 7);
     }
 
     #[test]
@@ -980,5 +965,51 @@ mod tests {
         // a normal answer still works
         let (r, _) = run("echo '{\"ok\": true}'");
         assert_eq!(r.unwrap()["ok"], true);
+    }
+
+    #[test]
+    fn a_key_block_goes_whole_and_the_error_path_is_scrubbed_too() {
+        // (the markers are built here so that no secret scanner mistakes this made-up block for a real key)
+        let (begin, end) = (format!("-----{} OPENSSH PRIVATE KEY-----", "BEGIN"), format!("-----{} OPENSSH PRIVATE KEY-----", "END"));
+        let pem = format!("before\n{begin}\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUxOQ\nAAAAIFAKEKEYFAKEKEYFAKEKEYFAKEKEYFAKEKEYFAKEKEY\n{end}\nafter");
+        let out = scrub(&pem);
+        assert!(!out.contains("b3Blbn") && !out.contains("FAKEKEY") && !out.contains("BEGIN") && !out.contains("END"), "{out}");
+        assert!(out.starts_with("before") && out.ends_with("after"), "{out}");
+        assert_eq!(out.lines().count(), 6);
+        // a block with no END hides everything after it; a lone long base64 line goes too
+        assert!(!scrub(&format!("x\n-----{} CERTIFICATE-----\nMIIB\nmore", "BEGIN")).contains("more"));
+        assert!(!scrub("ok\nQUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODk=").contains("QUJD"));
+        assert_eq!(scrub("Filesystem  Size  Used\n/dev/sda1  50G  20G"), "Filesystem  Size  Used\n/dev/sda1  50G  20G");
+        // the error message of a failed call is scrubbed by the same function (run() passes it through scrub)
+        assert!(!scrub("denied: password=hunter2").contains("hunter2"));
+    }
+
+    #[test]
+    fn every_profile_whose_output_returns_marks_the_machine_as_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("kalango-remote");
+        std::fs::write(&stub, "#!/bin/sh\necho '{\"exit_code\": 0, \"stdout\": \"ok\", \"stderr\": \"\", \"truncated\": false}'\n").unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("KALANGO_REMOTE", &stub);
+        let (cfg, rule, p) = (crate::policy::Config::system_default(), crate::policy::CallerRule { name: "t".into(), uid: None, exe_prefix: None, cgroup_prefix: None, max_level: Level::Total, allowed_paths: vec![] }, Peer { pid: 5151, uid: 1001, ..peer() });
+        let tl = crate::timeline::Timeline::open(dir.path()).unwrap();
+        let c = Ctx { cfg: &cfg, peer: &p, rule: &rule, timeline: &tl, lan: None, state: None, startup_ok: vec![] };
+        for (profile, machine) in [("consult", "marca-consulta"), ("act", "marca-acao")] {
+            assert!(!read_recently(&p, machine));
+            run(&c, &json!({"maquina": machine, "comando": "uptime"}), profile, 100).unwrap();
+            assert!(read_recently(&p, machine), "{profile} output went back to the agent");
+        }
+        std::env::remove_var("KALANGO_REMOTE");
+    }
+
+    #[test]
+    fn journal_and_status_of_login_units_are_not_for_agents() {
+        for bad in ["journalctl -u sshd -n 5", "journalctl -u ssh.service -n 5", "journalctl -u systemd-logind -n 5", "journalctl -u sudo -n 5", "journalctl -u session-3.scope -n 5", "systemctl status sshd", "tail -n 5 /var/log/syslog", "tail -n 5 /var/log/messages"] {
+            assert!(allowlist::check(bad).is_err(), "{bad}");
+        }
+        for ok in ["journalctl -u nginx -n 5", "systemctl status docker.service", "tail -n 5 /var/log/nginx/error.log"] {
+            assert!(allowlist::check(ok).is_ok(), "{ok}");
+        }
     }
 }

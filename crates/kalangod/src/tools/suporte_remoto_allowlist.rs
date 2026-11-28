@@ -53,6 +53,19 @@ pub fn check(cmd: &str) -> Result<(), String> {
     }
 }
 
+/// The services whose logs and status an agent may read (and, in kalangod, act on): the same closed list. `ssh`, `sshd`,
+/// `systemd-logind`, `sudo`, `auditd` and session scopes are not in it: their journal is the login log, which the log
+/// files list already keeps out (`log_holds_secrets`).
+pub const SERVICES: &[&str] = &[
+    "nginx", "apache2", "httpd", "caddy", "php-fpm", "postgresql", "mysql", "mariadb", "redis-server", "redis", "mongod", "memcached", "docker", "containerd", "cups", "smbd", "nmbd", "bluetooth", "cron", "crond", "rsyslog",
+    "unattended-upgrades", "chrony", "ntp",
+];
+
+/// `NAME` or `NAME.service` of one of `SERVICES`.
+pub fn service_ok(u: &str) -> bool {
+    SERVICES.contains(&u.strip_suffix(".service").unwrap_or(u))
+}
+
 fn unit_ok(u: &str) -> bool {
     !u.is_empty()
         && u.len() <= 64
@@ -67,8 +80,9 @@ fn lines_ok(n: &str) -> bool {
 
 fn systemctl(args: &[&str]) -> bool {
     match args {
-        ["status" | "is-active" | "is-enabled", u] => unit_ok(u),
-        ["status", u, "--no-pager"] => unit_ok(u),
+        ["is-active" | "is-enabled", u] => unit_ok(u),
+        // (`status` prints the last lines of the unit's journal: only the closed list of services)
+        ["status", u] | ["status", u, "--no-pager"] => service_ok(u),
         ["--failed", "--no-pager"] | ["list-units", "--failed", "--no-pager"] => true,
         _ => false,
     }
@@ -79,7 +93,7 @@ fn journalctl(args: &[&str]) -> bool {
     let mut i = 0;
     while i < args.len() {
         match args[i] {
-            "-u" if !unit && args.get(i + 1).is_some_and(|u| unit_ok(u)) => {
+            "-u" if !unit && args.get(i + 1).is_some_and(|u| service_ok(u)) => {
                 unit = true;
                 i += 2;
             }
@@ -159,7 +173,7 @@ pub fn path_ok(p: &str) -> bool {
 fn log_holds_secrets(f: &str) -> bool {
     let lower = f.to_ascii_lowercase();
     lower.split('/').any(|c| {
-        ["auth.log", "secure", "btmp", "wtmp", "lastlog", "faillog", "sudo.log", "audit", "keyrings"].iter().any(|n| c == *n || (c.starts_with(n) && c[n.len()..].starts_with(['.', '-'])))
+        ["auth.log", "secure", "btmp", "wtmp", "lastlog", "faillog", "sudo.log", "audit", "keyrings", "syslog", "messages", "daemon.log", "user.log", "kern.log", "debug"].iter().any(|n| c == *n || (c.starts_with(n) && c[n.len()..].starts_with(['.', '-'])))
     })
 }
 
