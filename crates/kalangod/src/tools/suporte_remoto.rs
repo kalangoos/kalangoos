@@ -314,7 +314,12 @@ fn remote_with(peer: &Peer, args: &[&str], exe: &Path, deadline: Duration) -> Re
     let started = Instant::now();
     loop {
         match child.try_wait().map_err(|e| e.to_string())? {
-            Some(_) => break,
+            Some(_) => {
+                // the program is gone, but a child it left behind may still hold the pipes: end the whole group before
+                // waiting for the readers, or one `sleep &` keeps this call for as long as it likes
+                let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(child.id() as i32), nix::sys::signal::Signal::SIGKILL);
+                break;
+            }
             None if started.elapsed() >= deadline => {
                 let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(child.id() as i32), nix::sys::signal::Signal::SIGKILL);
                 let _ = child.kill();
@@ -416,31 +421,75 @@ fn approval_text(m: &Value, args: &Value, read_output: bool) -> Result<String, S
 
 // ---------------------------------------------------------------- what came back
 
-/// What a machine printed goes to the agent's context: a line that looks like it holds a secret (a password, a token, a
-/// private key, an authorization header) is replaced, whole, before it leaves kalangod. Not a guarantee (a secret has no
-/// fixed shape): the read-only list also keeps the usual sources of secrets out.
+/// What a machine printed goes to the agent's context: a line that looks like it holds a secret is replaced, whole, before
+/// it leaves kalangod: passwords, tokens and keys by name (`password`, `requirepass`, `MYSQL_PWD`, `pwd=`, an
+/// `Authorization` or `Cookie` header, `bearer`), by shape (a JWT, an AWS key id, a GitHub/OpenAI/Slack token, a 40-character
+/// mixed-case key, a URL with `user:password@`, a long base64 line) and a whole BEGIN/END block, plus the base64 lines that
+/// touch a hidden line (the last line of a key whose BEGIN scrolled away). Not a guarantee (a secret has no fixed shape):
+/// the read-only list also keeps the usual sources of secrets out.
 fn scrub(text: &str) -> String {
-    const MARKS: &[&str] = &["password", "passwd", "secret", "token", "api_key", "api-key", "apikey", "authorization:", "bearer ", "private key", "credential", "passphrase"];
     let hidden = tr("[line hidden: it may hold a secret]").to_string();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut hide = vec![false; lines.len()];
     let mut in_block = false;
-    let mut out = Vec::new();
-    for l in text.lines() {
+    for (i, l) in lines.iter().enumerate() {
         // a block between BEGIN and END markers (a PEM key, a certificate request, a PGP block) goes whole, ends included
         if l.contains("-----BEGIN") {
             in_block = true;
         }
-        let lower = l.to_ascii_lowercase();
-        let long_blob = l.len() >= 64 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=_-".contains(&b));
-        if in_block || long_blob || MARKS.iter().any(|m| lower.contains(m)) {
-            out.push(hidden.clone());
-        } else {
-            out.push(l.to_string());
-        }
+        hide[i] = in_block || looks_secret(l);
         if l.contains("-----END") {
             in_block = false;
         }
     }
-    out.join("\n")
+    // base64 lines next to a hidden line go too (a key's last line, a certificate body)
+    for _ in 0..2 {
+        for i in 0..lines.len() {
+            if !hide[i] && is_base64_line(lines[i], 12) && ((i > 0 && hide[i - 1]) || (i + 1 < lines.len() && hide[i + 1])) {
+                hide[i] = true;
+            }
+        }
+        for i in (0..lines.len()).rev() {
+            if !hide[i] && is_base64_line(lines[i], 12) && ((i > 0 && hide[i - 1]) || (i + 1 < lines.len() && hide[i + 1])) {
+                hide[i] = true;
+            }
+        }
+    }
+    lines.iter().zip(&hide).map(|(l, h)| if *h { hidden.as_str() } else { l }).collect::<Vec<_>>().join("\n")
+}
+
+fn is_base64_line(l: &str, min: usize) -> bool {
+    l.len() >= min && l.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=_-".contains(&b))
+}
+
+fn looks_secret(l: &str) -> bool {
+    const MARKS: &[&str] = &[
+        "password", "passwd", "secret", "token", "api_key", "api-key", "apikey", "authorization", "bearer", "private key", "credential", "passphrase", "cookie", "mysql_pwd", "requirepass", "masterauth", "pwd=", "pw=", "pass:",
+        "pass=", "aws_access", "aws_secret", "x-api",
+    ];
+    let lower = l.to_ascii_lowercase();
+    if MARKS.iter().any(|m| lower.contains(m)) || is_base64_line(l, 64) {
+        return true;
+    }
+    // a URL with a user and a password in it: scheme://user:password@host
+    if let Some(i) = l.find("://") {
+        let authority = l[i + 3..].split(['/', ' ', '\t', '?', '#']).next().unwrap_or("");
+        if let Some((cred, _)) = authority.split_once('@') {
+            if cred.contains(':') {
+                return true;
+            }
+        }
+    }
+    // words: `key=sk-…`, `"token":"ghp_…"`, an AWS key id inside a sentence
+    l.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')).any(|w| {
+        let jwt = w.starts_with("eyJ") && w.matches('.').count() >= 2;
+        let aws_id = (w.starts_with("AKIA") || w.starts_with("ASIA")) && w.len() >= 20 && w[4..20].bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+        let prefixed = ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "sk-", "xoxb-", "xoxp-", "xoxa-", "xoxs-", "xoxr-", "glpat-", "npm_"].iter().any(|p| w.starts_with(p) && w.len() > p.len() + 6);
+        jwt || aws_id || prefixed
+    }) || l.split(|c: char| !(c.is_ascii_alphanumeric() || c == '/' || c == '+' || c == '=')).any(|w| {
+        // an AWS secret access key: 40 characters of base64 with upper, lower and digits (a sha1 is all hex, so it stays)
+        w.len() == 40 && w.bytes().any(|b| b.is_ascii_uppercase()) && w.bytes().any(|b| b.is_ascii_lowercase()) && w.bytes().any(|b| b.is_ascii_digit())
+    })
 }
 
 static READ_FROM: Mutex<Option<HashMap<u32, Instant>>> = Mutex::new(None);
@@ -882,5 +931,66 @@ mod tests {
         // the generic argument check refuses a `comando`
         assert!(super::super::check_args(&sch, &json!({"maquina": "web-1", "acao": "atualizar_indice_apt", "comando": "rm -rf /", "motivo": "x"})).is_err());
         assert!(super::super::check_args(&sch, &json!({"maquina": "web-1", "acao": "atualizar_indice_apt", "motivo": "x"})).is_ok());
+    }
+
+    #[test]
+    fn a_child_left_holding_the_pipe_does_not_hold_the_call() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("fake");
+        std::fs::write(&f, "#!/bin/sh\nsleep 8 &\necho '{}'\n").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let t = Instant::now();
+        let r = remote_with(&peer(), &["x"], &f, Duration::from_millis(400));
+        assert!(r.is_ok(), "{r:?}");
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn the_reader_stops_at_its_cap_and_still_drains() {
+        let data = vec![b'a'; 3 << 20];
+        let got = read_capped(std::io::Cursor::new(data), 1000).join().unwrap();
+        assert_eq!(got.len(), 1000);
+        assert!(MAX_STDOUT <= 1 << 20 && MAX_STDERR <= 16 << 10);
+    }
+
+    #[test]
+    fn the_secrets_people_actually_have_are_hidden() {
+        let fake_jwt = format!("{}.{}.{}", "eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "abc_DEF-123");
+        let fake_aws = format!("{}{}", "AKIA", "IOSFODNN7EXAMPLE");
+        let fake_aws_secret = format!("{}{}", "wJalrXUtnFEMI/K7MDENG/", "bPxRfiCYEXAMPLEKEY");
+        let hidden = tr("[line hidden: it may hold a secret]");
+        for l in [
+            format!("jwt: {fake_jwt}"),
+            format!("access key {fake_aws} in use"),
+            format!("aws {fake_aws_secret}"),
+            "backup at postgres://admin:hunter2@db.internal/app".to_string(),
+            "AUTHORIZATION : Basic dXNlcjpwYXNz".to_string(),
+            "authorization=Bearer abc".to_string(),
+            "Cookie: sid=abc123".to_string(),
+            "Set-Cookie: sid=abc123; HttpOnly".to_string(),
+            "github token ghp_abcdefghijklmnopqrstuvwxyz0123456789".to_string(),
+            "OPENAI_API_KEY=sk-proj-abcdefghijklmnop".to_string(),
+            "key sk-abcdefghijklmnopqrstuv".to_string(),
+            "slack xoxb-123456789012-abcdefghijkl".to_string(),
+            "Environment=MYSQL_PWD=abc".to_string(),
+            "requirepass foobared".to_string(),
+            "masterauth foobared".to_string(),
+            "mysql -u root pwd=abc".to_string(),
+            "login pw=abc".to_string(),
+            "ftp pass: abc".to_string(),
+            "bearer:abc".to_string(),
+            "Bearer\tabc".to_string(),
+        ] {
+            assert_eq!(scrub(&l), hidden, "{l}");
+        }
+        // the last line of a key whose BEGIN is not in the output goes with its neighbours
+        let tail = "plain\nMIIEvQIBADANBgkqhkiG9w0BAQEF\nAAAAIFAKEKEY==\n-----END PRIVATE KEY-----\nplain too";
+        let out = scrub(tail);
+        assert!(!out.contains("MIIEv") && !out.contains("AAAAIF") && out.starts_with("plain") && out.ends_with("plain too"), "{out}");
+        // ordinary output is left alone: disk lines, a sha1, a sentence with "sk" and a URL without credentials
+        for ok in ["/dev/sda1 50G 20G 28G 42% /", "da39a3ee5e6b4b0d3255bfef95601890afd80709 file", "the disk-usage task is fine", "see https://example.com/docs and ssh://git@host/repo"] {
+            assert_eq!(scrub(ok), ok);
+        }
     }
 }
