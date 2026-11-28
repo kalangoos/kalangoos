@@ -87,20 +87,31 @@ const PROGRAMS: &[&str] = &["systemctl", "service"];
 /// the command passes only when the person said one of these (or wrote the verb itself): a verb is never neutral,
 /// `stop` or `disable` take a service down, so what an external text suggested does not count.
 const VERBS: &[(&str, &[&str])] = &[
-    ("restart", &["reinicie", "reiniciar", "reinicia", "reinicio", "restart", "restarte"]),
-    ("reload", &["recarregue", "recarregar", "recarrega", "reload"]),
-    ("start", &["ligue", "ligar", "inicie", "iniciar", "suba", "subir", "start"]),
-    ("stop", &["pare", "parar", "para", "stop"]),
-    ("enable", &["habilite", "habilitar", "enable"]),
-    ("disable", &["desabilite", "desabilitar", "disable"]),
-    ("status", &["status", "estado"]),
+    ("restart", &["reinicie", "restart"]),
+    ("reload", &["recarregue", "reload"]),
+    ("start", &["ligue", "inicie", "suba", "start"]),
+    ("stop", &["pare", "stop"]),
+    ("enable", &["habilite", "enable"]),
+    ("disable", &["desabilite", "disable"]),
+    ("status", &["status"]),
     ("try-restart", &["try-restart"]),
     ("daemon-reload", &["daemon-reload"]),
     ("--now", &["--now"]),
 ];
 
+/// Words that turn a request around ("não reinicie", "do not stop", "sem parar"): a verb right after one is not asked for.
+const NEGATIONS: &[&str] = &["nao", "nunca", "jamais", "sem", "not", "never", "without", "dont", "don't", "doesnt", "doesn't", "cant", "can't", "cannot", "wont", "won't", "nem", "evite", "avoid"];
+
+/// How many words back a negation reaches.
+const NEGATION_REACH: usize = 3;
+
+/// Whether the person asked for this verb: one of its imperative forms (or the verb itself) that no negation precedes.
 fn verb_asked(word: &str, person: &[String]) -> Option<bool> {
-    VERBS.iter().find(|(v, _)| *v == word).map(|(v, aliases)| person.iter().any(|t| t == v || aliases.contains(&t.as_str())))
+    VERBS.iter().find(|(v, _)| *v == word).map(|(_, aliases)| {
+        person.iter().enumerate().any(|(i, t)| {
+            aliases.contains(&t.as_str()) && !person[i.saturating_sub(NEGATION_REACH)..i].iter().any(|n| NEGATIONS.contains(&n.as_str()))
+        })
+    })
 }
 
 /// The whole words the person wrote (case and accents folded, end punctuation trimmed): a command word is the
@@ -204,5 +215,31 @@ mod tests {
         assert_eq!(taint(&json!({"comando": "systemctl stop nginx"}), "pare o nginx", &out), None);
         assert_eq!(taint(&json!({"comando": "systemctl start nginx"}), "pare o nginx", &out), Some("start".into()));
         assert_eq!(taint(&json!({"comando": "systemctl enable --now nginx"}), "habilite o nginx", &out), Some("--now".into()));
+    }
+
+    #[test]
+    fn a_negated_or_incidental_word_is_not_a_request_for_the_verb() {
+        let out = vec!["nginx.service failed".to_string()];
+        let stop = json!({"comando": "systemctl stop nginx"});
+        let restart = json!({"comando": "systemctl restart nginx"});
+        // "para" is a preposition ("for me"), not "stop"
+        assert_eq!(taint(&stop, "verifique o nginx na máquina web para mim", &out), Some("stop".into()));
+        assert_eq!(taint(&stop, "check nginx on web-1 para o cliente", &out), Some("stop".into()));
+        // negations, in Portuguese and English
+        assert_eq!(taint(&restart, "não reinicie o nginx", &out), Some("restart".into()));
+        assert_eq!(taint(&restart, "nao reinicie o nginx", &out), Some("restart".into()));
+        assert_eq!(taint(&restart, "nunca reinicie o nginx sem me avisar", &out), Some("restart".into()));
+        assert_eq!(taint(&stop, "please do not stop it", &out), Some("stop".into()));
+        assert_eq!(taint(&stop, "don't stop nginx", &out), Some("stop".into()));
+        assert_eq!(taint(&restart, "never restart nginx", &out), Some("restart".into()));
+        // the negation belongs to the other verb
+        assert_eq!(taint(&restart, "reinicie o nginx, mas não pare o banco", &out), None);
+        assert_eq!(taint(&stop, "reinicie o nginx, mas não pare o banco", &out), Some("stop".into()));
+        // plain requests still pass, with the imperative or the raw verb
+        assert_eq!(taint(&restart, "please restart nginx", &out), None);
+        assert_eq!(taint(&stop, "pare o nginx", &out), None);
+        assert_eq!(taint(&stop, "stop nginx", &out), None);
+        // infinitives and nouns are not imperatives
+        assert_eq!(taint(&restart, "preciso reiniciar o nginx", &out), Some("restart".into()));
     }
 }
