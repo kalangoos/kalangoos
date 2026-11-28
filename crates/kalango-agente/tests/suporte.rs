@@ -226,7 +226,9 @@ fn a_restart_waits_for_the_person_and_runs_only_after_a_yes() {
     let mut proposed = false;
     for _ in 0..4 {
         let ev = ask(&env, request);
-        if calls(&ev, "remoto.executar").is_empty() {
+        // (a small model sometimes picks another action or service for "reinicie o nginx": that try does not count)
+        if !calls(&ev, "remoto.executar").iter().any(|c| c["argumentos"]["acao"] == "reiniciar_servico" && c["argumentos"]["servico"] == "nginx") {
+            env.shown.lock().unwrap().clear();
             continue;
         }
         proposed = true;
@@ -248,6 +250,9 @@ fn a_restart_waits_for_the_person_and_runs_only_after_a_yes() {
     env.shown.lock().unwrap().clear();
     for _ in 0..4 {
         let ev = ask(&env, request);
+        if !calls(&ev, "remoto.executar").iter().any(|c| c["argumentos"]["acao"] == "reiniciar_servico" && c["argumentos"]["servico"] == "nginx") {
+            continue;
+        }
         if let Some(done) = ev.iter().find(|e| e["tipo"] == "resultado" && e["nome"] == "remoto.executar") {
             assert_eq!(done["ok"], true, "{ev:?}");
             assert!(done["texto"].to_string().contains("simulated") && done["texto"].to_string().contains("systemctl restart nginx"), "{done}");

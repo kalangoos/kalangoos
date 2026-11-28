@@ -275,6 +275,7 @@ const REMOTE_DEADLINE: Duration = Duration::from_secs(RUN_TIMEOUT_S + 15);
 /// What is read from its standard output and error (the JSON line is the output capped at 64 KiB, escaped).
 const MAX_STDOUT: u64 = 1 << 20;
 const MAX_STDERR: u64 = 16 << 10;
+const _: () = assert!(MAX_STDOUT <= 1 << 20 && MAX_STDERR <= 16 << 10);
 
 fn read_capped(mut r: impl std::io::Read + Send + 'static, cap: u64) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
@@ -459,24 +460,25 @@ fn scrub(text: &str) -> String {
 }
 
 /// `systemctl status` prints the unit's process tree with the command line of every child (arguments with passwords
-/// included) and its `Process:` lines: both go, whatever else the output says. Applied to every consult answer.
+/// included), `Process:` lines and the tail of the journal. The tree's glyphs depend on the locale (`├─`, `|-`, `` `- ``) and
+/// its indentation on the terminal, so nothing here relies on them: an output that is a status (it has a `Loaded:` line)
+/// is cut down to the header and the summary lines (`Loaded`, `Active`, `Main PID`, `Tasks`, `Memory`, `CPU`, `Status`),
+/// and everything else, the tree and the journal tail included, is dropped. Failing closed: what is not recognised is
+/// not shown. Applied to every consult answer; text that is not a status passes unchanged.
 fn drop_process_tree(text: &str) -> String {
+    const SUMMARY: &[&str] = &["Loaded:", "Active:", "Main PID:", "Tasks:", "Memory:", "CPU:", "Status:"];
+    let is_status = text.lines().any(|l| l.trim_start().starts_with("Loaded:"));
+    if !is_status {
+        return text.to_string();
+    }
     let mut out = Vec::new();
-    let mut in_tree = false;
-    for l in text.lines() {
+    for (i, l) in text.lines().enumerate() {
         let t = l.trim_start();
-        if t.starts_with("CGroup:") {
-            in_tree = true;
-            continue;
+        // the first line is the header ("● nginx.service - A high performance web server"), without any process
+        let header = i == 0 && !l.starts_with(char::is_whitespace);
+        if header || SUMMARY.iter().any(|k| t.starts_with(k)) {
+            out.push(l);
         }
-        if in_tree && t.starts_with(['├', '└', '│', '─']) {
-            continue;
-        }
-        in_tree = false;
-        if t.starts_with("Process:") {
-            continue;
-        }
-        out.push(l);
     }
     out.join("\n")
 }
@@ -974,7 +976,6 @@ mod tests {
         let data = vec![b'a'; 3 << 20];
         let got = read_capped(std::io::Cursor::new(data), 1000).join().unwrap();
         assert_eq!(got.len(), 1000);
-        assert!(MAX_STDOUT <= 1 << 20 && MAX_STDERR <= 16 << 10);
     }
 
     #[test]
@@ -1019,9 +1020,23 @@ mod tests {
 
     #[test]
     fn the_process_tree_of_a_status_never_reaches_the_agent() {
-        let status = "● nginx.service - A high performance web server\n     Loaded: loaded (/lib/systemd/system/nginx.service; enabled)\n     Active: active (running)\n    Process: 812 ExecStartPre=/usr/sbin/nginx -t (code=exited)\n   Main PID: 815 (nginx)\n     CGroup: /system.slice/nginx.service\n             ├─815 nginx: master process /usr/sbin/nginx\n             └─816 sh -c mysql --user=root --host=db\n\nNov 27 log line";
-        let out = drop_process_tree(status);
-        assert!(!out.contains("mysql") && !out.contains("ExecStartPre") && !out.contains("CGroup") && !out.contains("master process"), "{out}");
-        assert!(out.contains("Active: active (running)") && out.contains("Main PID: 815") && out.ends_with("Nov 27 log line"), "{out}");
+        let head = "● nginx.service - A high performance web server\n     Loaded: loaded (/lib/systemd/system/nginx.service; enabled)\n     Active: active (running)\n    Process: 812 ExecStartPre=/usr/sbin/nginx -t (code=exited)\n   Main PID: 815 (nginx)\n";
+        let tails = [
+            // Unicode tree
+            "     CGroup: /system.slice/nginx.service\n             ├─815 nginx: master\n             └─816 sh -c mysql --user=root --password=abc\n\nNov 27 log line",
+            // ASCII tree (a locale without Unicode)
+            "     CGroup: /system.slice/nginx.service\n             |-815 nginx: master\n             `-816 sh -c mysql --user=root --password=abc\n\nNov 27 log line",
+            // odd indentation, a glyph nobody listed, a line at the margin
+            "  CGroup: /system.slice/nginx.service\n>>816 sh -c mysql --user=root --password=abc\n\t816 sh -c mysql --password=abc\n816 sh -c mysql --password=abc",
+            // no CGroup line at all
+            "  816 sh -c mysql --user=root --password=abc\nNov 27 log line mysql --password=abc",
+        ];
+        for tail in tails {
+            let out = drop_process_tree(&format!("{head}{tail}"));
+            assert!(!out.contains("mysql") && !out.contains("ExecStartPre") && !out.contains("CGroup") && !out.contains("master") && !out.contains("log line"), "{out}");
+            assert!(out.contains("Active: active (running)") && out.contains("Main PID: 815") && out.starts_with("● nginx.service"), "{out}");
+        }
+        // text that is not a status is not touched
+        assert_eq!(drop_process_tree("/dev/sda1 50G\nProcess: this is just a word"), "/dev/sda1 50G\nProcess: this is just a word");
     }
 }
