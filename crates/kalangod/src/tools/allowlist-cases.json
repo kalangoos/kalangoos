@@ -41,7 +41,10 @@
 "ls -lah /var/www",
 "ls -a /tmp",
 "ls -1 /opt",
-"tail -n 1 /var/log/nginx/error.log"
+"tail -n 1 /var/log/nginx/error.log",
+"tail -n 5 /var/log/postgresql/postgresql-16-main.log",
+"tail -n 20 /var/log/apache2/error.log",
+"tail -n 20 /var/log/dpkg.log"
 ],
 "denied": [
 "rm -rf /tmp/x",
@@ -404,6 +407,25 @@
 "tail -n 50 /var/log/syslog.1",
 "tail -n 50 /var/log/messages",
 "tail -n 50 /var/log/kern.log",
-"tail -n 5 /var/log/daemon.log"
+"tail -n 5 /var/log/daemon.log",
+"tail -n 5 /var/log/journal/0123456789abcdef0123456789abcdef/system.journal",
+"tail -n 5 /var/log/journal/0123456789abcdef0123456789abcdef/user-1000.journal",
+"tail -n 5 /var/log/journal/x/system@abc.journal~",
+"tail -n 5 /var/log/journal",
+"tail -n 5 /var/log/nginx/access.journal",
+"tail -n 5 /var/log/private/x",
+"tail -n 5 /var/log/dmesg",
+"tail -n 5 /var/log/Xorg.0.log",
+"tail -n 5 /var/log/apt",
+"tail -n 5 /var/log/nginx",
+"tail -n 5 /var/log/nginx/../auth.log",
+"tail -n 5 /var/log/runit/x",
+"tail -n 5 /var/log/lightdm/x",
+"journalctl -u cron -n 5",
+"journalctl -u crond.service -n 5",
+"journalctl -u rsyslog",
+"journalctl -u rsyslog -n 5",
+"systemctl status cron",
+"systemctl status rsyslog.service"
 ]
 }

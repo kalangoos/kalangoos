@@ -57,14 +57,17 @@ ip -br addr|link            ss -tulpn|-tuln          apt list --upgradable
 cat /etc/os-release | /etc/hostname
 systemctl status|is-active|is-enabled UNIDADE   systemctl status UNIDADE --no-pager
 systemctl --failed --no-pager   systemctl list-units --failed --no-pager
-journalctl -u SERVIÇO -n N [-p NÍVEL] [--no-pager]      (N de 1 a 500; -u e -n obrigatórios; SERVIÇO é da mesma lista fechada de `remoto.executar`, a de `systemctl status` também: o diário de `sshd`, `sudo`, `systemd-logind` e das sessões é o log de login)
+journalctl -u SERVIÇO -n N [-p NÍVEL] [--no-pager]      (N de 1 a 500; -u e -n obrigatórios; SERVIÇO é de uma lista fechada de LEITURA, a de `systemctl status` também: a lista de `remoto.executar` sem `cron`, `crond` e `rsyslog`, que registram linhas de comando de outros programas e de sessões; o diário de `sshd`, `sudo`, `systemd-logind` e das sessões é o log de login)
 du -sh CAMINHO     ls [-l|-a|-la|-lh|-lah|-1] [CAMINHO]     tail -n N /var/log/ARQUIVO     (N de 1 a 500)
 ```
 
 Regras de todas as formas: só ASCII imprimível; palavras separadas por um espaço; nenhum de `; & | < > $ ` \ " ' ( ) { } [ ] * ? ! # ~ % ^ = , :`;
 unidades `[A-Za-z0-9_.@-]` sem começar por `-` nem `.`; caminhos absolutos já normalizados (sem `..`, `.`, `//`,
 componente começando por `-`); nunca `.ssh`, `.gnupg`, `.aws`, `.kube`, `.config`, `id_*`, `*.pem`, `*.key`, `.env*`,
-`shadow`, `sudoers`, `keyrings`, `gnome-keyring`, `ssh_host_*`, `/root`, `/proc`, `/boot`, `/etc/ssh`, `/etc/ssl`; `tail` só em arquivo de `/var/log/` que não seja de logins, auditoria ou o log geral (`auth.log`, `secure`, `btmp`, `wtmp`, `lastlog`, `sudo.log`, `audit`, `syslog`, `messages`, `daemon.log`, `kern.log`);
+`shadow`, `sudoers`, `keyrings`, `gnome-keyring`, `ssh_host_*`, `/root`, `/proc`, `/boot`, `/etc/ssh`, `/etc/ssl`; `tail` só em arquivo dentro da pasta de log de um serviço conhecido (`/var/log/nginx`, `apache2`, `httpd`, `caddy`, `postgresql`,
+`mysql`, `mariadb`, `redis`, `mongodb`, `cups`, `samba`, `unattended-upgrades`, `chrony`, `apt`) ou `/var/log/dpkg.log`: o resto de
+`/var/log` é recusado, os arquivos do diário (`*.journal`, que têm todos os logs, os de login também) e `syslog`/`auth.log`
+inclusive;
 sem `-f`, sem `--`, sem opção que não esteja na forma. `--help`, `-o ProxyCommand=…`, `ls -la -- -rf`,
 `systemctl status 'x; reboot'` e `journalctl … --vacuum-size` não casam com nenhuma forma.
 
@@ -120,6 +123,7 @@ sem `-f`, sem `--`, sem opção que não esteja na forma. `--help`, `-o ProxyCom
   etc. vira "[linha escondida]" antes de chegar ao agente, e um bloco entre `-----BEGIN` e `-----END` (chave PEM) sai inteiro, assim
   como uma linha longa de base64; a mensagem de erro de uma chamada passa pelo mesmo apagador. Não é garantia (um segredo não tem forma fixa); por isso a
   lista de leitura também não inclui `ps aux`, logs de login nem o diário inteiro.
+* O aviso "o agente leu a saída desta máquina" vale também depois de uma resposta de erro do Remote (o texto do erro vem da máquina).
 * A tela de aprovação avisa quando o agente leu a saída daquela máquina (por consulta ou por ação anterior, nos últimos 30 min) e mostra o motivo como "nas palavras do agente",
   nunca como fato.
 * Linha do tempo: cada chamada com a máquina, o comando exato e o código de saída; **nunca a saída**.

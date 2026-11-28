@@ -53,17 +53,31 @@ pub fn check(cmd: &str) -> Result<(), String> {
     }
 }
 
-/// The services whose logs and status an agent may read (and, in kalangod, act on): the same closed list. `ssh`, `sshd`,
-/// `systemd-logind`, `sudo`, `auditd` and session scopes are not in it: their journal is the login log, which the log
-/// files list already keeps out (`log_holds_secrets`).
+/// The services support may act on (kalangod's `remoto.executar`): `NAME` or `NAME.service`.
 pub const SERVICES: &[&str] = &[
     "nginx", "apache2", "httpd", "caddy", "php-fpm", "postgresql", "mysql", "mariadb", "redis-server", "redis", "mongod", "memcached", "docker", "containerd", "cups", "smbd", "nmbd", "bluetooth", "cron", "crond", "rsyslog",
     "unattended-upgrades", "chrony", "ntp",
 ];
 
-/// `NAME` or `NAME.service` of one of `SERVICES`.
+/// The services whose journal and status an agent may READ: the list above without what logs other programs' command
+/// lines or login sessions (`cron`/`crond` log the commands of every job, `rsyslog` relays everyone's lines). `ssh`,
+/// `sshd`, `systemd-logind`, `sudo`, `auditd` and session scopes are in neither list.
+pub const LOG_SERVICES: &[&str] = &[
+    "nginx", "apache2", "httpd", "caddy", "php-fpm", "postgresql", "mysql", "mariadb", "redis-server", "redis", "mongod", "memcached", "docker", "containerd", "cups", "smbd", "nmbd", "bluetooth", "unattended-upgrades", "chrony", "ntp",
+];
+
+fn unit_in(list: &[&str], u: &str) -> bool {
+    list.contains(&u.strip_suffix(".service").unwrap_or(u))
+}
+
+/// `NAME` or `NAME.service` of one of `SERVICES` (to act on).
 pub fn service_ok(u: &str) -> bool {
-    SERVICES.contains(&u.strip_suffix(".service").unwrap_or(u))
+    unit_in(SERVICES, u)
+}
+
+/// `NAME` or `NAME.service` of one of `LOG_SERVICES` (to read).
+pub fn log_service_ok(u: &str) -> bool {
+    unit_in(LOG_SERVICES, u)
 }
 
 fn unit_ok(u: &str) -> bool {
@@ -80,9 +94,10 @@ fn lines_ok(n: &str) -> bool {
 
 fn systemctl(args: &[&str]) -> bool {
     match args {
+        // (is-active and is-enabled print one word, no log lines: any unit)
         ["is-active" | "is-enabled", u] => unit_ok(u),
         // (`status` prints the last lines of the unit's journal: only the closed list of services)
-        ["status", u] | ["status", u, "--no-pager"] => service_ok(u),
+        ["status", u] | ["status", u, "--no-pager"] => log_service_ok(u),
         ["--failed", "--no-pager"] | ["list-units", "--failed", "--no-pager"] => true,
         _ => false,
     }
@@ -93,7 +108,7 @@ fn journalctl(args: &[&str]) -> bool {
     let mut i = 0;
     while i < args.len() {
         match args[i] {
-            "-u" if !unit && args.get(i + 1).is_some_and(|u| service_ok(u)) => {
+            "-u" if !unit && args.get(i + 1).is_some_and(|u| log_service_ok(u)) => {
                 unit = true;
                 i += 2;
             }
@@ -177,8 +192,24 @@ fn log_holds_secrets(f: &str) -> bool {
     })
 }
 
+/// Log folders of the services in `SERVICES` (and a few package logs): `tail` reads only a file inside one of them. Every
+/// other place in /var/log is refused, the systemd journal files (`/var/log/journal/…/*.journal`, which hold every
+/// service's log, logins included) and the login logs among them.
+const LOG_DIRS: &[&str] = &["nginx", "apache2", "httpd", "caddy", "postgresql", "mysql", "mariadb", "redis", "mongodb", "cups", "samba", "unattended-upgrades", "chrony", "apt"];
+
 fn log_file_ok(f: &str) -> bool {
-    path_ok(f) && f.starts_with("/var/log/") && f.len() > "/var/log/".len() && !f.ends_with('/') && !log_holds_secrets(f)
+    if !path_ok(f) || f.ends_with('/') || log_holds_secrets(f) {
+        return false;
+    }
+    let lower = f.to_ascii_lowercase();
+    if lower.contains(".journal") || lower.contains("/journal/") {
+        return false;
+    }
+    match f.strip_prefix("/var/log/").map(|r| r.split('/').collect::<Vec<_>>()).as_deref() {
+        Some([dir, file, ..]) => LOG_DIRS.contains(dir) && !file.is_empty(),
+        Some(["dpkg.log"]) => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
