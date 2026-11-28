@@ -98,7 +98,11 @@ allowed_paths = ["{area}"]
     )
     .unwrap();
     std::fs::create_dir_all(dir.path().join("raiz/etc")).unwrap();
-    let double = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/kalango-remote-teste.py").canonicalize().unwrap();
+    // (kalangod runs only a file that is its own and that nobody else can write: a copy with mode 0755, whatever the umask)
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/kalango-remote-teste.py");
+    let double = dir.path().join("kalango-remote");
+    std::fs::copy(&source, &double).unwrap();
+    std::fs::set_permissions(&double, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut kd = Command::new(kalangod_bin());
     kd.args(["servir", "--config"]).arg(&cfg).stderr(Stdio::null()).env("KALANGO_REMOTE", &double).env("SUPORTE_LOG", dir.path().join("remote.log"));
     if injection {

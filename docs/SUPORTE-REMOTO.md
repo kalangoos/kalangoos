@@ -53,18 +53,18 @@ KalangoOS compara os dois arquivos quando `KALANGO_REMOTE_REPO` aponta para o re
 
 ```
 uptime  hostname  whoami  id  date  lsblk                      df [-h|-hT|-i]   free [-m|-h]   uname [-a|-r]
-ip -br addr|link            ss -tulpn|-tuln          ps aux     apt list --upgradable
+ip -br addr|link            ss -tulpn|-tuln          apt list --upgradable
 cat /etc/os-release | /etc/hostname
 systemctl status|is-active|is-enabled UNIDADE   systemctl status UNIDADE --no-pager
 systemctl --failed --no-pager   systemctl list-units --failed --no-pager
-journalctl [-u UNIDADE] -n N [-p NÍVEL] [--no-pager]      (N de 1 a 500; -n obrigatório)
+journalctl -u UNIDADE -n N [-p NÍVEL] [--no-pager]      (N de 1 a 500; -u e -n obrigatórios: o diário inteiro guarda o que outros programas registraram)
 du -sh CAMINHO     ls [-l|-a|-la|-lh|-lah|-1] [CAMINHO]     tail -n N /var/log/ARQUIVO     (N de 1 a 500)
 ```
 
 Regras de todas as formas: só ASCII imprimível; palavras separadas por um espaço; nenhum de `; & | < > $ ` \ " ' ( ) { } [ ] * ? ! # ~ % ^ = , :`;
 unidades `[A-Za-z0-9_.@-]` sem começar por `-` nem `.`; caminhos absolutos já normalizados (sem `..`, `.`, `//`,
 componente começando por `-`); nunca `.ssh`, `.gnupg`, `.aws`, `.kube`, `.config`, `id_*`, `*.pem`, `*.key`, `.env*`,
-`shadow`, `sudoers`, `ssh_host_*`, `/root`, `/proc`, `/boot`, `/etc/ssh`, `/etc/ssl`; `tail` só em arquivo de `/var/log/`;
+`shadow`, `sudoers`, `keyrings`, `gnome-keyring`, `ssh_host_*`, `/root`, `/proc`, `/boot`, `/etc/ssh`, `/etc/ssl`; `tail` só em arquivo de `/var/log/` que não seja de logins ou auditoria (`auth.log`, `secure`, `btmp`, `wtmp`, `lastlog`, `sudo.log`, `audit`);
 sem `-f`, sem `--`, sem opção que não esteja na forma. `--help`, `-o ProxyCommand=…`, `ls -la -- -rf`,
 `systemctl status 'x; reboot'` e `journalctl … --vacuum-size` não casam com nenhuma forma.
 
@@ -78,16 +78,20 @@ sem `-f`, sem `--`, sem opção que não esteja na forma. `--help`, `-o ProxyCom
   -exec`, `env`, `at`, `crontab` e o resto não casam com nenhuma):
   * `systemctl start|stop|restart|reload|try-restart|enable|disable SERVIÇO`, `systemctl enable|disable --now SERVIÇO`,
     `systemctl daemon-reload`, `systemctl reset-failed [SERVIÇO]`, `service SERVIÇO start|stop|restart|reload|status`;
-  * `journalctl --vacuum-time=N[unidade]` ou `--vacuum-size=N[unidade]`;
-  * `apt`/`apt-get` `update`, `upgrade [-y]`, `install [-y] PACOTE…` e `apt list --installed|--upgradable`. O nome do
-    pacote começa e termina com letra ou dígito (`nginx-` removeria e `pacote+` forçaria: sintaxe de controle, não nome).
+  * `journalctl --vacuum-time=N[unidade]` (ao menos 1 dia: `d`, `w`, `month`, `y`) ou `--vacuum-size=N[unidade]` (ao
+    menos 10M, com `K`/`M`/`G`/`T`): `0`, `1s` ou `1K` apagariam todos os logs, sem desfazer;
+  * `apt`/`apt-get` `update`, `upgrade [-y]`, `install [-y] PACOTE…` e `apt list --installed|--upgradable`. `PACOTE` vem de
+    uma lista fechada (os pacotes dos serviços abaixo e ferramentas comuns como `htop`, `curl`, `git`, `jq`): nunca um
+    arquivo `.deb`, um caminho, `nginx-` (que removeria) ou `pacote+`.
   * **SERVIÇO** vem de uma lista fechada, `NOME` ou `NOME.service`, sem `@` e sem outro sufixo: nginx, apache2, httpd,
     caddy, php-fpm, postgresql, mysql, mariadb, redis-server, redis, mongod, memcached, docker, containerd, cups, smbd,
-    nmbd, bluetooth, cron, crond, rsyslog, unattended-upgrades, fail2ban, cloudflared, tailscaled, chrony, ntp. São
-    serviços de manutenção comuns cuja parada não derruba o acesso. Ficam de fora de propósito `ssh`/`sshd`, rede
-    (NetworkManager, systemd-networkd, networking), `dbus`, `systemd-logind` e qualquer `systemd-*`, alvos
-    (`rescue.target`), sockets, timers e templates. Um serviço fora da lista não é proposto pelo agente: a pessoa o
-    faz no terminal ou pede para acrescentá-lo à lista.
+    nmbd, bluetooth, cron, crond, rsyslog, unattended-upgrades, chrony, ntp. Ficam de fora de propósito `ssh`/`sshd`,
+    rede (NetworkManager, systemd-networkd, networking), `dbus`, `systemd-logind`, qualquer `systemd-*`, serviços de VPN
+    e túnel (`tailscaled`, `cloudflared`), `fail2ban`, alvos (`rescue.target`), sockets, timers e templates. Um serviço
+    fora da lista não é proposto pelo agente: a pessoa o faz no terminal ou pede para acrescentá-lo à lista.
+    **O risco que sobra, dito sem enfeite:** parar `docker`, `postgresql`, `nginx` e semelhantes derruba esse serviço e
+    o que roda nele, e nada aqui desfaz isso; a lista só tira o que carrega o acesso à máquina. Por isso a pessoa aprova
+    o comando exato toda vez.
   O agente age só como o **usuário da conexão**. Decisão: nada de `sudo`, nem digitado pela pessoa; quem precisa de mais
   permissão cria uma regra do `sudoers` própria para o comando, na máquina, ou usa o terminal.
 * O motor do agente confere, depois que algo externo entrou na conversa, **toda palavra** do comando (qualquer tamanho,
@@ -96,7 +100,8 @@ sem `-f`, sem `--`, sem opção que não esteja na forma. `--help`, `-o ProxyCom
 * O Remote repete as verificações (perfil, formas da lista para `consult`, caracteres de controle) porque
   `kalango-remote ssh-run` pode ser chamado por qualquer processo seu: o `kalangod` não é a única barreira.
 * O `kalangod` só executa o `kalango-remote` de `/usr/bin` ou `/usr/libexec/kalango`, e só se o arquivo aberto for de
-  root e não gravável por grupo ou outros (conferido no descritor, não no caminho). Nunca `~/.local/bin` nem
+  root e não gravável por grupo ou outros (conferido no arquivo aberto, e a pasta de cima também precisa ser de root e não gravável por outros: o programa é
+  iniciado pelo caminho, então só root consegue trocá-lo entre a conferência e a execução). Nunca `~/.local/bin` nem
   `/usr/local/bin`: um agente grava ali. `KALANGO_REMOTE` só vale no ambiente do próprio serviço (usado pelos testes).
 * Os verbos do comando (`restart`, `stop`, `disable`, `--now`, `daemon-reload`…) também precisam vir de você: o motor só
   aceita um verbo se você o pediu ("reinicie" → `restart`, "pare" → `stop`…); o que uma máquina imprimiu não conta.
@@ -107,8 +112,15 @@ sem `-f`, sem `--`, sem opção que não esteja na forma. `--help`, `-o ProxyCom
   trocada: recusa, nunca aceita sozinha.
 * Sem TTY, sem encaminhamento de agente, de porta ou de X11, ambiente limpo (`PATH` e `LC_ALL`), `BatchMode`, sem senha.
   Máquinas com identidade por senha, com encaminhamento de agente configurado ou com salto que tenha isso são recusadas.
-* Tempo limite 30 s (máximo 120), saída até 64 KiB (máximo 256 KiB, as duas saídas juntas); o processo e os filhos são mortos.
+* Tempo limite 30 s no `ssh-run`; o `kalangod` ainda mata o grupo de processos do `kalango-remote` se ele passar de 45 s.
+  Saída até 64 KiB; o `kalangod` lê no máximo 1 MiB do que o Remote imprime.
 * Por máquina: 12 consultas e 3 ações por minuto; uma chamada remota por vez por conversa.
+* `remoto.consultar` só roda em máquina `consultar` ou `agir`; o `kalangod` confere o perfil, e o Remote repete.
+* A saída de uma consulta passa por um apagador: linha com `password`, `token`, `secret`, `Authorization`, chave privada
+  etc. vira "[linha escondida]" antes de chegar ao agente. Não é garantia (um segredo não tem forma fixa); por isso a
+  lista de leitura também não inclui `ps aux`, logs de login nem o diário inteiro.
+* A tela de aprovação avisa quando o agente leu a saída daquela máquina e mostra o motivo como "nas palavras do agente",
+  nunca como fato.
 * Linha do tempo: cada chamada com a máquina, o comando exato e o código de saída; **nunca a saída**.
 * O que a máquina imprime volta ao modelo como **conteúdo externo** (envelope de dados, controle de comandos de chat
   removido, ordens para o agente detectadas e a tarefa parada). `remoto.executar` **não é desfeito pelo Desfazer** (limite

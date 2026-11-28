@@ -17,7 +17,8 @@ use crate::peer::Peer;
 use crate::policy::{Effect, Level};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -102,8 +103,11 @@ pub fn check_act(cmd: &str) -> Result<(), String> {
 }
 
 /// The closed list of services support may start, stop, restart, reload, enable or disable: common maintenance
-/// services whose stopping cannot cut the machine off (no ssh, network, dbus, logind or any `systemd-*`). A name is
-/// matched whole, as `NAME` or `NAME.service`: no templates (`@`), no other unit types.
+/// services. It leaves out everything that carries the access to the machine (ssh, network, dbus, logind, any
+/// `systemd-*`, VPN and tunnel services such as tailscaled and cloudflared) and security services (fail2ban). It does
+/// NOT make a stop harmless: stopping `docker`, `postgresql` or `nginx` takes that service (and what runs on it) down,
+/// and nothing here undoes it; that is why the person approves the exact command. A name is matched whole, as `NAME`
+/// or `NAME.service`: no templates (`@`), no other unit types.
 const ACT_SERVICES: &[&str] = &[
     "nginx",
     "apache2",
@@ -127,9 +131,6 @@ const ACT_SERVICES: &[&str] = &[
     "crond",
     "rsyslog",
     "unattended-upgrades",
-    "fail2ban",
-    "cloudflared",
-    "tailscaled",
     "chrony",
     "ntp",
 ];
@@ -138,22 +139,51 @@ fn act_unit_ok(u: &str) -> bool {
     ACT_SERVICES.contains(&u.strip_suffix(".service").unwrap_or(u))
 }
 
-/// A Debian package name, strict: starts and ends with a letter or digit, so `nginx-` (remove) and `nginx+` (force
-/// install) are not names.
+/// The packages support may install: a closed list of common tools and the packages of the services above. A name
+/// outside it (a `.deb` file, a path, `nginx-`, `pacote+`, a tool for attacks) is not proposed by the agent.
+const ACT_PACKAGES: &[&str] = &[
+    "nginx", "apache2", "caddy", "postgresql", "mariadb-server", "mysql-server", "redis-server", "memcached", "docker.io", "cups", "samba", "cron", "rsyslog", "unattended-upgrades", "chrony", "htop", "curl", "wget", "vim", "git",
+    "ncdu", "tree", "jq", "unzip", "zip", "rsync", "lsof", "iotop", "net-tools", "dnsutils", "certbot",
+];
+
 fn act_package_ok(p: &str) -> bool {
-    p.len() >= 2
-        && p.len() <= 64
-        && p.starts_with(|c: char| c.is_ascii_alphanumeric())
-        && p.ends_with(|c: char| c.is_ascii_alphanumeric())
-        && p.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+    ACT_PACKAGES.contains(&p)
 }
 
+/// `--vacuum-time=N<unit>` keeping at least a day, or `--vacuum-size=N<unit>` keeping at least 10M: `0`, `1s` or `1K`
+/// would erase every log, which is destroying the evidence and cannot be undone.
 fn vacuum_ok(a: &str) -> bool {
-    let rest = a.strip_prefix("--vacuum-time=").or_else(|| a.strip_prefix("--vacuum-size="));
-    rest.is_some_and(|v| {
-        let digits = v.trim_end_matches(|c: char| c.is_ascii_alphabetic());
-        !digits.is_empty() && digits.len() <= 6 && digits.bytes().all(|b| b.is_ascii_digit()) && v.len() - digits.len() <= 7
-    })
+    let (value, is_time) = match (a.strip_prefix("--vacuum-time="), a.strip_prefix("--vacuum-size=")) {
+        (Some(v), _) => (v, true),
+        (_, Some(v)) => (v, false),
+        _ => return false,
+    };
+    let digits = value.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    let unit = &value[digits.len()..];
+    if digits.is_empty() || digits.len() > 6 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let n: u64 = digits.parse().unwrap_or(0);
+    if is_time {
+        // seconds per unit; only days and longer
+        let secs = match unit {
+            "d" | "days" | "day" => 86_400,
+            "w" | "weeks" | "week" => 604_800,
+            "month" | "months" => 2_592_000,
+            "y" | "years" | "year" => 31_536_000,
+            _ => return false,
+        };
+        n.saturating_mul(secs) >= 86_400
+    } else {
+        let bytes = match unit {
+            "K" => 1u64 << 10,
+            "M" => 1 << 20,
+            "G" => 1 << 30,
+            "T" => 1 << 40,
+            _ => return false,
+        };
+        n.saturating_mul(bytes) >= 10 << 20
+    }
 }
 
 /// The allowlist of administration forms (the counterpart of the read-only allowlist): anything else is refused,
@@ -248,49 +278,83 @@ fn rate_ok(peer: &Peer, machine: &str, max: usize, kind: &str) -> Result<(), Str
 /// `/usr/local/bin`: an agent writes there, and kalangod is not confined like the agent is.
 const SYSTEM_REMOTE: [&str; 2] = ["/usr/bin/kalango-remote", "/usr/libexec/kalango/kalango-remote"];
 
-/// What kalangod may execute, judged on the OPEN file (fstat of the descriptor, not of the path, so it cannot be swapped
-/// in between): a regular file that belongs to root and that no group or other can write.
-fn check_executable(file: &std::fs::File, uid_ok: u32) -> Result<(), String> {
+/// What kalangod may execute, judged on the OPEN file (fstat of the descriptor, so the answer is about the file that was
+/// opened): a regular, executable file that belongs to `owner` and that no group or other can write.
+fn check_executable(file: &std::fs::File, owner: u32) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
     let m = file.metadata().map_err(|e| e.to_string())?;
-    if m.is_file() && m.uid() == uid_ok && m.mode() & 0o022 == 0 && m.mode() & 0o111 != 0 {
+    if m.is_file() && m.uid() == owner && m.mode() & 0o022 == 0 && m.mode() & 0o111 != 0 {
         Ok(())
     } else {
         Err(String::new())
     }
 }
 
-/// The first of `candidates` that exists; it must pass `check_executable` (owner root) or the call is refused.
+/// The folder above must belong to root and not be writable by group or others either: the program is started by path
+/// (std cannot exec an open descriptor), so nobody but root may be able to swap the file between this check and the exec.
+fn parent_is_root_only(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    path.parent().and_then(|d| std::fs::metadata(d).ok()).is_some_and(|m| m.is_dir() && m.uid() == 0 && m.mode() & 0o022 == 0)
+}
+
+fn unsafe_to_run(path: &Path) -> String {
+    trf("Kalango Remote at {path} is not safe to run: it must belong to root and not be writable by anyone else", &[("path", path.display().to_string())])
+}
+
+/// The first of `candidates` that exists; it and its folder must pass the checks (owner root) or the call is refused.
 fn pick(candidates: &[PathBuf]) -> Result<PathBuf, String> {
     for c in candidates {
         let Ok(file) = std::fs::File::open(c) else { continue };
-        return match check_executable(&file, 0) {
-            Ok(()) => Ok(c.clone()),
-            Err(_) => Err(trf("Kalango Remote at {path} is not safe to run: it must belong to root and not be writable by anyone else",
-                &[("path", c.display().to_string())],
-            )),
-        };
+        return if check_executable(&file, 0).is_ok() && parent_is_root_only(c) { Ok(c.clone()) } else { Err(unsafe_to_run(c)) };
     }
     Err(tr("Kalango Remote is not installed").to_string())
+}
+
+/// An override from kalangod's own environment: the file must belong to whoever runs kalangod (root, in production) and
+/// nobody else can write it.
+fn from_override(path: &Path, service_uid: u32) -> Result<PathBuf, String> {
+    let file = std::fs::File::open(path).map_err(|_| tr("Kalango Remote is not installed").to_string())?;
+    check_executable(&file, service_uid).map_err(|_| unsafe_to_run(path))?;
+    Ok(path.to_path_buf())
 }
 
 /// `KALANGO_REMOTE` is read from kalangod's own environment (set by whoever starts the service, never by an agent:
 /// tests use it for their stand-in); otherwise only the system places above.
 fn program() -> Result<PathBuf, String> {
-    if let Some(p) = std::env::var_os("KALANGO_REMOTE").map(PathBuf::from).filter(|p| p.is_file()) {
-        return Ok(p);
+    match std::env::var_os("KALANGO_REMOTE") {
+        Some(p) => from_override(Path::new(&p), nix::unistd::geteuid().as_raw()),
+        None => pick(&SYSTEM_REMOTE.map(PathBuf::from)),
     }
-    pick(&SYSTEM_REMOTE.map(PathBuf::from))
+}
+
+/// How long one call to Kalango Remote may take, ssh included: its own `--timeout` plus a margin, then the whole process
+/// group is killed.
+const REMOTE_DEADLINE: Duration = Duration::from_secs(RUN_TIMEOUT_S + 15);
+/// What is read from its standard output and error (the JSON line is the output capped at 64 KiB, escaped).
+const MAX_STDOUT: u64 = 1 << 20;
+const MAX_STDERR: u64 = 16 << 10;
+
+fn read_capped(mut r: impl std::io::Read + Send + 'static, cap: u64) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = (&mut r).take(cap).read_to_end(&mut buf);
+        // keep draining (and dropping) so the child never blocks on a full pipe
+        let _ = std::io::copy(&mut r, &mut std::io::sink());
+        buf
+    })
 }
 
 /// Runs `kalango-remote ARGS` as the person (their vault and machines), with what it needs from the environment and
-/// nothing else, and returns the JSON line it printed.
+/// nothing else, under a deadline and an output cap, and returns the JSON line it printed.
 fn remote(peer: &Peer, args: &[&str]) -> Result<Value, String> {
-    let exe = program()?;
+    remote_with(peer, args, &program()?, REMOTE_DEADLINE)
+}
+
+fn remote_with(peer: &Peer, args: &[&str], exe: &Path, deadline: Duration) -> Result<Value, String> {
+    use std::os::unix::process::CommandExt;
     let mut cmd = Command::new(exe);
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     if nix::unistd::geteuid().is_root() && peer.uid != 0 {
-        use std::os::unix::process::CommandExt;
         let run = format!("/run/user/{}", peer.uid);
         cmd.uid(peer.uid)
             .gid(peer.gid)
@@ -303,11 +367,25 @@ fn remote(peer: &Peer, args: &[&str]) -> Result<Value, String> {
             .env("LANG", std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into()))
             .current_dir(&peer.passwd_home);
     }
-    let child = cmd.spawn().map_err(|e| e.to_string())?;
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    let line = String::from_utf8_lossy(&out.stdout);
-    serde_json::from_str(line.trim())
-        .map_err(|_| trf("Kalango Remote did not answer: {e}", &[("e", clean(&String::from_utf8_lossy(&out.stderr), 200))]))
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let (out, err) = (read_capped(child.stdout.take().unwrap(), MAX_STDOUT), read_capped(child.stderr.take().unwrap(), MAX_STDERR));
+    let started = Instant::now();
+    loop {
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(_) => break,
+            None if started.elapsed() >= deadline => {
+                let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(child.id() as i32), nix::sys::signal::Signal::SIGKILL);
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = (out.join(), err.join());
+                return Err(tr("Kalango Remote took too long and was stopped").to_string());
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    let (stdout, stderr) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
+    let line = String::from_utf8_lossy(&stdout);
+    serde_json::from_str(line.trim()).map_err(|_| trf("Kalango Remote did not answer: {e}", &[("e", clean(&String::from_utf8_lossy(&stderr), 200))]))
 }
 
 fn list(peer: &Peer) -> Result<Vec<Value>, String> {
@@ -346,6 +424,16 @@ pub fn precheck(peer: &Peer, name: &str, args: &Value) -> Result<(), String> {
     }
 }
 
+/// Looking is allowed on `consultar` and `agir` machines; a `nenhum` machine is not for agents at all.
+fn profile_allows_consult(m: &Value) -> Result<(), String> {
+    match m["profile"].as_str() {
+        Some("consultar" | "agir") => Ok(()),
+        _ => Err(trf("the machine “{name}” is not set to let agents look at it (its profile is {p}): the person changes it in Kalango Remote",
+            &[("name", clean(m["name"].as_str().unwrap_or(""), 80)), ("p", m["profile"].as_str().unwrap_or("nenhum").to_string())],
+        )),
+    }
+}
+
 fn profile_allows_act(m: &Value) -> Result<(), String> {
     match m["profile"].as_str() {
         Some("agir") => Ok(()),
@@ -357,18 +445,60 @@ fn profile_allows_act(m: &Value) -> Result<(), String> {
 
 /// `remoto.executar` always asks, showing the machine, the exact command and why.
 pub fn needs_approval(peer: &Peer, args: &Value) -> Result<Option<String>, String> {
-    let m = machine_of(peer, s(args, "maquina")?)?;
+    let id = s(args, "maquina")?;
+    let m = machine_of(peer, id)?;
     profile_allows_act(&m)?;
-    let reason = trf("run on {machine} ({host}, as {user}) this command: {command}. Reason given by the agent: {why}",
+    approval_text(&m, args, read_recently(peer, id)).map(Some)
+}
+
+/// What the person reads when asked: the machine, the exact command, a warning when the agent read this machine's output,
+/// and the agent's reason marked as the agent's own words.
+fn approval_text(m: &Value, args: &Value, read_output: bool) -> Result<String, String> {
+    let warn = if read_output {
+        tr(" Heads up: the agent read output from this machine, and that output may have shaped this command.").to_string()
+    } else {
+        String::new()
+    };
+    Ok(trf("run on {machine} ({host}, as {user}) this command: {command}.{warn} The agent's own words for why, not a verified fact: “{why}”",
         &[
             ("machine", clean(m["name"].as_str().unwrap_or(""), 80)),
             ("host", clean(m["host"].as_str().unwrap_or(""), 80)),
             ("user", clean(m["user"].as_str().unwrap_or(""), 40)),
             ("command", clean(s(args, "comando")?, MAX_COMMAND)),
+            ("warn", warn),
             ("why", clean(args["motivo"].as_str().unwrap_or(""), MAX_REASON)),
         ],
-    );
-    Ok(Some(reason))
+    ))
+}
+
+// ---------------------------------------------------------------- what came back
+
+/// What a machine printed goes to the agent's context: a line that looks like it holds a secret (a password, a token, a
+/// private key, an authorization header) is replaced, whole, before it leaves kalangod. Not a guarantee (a secret has no
+/// fixed shape): the read-only list also keeps the usual sources of secrets out.
+fn scrub(text: &str) -> String {
+    const MARKS: &[&str] = &["password", "passwd", "secret", "token", "api_key", "api-key", "apikey", "authorization:", "bearer ", "private key", "credential", "passphrase"];
+    text.lines()
+        .map(|l| {
+            let lower = l.to_ascii_lowercase();
+            if MARKS.iter().any(|m| lower.contains(m)) { tr("[line hidden: it may hold a secret]").to_string() } else { l.to_string() }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+static READ_FROM: Mutex<Option<HashMap<(u32, String), Instant>>> = Mutex::new(None);
+const READ_MEMORY: Duration = Duration::from_secs(1800);
+
+/// An agent of this person looked at this machine: what it prints may have shaped the next command.
+fn note_read(peer: &Peer, machine: &str) {
+    if let Ok(mut g) = READ_FROM.lock() {
+        g.get_or_insert_with(HashMap::new).insert((peer.uid, machine.to_string()), Instant::now());
+    }
+}
+
+fn read_recently(peer: &Peer, machine: &str) -> bool {
+    READ_FROM.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(&(peer.uid, machine.to_string())).copied())).is_some_and(|t| t.elapsed() < READ_MEMORY)
 }
 
 // ---------------------------------------------------------------- the tools
@@ -394,10 +524,14 @@ fn run(c: &Ctx, a: &Value, profile: &str, max: usize) -> Result<Out, String> {
         return Err(format!("{code}: {msg}"));
     }
     let code = r["exit_code"].as_i64();
+    if profile == "consult" {
+        note_read(c.peer, id);
+    }
+    let scrubbed = |v: &Value| json!(scrub(v.as_str().unwrap_or("")));
     let value = json!({
         "machine": id,
         "exit_code": code,
-        "stdout": r["stdout"], "stderr": r["stderr"],
+        "stdout": scrubbed(&r["stdout"]), "stderr": scrubbed(&r["stderr"]),
         "truncated": r["truncated"],
         // text from another computer: data, never instructions
         "external_content": true,
@@ -411,6 +545,11 @@ fn run(c: &Ctx, a: &Value, profile: &str, max: usize) -> Result<Out, String> {
 
 fn consultar(c: &Ctx, a: &Value) -> Result<Out, String> {
     allowlist::check(s(a, "comando")?).map_err(|why| trf("not an allowed read-only command ({why})", &[("why", why)]))?;
+    let id = s(a, "maquina")?;
+    if !valid_machine_id(id) {
+        return Err(tr("not a machine id: use one from remoto.maquinas").to_string());
+    }
+    profile_allows_consult(&machine_of(c.peer, id)?)?;
     run(c, a, "consult", CONSULT_PER_MINUTE)
 }
 
@@ -612,6 +751,9 @@ mod tests {
             "systemctl start nginx@x",
             "systemctl start nginx.timer",
             "systemctl start unknown-service",
+            "systemctl stop tailscaled", "systemctl disable cloudflared", "systemctl stop fail2ban", "systemctl restart tailscaled.service",
+            "apt install nginx.deb", "apt install ncat", "apt install a..b", "apt install ./x.deb", "apt install /tmp/x.deb", "apt install nmap", "apt install socat", "apt install ufw",
+            "journalctl --vacuum-size=0", "journalctl --vacuum-time=1s", "journalctl --vacuum-time=0d", "journalctl --vacuum-time=23h", "journalctl --vacuum-time=5m", "journalctl --vacuum-time=1", "journalctl --vacuum-size=1K", "journalctl --vacuum-size=9M", "journalctl --vacuum-size=100", "journalctl --vacuum-size=0G", "journalctl --vacuum-size=",
             "service unknown restart",
             "systemctl start nginx.service.service",
             "systemctl start Nginx",
@@ -629,7 +771,7 @@ mod tests {
             "systemctl disable --now docker.service",
             "systemctl restart apache2",
             "systemctl enable --now nginx",
-            "apt install -y htop curl",
+            "apt install -y htop curl", "journalctl --vacuum-time=1d", "journalctl --vacuum-size=10M", "journalctl --vacuum-time=2weeks",
             "apt update",
             "systemctl daemon-reload",
             "journalctl --vacuum-size=100M",
@@ -764,5 +906,79 @@ mod tests {
         assert!(pick(&[dir.path().join("missing")]).unwrap_err().contains("not installed"));
         // the places searched are system ones only
         assert!(SYSTEM_REMOTE.iter().all(|p| p.starts_with("/usr/") && !p.contains("local")));
+    }
+
+    #[test]
+    fn a_secret_looking_line_never_reaches_the_agent() {
+        let out = scrub("Filesystem Size\nDB_PASSWORD=hunter2\nAuthorization: Bearer abc\n-----BEGIN PRIVATE KEY-----\nplain line");
+        assert!(!out.contains("hunter2") && !out.contains("abc") && !out.contains("PRIVATE"), "{out}");
+        assert!(out.contains("Filesystem Size") && out.contains("plain line"));
+        assert_eq!(out.lines().count(), 5);
+    }
+
+    #[test]
+    fn looking_needs_a_machine_set_to_consult_or_act() {
+        for (p, ok) in [("consultar", true), ("agir", true), ("nenhum", false), ("", false), ("root", false)] {
+            assert_eq!(profile_allows_consult(&json!({"name": "web", "profile": p})).is_ok(), ok, "{p}");
+        }
+        assert!(profile_allows_consult(&json!({"name": "web"})).is_err());
+    }
+
+    #[test]
+    fn the_approval_warns_when_the_agent_read_that_machine_and_marks_its_reason() {
+        let m = json!({"name": "Web", "host": "198.51.100.7", "user": "ana"});
+        let a = json!({"comando": "systemctl restart nginx", "motivo": "o disco está cheio"});
+        let plain = approval_text(&m, &a, false).unwrap();
+        let warned = approval_text(&m, &a, true).unwrap();
+        assert!(!plain.contains("read output") && warned.contains("read output from this machine"), "{plain} | {warned}");
+        assert!(plain.contains("not a verified fact") && plain.contains("“o disco está cheio”") && plain.contains("systemctl restart nginx"), "{plain}");
+        // what was read is remembered per person and machine
+        let p = peer();
+        assert!(!read_recently(&p, "web-warn-test"));
+        note_read(&p, "web-warn-test");
+        assert!(read_recently(&p, "web-warn-test") && !read_recently(&p, "outra-maquina"));
+    }
+
+    #[test]
+    fn an_override_must_belong_to_the_service_and_be_unwritable_by_others() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("kalango-remote");
+        std::fs::write(&f, "#!/bin/sh\n").unwrap();
+        let me = nix::unistd::getuid().as_raw();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(from_override(&f, me).is_ok());
+        assert!(from_override(&f, me + 1).unwrap_err().contains("not safe to run"), "someone else's file");
+        for mode in [0o775, 0o757, 0o777, 0o644] {
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert!(from_override(&f, me).is_err(), "{mode:o}");
+        }
+        // a system place is judged with its folder too: a root file in a folder anyone can write is not trusted
+        assert!(parent_is_root_only(Path::new("/usr/bin/true")));
+        assert!(!parent_is_root_only(&f));
+    }
+
+    #[test]
+    fn a_call_to_remote_has_a_deadline_and_an_output_cap() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let run = |body: &str| {
+            let f = dir.path().join("fake");
+            std::fs::write(&f, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let t = Instant::now();
+            (remote_with(&peer(), &["x"], &f, Duration::from_millis(400)), t.elapsed())
+        };
+        // it hangs: stopped at the deadline, with its children
+        let (r, took) = run("sleep 30");
+        assert!(r.unwrap_err().contains("took too long"));
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        // it prints without end: the cap keeps memory flat and the deadline ends it
+        let (r, took) = run("yes");
+        assert!(r.is_err());
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        // a normal answer still works
+        let (r, _) = run("echo '{\"ok\": true}'");
+        assert_eq!(r.unwrap()["ok"], true);
     }
 }
