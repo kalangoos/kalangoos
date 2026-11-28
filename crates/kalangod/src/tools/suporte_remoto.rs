@@ -746,19 +746,28 @@ mod tests {
         }
     }
 
+    /// Is `pid` a running process (a zombie waiting for its parent is not)?
+    fn alive(pid: &str) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| st.rsplit(')').next().unwrap_or("").trim_start().chars().next().is_some_and(|c| c != 'Z'))
+    }
+
     #[test]
-    fn a_child_left_holding_the_pipe_does_not_hold_the_call() {
-        // (a script just written and run while another thread forks is "text file busy": one at a time)
-        let _spawn = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    fn a_child_left_behind_is_killed_with_its_group() {
         use std::os::unix::fs::PermissionsExt;
+        let _spawn = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        let f = dir.path().join("fake");
-        std::fs::write(&f, "#!/bin/sh\nsleep 8 &\necho '{}'\n").unwrap();
+        let (f, pidfile) = (dir.path().join("fake"), dir.path().join("pid"));
+        std::fs::write(&f, format!("#!/bin/sh\nsleep 30 >/dev/null 2>&1 &\necho $! > {}\necho '{{}}'\n", pidfile.display())).unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let t = Instant::now();
-        let r = remote_with(&peer(), &["x"], &f, Duration::from_millis(400));
+        let r = remote_with(&peer(), &["x"], &f, Duration::from_secs(5));
         assert!(r.is_ok(), "{r:?}");
-        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        let pid = std::fs::read_to_string(&pidfile).unwrap().trim().to_string();
+        // (a moment for the signal to be delivered)
+        let t = Instant::now();
+        while alive(&pid) && t.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(&pid), "the child the program left behind is still running");
     }
 
     #[test]
@@ -904,7 +913,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("fake");
         // a JSON line of about 2 MiB: with the cap in place it is cut and cannot be parsed
-        std::fs::write(&f, "#!/bin/sh\nprintf '{\"a\":\"'\nhead -c 2200000 /dev/zero | tr '\\\\0' 'x'\nprintf '\"}\\n'\n").unwrap();
+        std::fs::write(&f, "#!/bin/sh\nprintf '{\"a\":\"'\nhead -c 2200000 /dev/zero | tr '\\000' 'x'\nprintf '\"}\\n'\n").unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
         let r = remote_with(&peer(), &["x"], &f, Duration::from_secs(10));
         assert!(r.is_err(), "the answer was longer than the cap and must not parse");
@@ -1000,5 +1009,28 @@ mod tests {
         assert_eq!(v["secret"], "kalangod-only", "{v}");
         std::env::remove_var("KALANGO_TEST_SECRET");
         std::env::remove_var("SSH_AUTH_SOCK");
+    }
+
+    #[test]
+    fn a_machine_that_is_not_for_agents_is_not_looked_at() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("calls");
+        let stub = stub_remote(
+            dir.path(),
+            &format!(
+                r#"if [ "$1" = machines ]; then echo '{{"machines": [{{"id": "fechada", "name": "Fechada", "profile": "nenhum"}}, {{"id": "aberta", "name": "Aberta", "profile": "consultar"}}]}}'; else echo run >> {}; echo '{{"exit_code": 0, "stdout": "ok", "stderr": "", "truncated": false}}'; fi"#,
+                log.display()
+            ),
+        );
+        std::env::set_var("KALANGO_REMOTE", &stub);
+        with_ctx(4003, |c| {
+            let e = consultar(c, &json!({"maquina": "fechada", "comando": "uptime"})).err().expect("a machine set to nenhum");
+            assert!(e.contains("not set to let agents look"), "{e}");
+            assert!(!log.exists(), "nothing was run on it");
+            assert!(consultar(c, &json!({"maquina": "aberta", "comando": "uptime"})).is_ok());
+            assert!(consultar(c, &json!({"maquina": "nao-existe", "comando": "uptime"})).is_err());
+        });
+        std::env::remove_var("KALANGO_REMOTE");
     }
 }

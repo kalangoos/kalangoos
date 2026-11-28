@@ -19,8 +19,6 @@ struct Env {
     sock: PathBuf,
     kalangod: Child,
     stop: Arc<AtomicBool>,
-    /// what the person is asked and the answer they give (true: approve)
-    answer: Arc<AtomicBool>,
     /// the reasons shown on the approval screen
     shown: Arc<Mutex<Vec<String>>>,
 }
@@ -117,7 +115,7 @@ allowed_paths = ["{area}"]
     }
     let (stop, answer, shown) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(true)), Arc::new(Mutex::new(Vec::new())));
     approver(&sock, stop.clone(), answer.clone(), shown.clone());
-    Env { dir, sock, kalangod, stop, answer, shown }
+    Env { dir, sock, kalangod, stop, shown }
 }
 
 /// The person at the approval screen: answers every pending request as `answer` says and keeps what it showed.

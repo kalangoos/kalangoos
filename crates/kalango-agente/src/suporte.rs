@@ -80,7 +80,6 @@ pub fn note(api: &dyn Fn(&str) -> String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn requests_about_a_machine_to_look_at_or_fix() {
