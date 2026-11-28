@@ -53,7 +53,7 @@ pub fn check(cmd: &str) -> Result<(), String> {
     }
 }
 
-/// The services support may act on (kalangod's `remoto.executar`): `NAME` or `NAME.service`.
+/// The services support may act on (kalangod's `remoto.executar`, by their plain name).
 pub const SERVICES: &[&str] = &[
     "nginx", "apache2", "httpd", "caddy", "php-fpm", "postgresql", "mysql", "mariadb", "redis-server", "redis", "mongod", "memcached", "docker", "containerd", "cups", "smbd", "nmbd", "bluetooth", "cron", "crond", "rsyslog",
     "unattended-upgrades", "chrony", "ntp",
@@ -68,11 +68,6 @@ pub const LOG_SERVICES: &[&str] = &[
 
 fn unit_in(list: &[&str], u: &str) -> bool {
     list.contains(&u.strip_suffix(".service").unwrap_or(u))
-}
-
-/// `NAME` or `NAME.service` of one of `SERVICES` (to act on).
-pub fn service_ok(u: &str) -> bool {
-    unit_in(SERVICES, u)
 }
 
 /// `NAME` or `NAME.service` of one of `LOG_SERVICES` (to read).

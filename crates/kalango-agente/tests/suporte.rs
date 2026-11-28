@@ -234,6 +234,9 @@ fn a_restart_waits_for_the_person_and_runs_only_after_a_yes() {
         assert!(!shown.is_empty(), "the call waited for the person: {ev:?}");
         let s = shown.join("\n");
         assert!(s.contains("remoto.executar") && s.contains("Servidor Web") && s.contains("nginx"), "{s}");
+        // the person reads the exact line kalangod built from the action, not text the agent wrote
+        assert!(s.contains("systemctl restart nginx"), "{s}");
+        assert!(calls(&ev, "remoto.executar").iter().all(|c| c["argumentos"].get("comando").is_none() && c["argumentos"]["acao"].is_string()), "{ev:?}");
         assert!(s.contains("no_always=true"), "never an \"always\": {s}");
         assert!(remote_log(&env).iter().all(|(p, _)| p != "act"), "nothing ran after a no: {:?}", remote_log(&env));
         assert!(ev.iter().any(|e| e["tipo"] == "resultado" && e["nome"] == "remoto.executar" && e["ok"] == false), "refused: {ev:?}");
@@ -247,7 +250,7 @@ fn a_restart_waits_for_the_person_and_runs_only_after_a_yes() {
         let ev = ask(&env, request);
         if let Some(done) = ev.iter().find(|e| e["tipo"] == "resultado" && e["nome"] == "remoto.executar") {
             assert_eq!(done["ok"], true, "{ev:?}");
-            assert!(done["texto"].to_string().contains("simulated"), "{done}");
+            assert!(done["texto"].to_string().contains("simulated") && done["texto"].to_string().contains("systemctl restart nginx"), "{done}");
             assert!(!env.shown.lock().unwrap().is_empty());
             return;
         }
