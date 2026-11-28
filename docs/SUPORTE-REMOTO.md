@@ -64,10 +64,12 @@ du -sh CAMINHO     ls [-l|-a|-la|-lh|-lah|-1] [CAMINHO]     tail -n N /var/log/A
 Regras de todas as formas: só ASCII imprimível; palavras separadas por um espaço; nenhum de `; & | < > $ ` \ " ' ( ) { } [ ] * ? ! # ~ % ^ = , :`;
 unidades `[A-Za-z0-9_.@-]` sem começar por `-` nem `.`; caminhos absolutos já normalizados (sem `..`, `.`, `//`,
 componente começando por `-`); nunca `.ssh`, `.gnupg`, `.aws`, `.kube`, `.config`, `id_*`, `*.pem`, `*.key`, `.env*`,
-`shadow`, `sudoers`, `keyrings`, `gnome-keyring`, `ssh_host_*`, `/root`, `/proc`, `/boot`, `/etc/ssh`, `/etc/ssl`; `tail` só em arquivo dentro da pasta de log de um serviço conhecido (`/var/log/nginx`, `apache2`, `httpd`, `caddy`, `postgresql`,
-`mysql`, `mariadb`, `redis`, `mongodb`, `cups`, `samba`, `unattended-upgrades`, `chrony`, `apt`) ou `/var/log/dpkg.log`: o resto de
-`/var/log` é recusado, os arquivos do diário (`*.journal`, que têm todos os logs, os de login também) e `syslog`/`auth.log`
-inclusive;
+`shadow`, `sudoers`, `keyrings`, `gnome-keyring`, `ssh_host_*`, `/root`, `/proc`, `/boot`, `/etc/ssh`, `/etc/ssl`; `tail` só nestes arquivos de log de serviço, que registram os erros do próprio serviço e nada sobre pessoas:
+`nginx/error.log`, `apache2/error.log`, `httpd/error_log`, `mysql/error.log`, `mariadb/error.log`, `redis/redis-server.log`,
+`unattended-upgrades/unattended-upgrades.log`, `apt/term.log` (e a cópia girada `.1`) e `/var/log/dpkg.log`. Ficam de fora,
+de propósito, `nginx/access.log` (endereços de clientes e URLs com tokens), `samba/` (usuários e logins que falharam),
+`apt/history.log` (a linha de comando de quem instalou), `postgresql/` (comandos que falharam, com senhas), os arquivos do
+diário (`*.journal`, que têm todos os logs) e `syslog`/`auth.log`;
 sem `-f`, sem `--`, sem opção que não esteja na forma. `--help`, `-o ProxyCommand=…`, `ls -la -- -rf`,
 `systemctl status 'x; reboot'` e `journalctl … --vacuum-size` não casam com nenhuma forma.
 

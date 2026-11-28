@@ -1048,10 +1048,14 @@ mod tests {
             "tail -n 5 /var/log/dmesg",
             "tail -n 5 /var/log/lightdm/x.log",
             "tail -n 5 /var/log/nginx/../journal/x",
+            "tail -n 50 /var/log/samba/log.smbd",
+            "tail -n 50 /var/log/apt/history.log",
+            "tail -n 50 /var/log/nginx/access.log",
+            "tail -n 5 /var/log/postgresql/postgresql-16-main.log",
         ] {
             assert!(allowlist::check(bad).is_err(), "{bad}");
         }
-        for ok in ["tail -n 5 /var/log/nginx/error.log", "tail -n 5 /var/log/postgresql/postgresql-16-main.log"] {
+        for ok in ["tail -n 5 /var/log/nginx/error.log", "tail -n 5 /var/log/apt/term.log"] {
             assert!(allowlist::check(ok).is_ok(), "{ok}");
         }
     }

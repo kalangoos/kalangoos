@@ -192,10 +192,20 @@ fn log_holds_secrets(f: &str) -> bool {
     })
 }
 
-/// Log folders of the services in `SERVICES` (and a few package logs): `tail` reads only a file inside one of them. Every
-/// other place in /var/log is refused, the systemd journal files (`/var/log/journal/…/*.journal`, which hold every
-/// service's log, logins included) and the login logs among them.
-const LOG_DIRS: &[&str] = &["nginx", "apache2", "httpd", "caddy", "postgresql", "mysql", "mariadb", "redis", "mongodb", "cups", "samba", "unattended-upgrades", "chrony", "apt"];
+/// The log files `tail` may read, by folder: only files that record the service's own errors and nothing about people. Not
+/// listed on purpose: `nginx/access.log` (client addresses and URLs with tokens), `samba/` (user names and failed logins),
+/// `apt/history.log` (the command line of whoever installed), `postgresql/` (failed statements, passwords in them),
+/// `cups/`, `mongodb/`, `chrony/`. A rotated copy (`error.log.1`) is the same file.
+const LOG_FILES: &[(&str, &[&str])] = &[
+    ("nginx", &["error.log"]),
+    ("apache2", &["error.log"]),
+    ("httpd", &["error_log"]),
+    ("mysql", &["error.log"]),
+    ("mariadb", &["error.log"]),
+    ("redis", &["redis-server.log"]),
+    ("unattended-upgrades", &["unattended-upgrades.log"]),
+    ("apt", &["term.log"]),
+];
 
 fn log_file_ok(f: &str) -> bool {
     if !path_ok(f) || f.ends_with('/') || log_holds_secrets(f) {
@@ -206,7 +216,11 @@ fn log_file_ok(f: &str) -> bool {
         return false;
     }
     match f.strip_prefix("/var/log/").map(|r| r.split('/').collect::<Vec<_>>()).as_deref() {
-        Some([dir, file, ..]) => LOG_DIRS.contains(dir) && !file.is_empty(),
+        Some([dir, file]) => {
+            // (`error.log` or its rotated copy `error.log.1`)
+            let name = file.rsplit_once('.').filter(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).map_or(*file, |(base, _)| base);
+            LOG_FILES.iter().any(|(d, names)| d == dir && names.contains(&name))
+        }
         Some(["dpkg.log"]) => true,
         _ => false,
     }

@@ -42,8 +42,12 @@
 "ls -a /tmp",
 "ls -1 /opt",
 "tail -n 1 /var/log/nginx/error.log",
-"tail -n 5 /var/log/postgresql/postgresql-16-main.log",
 "tail -n 20 /var/log/apache2/error.log",
+"tail -n 5 /var/log/mysql/error.log",
+"tail -n 5 /var/log/nginx/error.log.1",
+"tail -n 5 /var/log/redis/redis-server.log",
+"tail -n 5 /var/log/unattended-upgrades/unattended-upgrades.log",
+"tail -n 5 /var/log/apt/term.log",
 "tail -n 20 /var/log/dpkg.log"
 ],
 "denied": [
@@ -426,6 +430,18 @@
 "journalctl -u rsyslog",
 "journalctl -u rsyslog -n 5",
 "systemctl status cron",
-"systemctl status rsyslog.service"
+"systemctl status rsyslog.service",
+"tail -n 50 /var/log/samba/log.smbd",
+"tail -n 50 /var/log/samba/log.pc-da-ana",
+"tail -n 50 /var/log/apt/history.log",
+"tail -n 50 /var/log/nginx/access.log",
+"tail -n 5 /var/log/nginx/x.log",
+"tail -n 5 /var/log/postgresql/postgresql-16-main.log",
+"tail -n 5 /var/log/cups/error_log",
+"tail -n 5 /var/log/mongodb/mongod.log",
+"tail -n 5 /var/log/chrony/tracking.log",
+"tail -n 5 /var/log/nginx/error.log.gz",
+"tail -n 5 /var/log/nginx/error.log.x",
+"tail -n 5 /var/log/nginx/sub/error.log"
 ]
 }
