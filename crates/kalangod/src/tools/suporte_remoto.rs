@@ -458,6 +458,29 @@ fn scrub(text: &str) -> String {
     lines.iter().zip(&hide).map(|(l, h)| if *h { hidden.as_str() } else { l }).collect::<Vec<_>>().join("\n")
 }
 
+/// `systemctl status` prints the unit's process tree with the command line of every child (arguments with passwords
+/// included) and its `Process:` lines: both go, whatever else the output says. Applied to every consult answer.
+fn drop_process_tree(text: &str) -> String {
+    let mut out = Vec::new();
+    let mut in_tree = false;
+    for l in text.lines() {
+        let t = l.trim_start();
+        if t.starts_with("CGroup:") {
+            in_tree = true;
+            continue;
+        }
+        if in_tree && t.starts_with(['├', '└', '│', '─']) {
+            continue;
+        }
+        in_tree = false;
+        if t.starts_with("Process:") {
+            continue;
+        }
+        out.push(l);
+    }
+    out.join("\n")
+}
+
 fn is_base64_line(l: &str, min: usize) -> bool {
     l.len() >= min && l.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=_-".contains(&b))
 }
@@ -531,7 +554,7 @@ fn run(c: &Ctx, id: &str, cmd: &str, profile: &str, max: usize) -> Result<Out, S
         return Err(format!("{code}: {msg}"));
     }
     let code = r["exit_code"].as_i64();
-    let scrubbed = |v: &Value| json!(scrub(v.as_str().unwrap_or("")));
+    let scrubbed = |v: &Value| json!(scrub(&drop_process_tree(v.as_str().unwrap_or(""))));
     let value = json!({
         "machine": id,
         "exit_code": code,
@@ -992,5 +1015,13 @@ mod tests {
         for ok in ["/dev/sda1 50G 20G 28G 42% /", "da39a3ee5e6b4b0d3255bfef95601890afd80709 file", "the disk-usage task is fine", "see https://example.com/docs and ssh://git@host/repo"] {
             assert_eq!(scrub(ok), ok);
         }
+    }
+
+    #[test]
+    fn the_process_tree_of_a_status_never_reaches_the_agent() {
+        let status = "● nginx.service - A high performance web server\n     Loaded: loaded (/lib/systemd/system/nginx.service; enabled)\n     Active: active (running)\n    Process: 812 ExecStartPre=/usr/sbin/nginx -t (code=exited)\n   Main PID: 815 (nginx)\n     CGroup: /system.slice/nginx.service\n             ├─815 nginx: master process /usr/sbin/nginx\n             └─816 sh -c mysql --user=root --host=db\n\nNov 27 log line";
+        let out = drop_process_tree(status);
+        assert!(!out.contains("mysql") && !out.contains("ExecStartPre") && !out.contains("CGroup") && !out.contains("master process"), "{out}");
+        assert!(out.contains("Active: active (running)") && out.contains("Main PID: 815") && out.ends_with("Nov 27 log line"), "{out}");
     }
 }

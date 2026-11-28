@@ -41,7 +41,7 @@ pub fn check(cmd: &str) -> Result<(), String> {
         "apt" => matches!(args, ["list", "--upgradable"]),
         "systemctl" => systemctl(args),
         "journalctl" => journalctl(args),
-        "du" => matches!(args, ["-sh", p] if path_ok(p)),
+        "du" => matches!(args, ["-sh", p] if du_path_ok(p)),
         "ls" => ls(args),
         "tail" => matches!(args, ["-n", n, f] if lines_ok(n) && log_file_ok(f)),
         _ => return Err("the command is not in the read-only allowlist".into()),
@@ -138,6 +138,12 @@ fn ls(args: &[&str]) -> bool {
     flags_ok && path.is_none_or(path_ok)
 }
 
+/// `du` walks a whole tree: not the root, `/dev` or `/sys` (huge, and the walk itself is the cost).
+fn du_path_ok(p: &str) -> bool {
+    let first = p.trim_start_matches('/').split('/').next().unwrap_or("");
+    path_ok(p) && !first.is_empty() && !matches!(first, "dev" | "sys")
+}
+
 /// An absolute, already normalised path that is not one of the places that hold secrets.
 pub fn path_ok(p: &str) -> bool {
     if !p.starts_with('/') || p.len() > 200 || !p.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-+".contains(&b)) {
@@ -171,9 +177,10 @@ pub fn path_ok(p: &str) -> bool {
         "etc" => !matches!(
             lower.get(1).map(String::as_str),
             Some("ssh" | "ssl" | "sudoers.d" | "polkit-1" | "security" | "letsencrypt" | "wireguard" | "openvpn" | "krb5.keytab")
-        ),
+        ) && !(lower.get(1).map(String::as_str) == Some("networkmanager") && lower.get(2).map(String::as_str) == Some("system-connections")),
         "var" => {
-            !matches!(lower.get(1).map(String::as_str), Some("lib") if matches!(lower.get(2).map(String::as_str), Some("docker" | "kubelet" | "private" | "secrets")))
+            !matches!(lower.get(1).map(String::as_str), Some("lib") if matches!(lower.get(2).map(String::as_str), Some("docker" | "kubelet" | "private" | "secrets" | "mysql" | "mariadb" | "postgresql" | "redis" | "mongodb")))
+                && !(lower.get(1).map(String::as_str) == Some("spool") && lower.get(2).map(String::as_str) == Some("cron"))
         }
         _ => true,
     }

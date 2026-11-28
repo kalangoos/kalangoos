@@ -442,6 +442,21 @@
 "tail -n 5 /var/log/chrony/tracking.log",
 "tail -n 5 /var/log/nginx/error.log.gz",
 "tail -n 5 /var/log/nginx/error.log.x",
-"tail -n 5 /var/log/nginx/sub/error.log"
+"tail -n 5 /var/log/nginx/sub/error.log",
+"du -sh /",
+"du -sh /dev",
+"du -sh /sys",
+"du -sh /sys/kernel",
+"du -sh /dev/shm",
+"ls /etc/NetworkManager/system-connections",
+"ls -l /etc/NetworkManager/system-connections",
+"du -sh /etc/NetworkManager/system-connections",
+"ls /var/lib/mysql",
+"ls /var/lib/postgresql",
+"ls -la /var/lib/postgresql/16",
+"du -sh /var/lib/mariadb",
+"ls /var/spool/cron/crontabs",
+"ls /var/spool/cron",
+"du -sh /var/lib/redis"
 ]
 }
